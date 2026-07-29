@@ -5,11 +5,13 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -19,6 +21,106 @@ namespace
 using namespace std::chrono_literals;
 using MoveJoint = openarm_control_msgs::action::MoveJoint;
 using MovePairedTcp = openarm_control_msgs::action::MovePairedTcp;
+
+#ifndef OPENARM_CLI_RESULT_TIMEOUT_MS
+#define OPENARM_CLI_RESULT_TIMEOUT_MS 45000
+#endif
+#ifndef OPENARM_CLI_CANCEL_TIMEOUT_MS
+#define OPENARM_CLI_CANCEL_TIMEOUT_MS 3000
+#endif
+#ifndef OPENARM_CLI_CANCEL_RESULT_TIMEOUT_MS
+#define OPENARM_CLI_CANCEL_RESULT_TIMEOUT_MS 5000
+#endif
+
+constexpr auto kResultTimeout = std::chrono::milliseconds(OPENARM_CLI_RESULT_TIMEOUT_MS);
+constexpr auto kCancelTimeout = std::chrono::milliseconds(OPENARM_CLI_CANCEL_TIMEOUT_MS);
+constexpr auto kCancelResultTimeout =
+  std::chrono::milliseconds(OPENARM_CLI_CANCEL_RESULT_TIMEOUT_MS);
+constexpr auto kWaitPollInterval = 50ms;
+constexpr auto kServerLossGrace = 750ms;
+
+static_assert(kResultTimeout > 0ms);
+static_assert(kCancelTimeout > 0ms);
+static_assert(kCancelResultTimeout > 0ms);
+
+enum class PostAcceptanceWait
+{
+  ready,
+  timeout,
+  server_lost,
+  context_shutdown
+};
+
+template<typename Future, typename Client>
+PostAcceptanceWait wait_after_acceptance(
+  rclcpp::executors::SingleThreadedExecutor & executor,
+  const Future & future,
+  const std::shared_ptr<Client> & client,
+  const std::shared_ptr<rclcpp::Context> & context,
+  const std::chrono::steady_clock::duration timeout)
+{
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::optional<std::chrono::steady_clock::time_point> server_absent_since;
+  for (;;) {
+    if (!context || !context->is_valid()) {
+      return PostAcceptanceWait::context_shutdown;
+    }
+    const auto before_spin = std::chrono::steady_clock::now();
+    if (before_spin >= deadline) {
+      if (executor.spin_until_future_complete(future, 0ms) ==
+        rclcpp::FutureReturnCode::SUCCESS)
+      {
+        return PostAcceptanceWait::ready;
+      }
+      return PostAcceptanceWait::timeout;
+    }
+    const auto slice = std::min(
+      std::chrono::steady_clock::duration(kWaitPollInterval), deadline - before_spin);
+    if (executor.spin_until_future_complete(future, slice) ==
+      rclcpp::FutureReturnCode::SUCCESS)
+    {
+      return PostAcceptanceWait::ready;
+    }
+    if (!context->is_valid()) {
+      return PostAcceptanceWait::context_shutdown;
+    }
+
+    bool server_ready = false;
+    try {
+      server_ready = client->action_server_is_ready();
+    } catch (...) {
+      if (!context->is_valid()) {
+        return PostAcceptanceWait::context_shutdown;
+      }
+    }
+    const auto after_spin = std::chrono::steady_clock::now();
+    if (server_ready) {
+      server_absent_since.reset();
+    } else if (!server_absent_since) {
+      server_absent_since = after_spin;
+    } else if (after_spin - *server_absent_since >= kServerLossGrace) {
+      if (executor.spin_until_future_complete(future, 0ms) ==
+        rclcpp::FutureReturnCode::SUCCESS)
+      {
+        return PostAcceptanceWait::ready;
+      }
+      return PostAcceptanceWait::server_lost;
+    }
+  }
+}
+
+int report_post_acceptance_loss(const PostAcceptanceWait outcome)
+{
+  if (outcome == PostAcceptanceWait::server_lost) {
+    std::cerr << "action server lost after goal acceptance\n";
+    return 8;
+  }
+  if (outcome == PostAcceptanceWait::context_shutdown) {
+    std::cerr << "ROS context shut down after goal acceptance\n";
+    return 8;
+  }
+  return -1;
+}
 
 double number(const char * text)
 {
@@ -67,8 +169,10 @@ int run_goal(
     std::cerr << "action server unavailable\n";
     return 2;
   }
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
   auto goal_future = client->async_send_goal(goal);
-  if (rclcpp::spin_until_future_complete(node, goal_future, 3s) !=
+  if (executor.spin_until_future_complete(goal_future, 3s) !=
     rclcpp::FutureReturnCode::SUCCESS)
   {
     std::cerr << "goal response timeout\n";
@@ -79,20 +183,39 @@ int run_goal(
     std::cerr << "goal rejected\n";
     return 4;
   }
+  const auto context = node->get_node_base_interface()->get_context();
+#ifdef OPENARM_CLI_TEST_CONTEXT_SHUTDOWN_AFTER_ACCEPT
+  rclcpp::TimerBase::SharedPtr context_shutdown_timer;
+  if (std::getenv("OPENARM_CLI_TEST_CONTEXT_SHUTDOWN") != nullptr) {
+    context_shutdown_timer = node->create_wall_timer(100ms, [context]() {
+        if (context->is_valid()) {
+          context->shutdown("isolated CLI context-shutdown test");
+        }
+      });
+  }
+  (void)context_shutdown_timer;
+#endif
   auto result_future = client->async_get_result(handle);
-  if (rclcpp::spin_until_future_complete(node, result_future, 45s) !=
-    rclcpp::FutureReturnCode::SUCCESS)
-  {
+  auto wait = wait_after_acceptance(executor, result_future, client, context, kResultTimeout);
+  if (const int loss = report_post_acceptance_loss(wait); loss >= 0) {
+    return loss;
+  }
+  if (wait == PostAcceptanceWait::timeout) {
     auto cancel_future = client->async_cancel_goal(handle);
-    if (rclcpp::spin_until_future_complete(node, cancel_future, 3s) !=
-      rclcpp::FutureReturnCode::SUCCESS)
-    {
+    wait = wait_after_acceptance(executor, cancel_future, client, context, kCancelTimeout);
+    if (const int loss = report_post_acceptance_loss(wait); loss >= 0) {
+      return loss;
+    }
+    if (wait == PostAcceptanceWait::timeout) {
       std::cerr << "terminal result timeout; cancel response timeout\n";
       return 5;
     }
-    if (rclcpp::spin_until_future_complete(node, result_future, 5s) !=
-      rclcpp::FutureReturnCode::SUCCESS)
-    {
+    wait = wait_after_acceptance(
+      executor, result_future, client, context, kCancelResultTimeout);
+    if (const int loss = report_post_acceptance_loss(wait); loss >= 0) {
+      return loss;
+    }
+    if (wait == PostAcceptanceWait::timeout) {
       std::cerr << "terminal result timeout; cancellation terminal unconfirmed\n";
       return 5;
     }

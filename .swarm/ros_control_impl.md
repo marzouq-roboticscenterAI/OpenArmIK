@@ -56,13 +56,27 @@ Status: **DONE**
 
 ## Verification evidence
 
+### Live CLI shutdown finding closure
+
+- After goal acceptance, the compiled CLI now monitors the terminal-result,
+  cancel-response, and cancel-terminal waits in 50 ms slices. A continuously
+  absent action server is debounced for 750 ms, so a transient discovery miss
+  does not become a false loss.
+- A ready terminal future wins the loss race. Sustained graph/server loss exits
+  with code 8 and `action server lost after goal acceptance`; context shutdown
+  uses the same distinct code with a context-specific message. Neither path
+  enters the 45-second timeout/cancel cascade.
+- Existing timeouts and semantics remain unchanged for a reachable server:
+  normal slow completion still succeeds, confirmed cancellation still returns
+  code 6, and unconfirmed terminal/cancel timeouts still return code 5.
+
 - A clean unified RelWithDebInfo build from empty output directories built and
   installed all native components plus `openarm_description`,
   `openarm_control_msgs`, and `openarm_ik_ros` under
   `/home/signalprocessing-dev/openarmik-ros-control-unified-clean`.
 - Native CTest: 14/14 passed across CAN, model, commission, transport, control,
   ABI, and installed-consumer coverage.
-- Installed ROS/runtime CTest: 9/9 passed sequentially. The production session
+- Installed ROS/runtime CTest: 10/10 passed sequentially. The production session
   suite now contains 13 cases, including throwing state/feedback/terminal
   callbacks, idle and active 35 ms native deadline overruns, authoritative
   lifecycle/cause reporting, publication freeze, exact-once terminalization,
@@ -81,6 +95,11 @@ Status: **DONE**
 - ASan+UBSan with halt-on-error and leak detection passed the native control
   suite 3/3 and the production session suite 13/13. TSan with halt-on-error
   passed the same native 3/3 and session 13/13 suites.
+- The isolated CLI lifecycle test passed in RelWithDebInfo, ASan+UBSan with
+  leak detection, and TSan. It covers server death while queued, started, and
+  settling; a healthy one-second action; a cancel/result race; and context
+  shutdown. Every loss case exits within two seconds and leaves no CLI or
+  fixture process behind.
 - `git diff --check` passes. No GUI, CAN, external network, hardware, or
   privileged action was performed.
 
