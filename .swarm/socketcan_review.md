@@ -1,77 +1,69 @@
-# Independent re-review: SocketCAN transport
+# Final independent review: SocketCAN transport
 
-Commit: `446c494` (corrective commit over `5dd2493`)
+Commit: `321366a` through the full `5dd2493..321366a` corrective series  
+Verdict: **CLEAN**
 
-Verdict: **CHANGES REQUIRED — 2 Important, 1 Minor**
+No Critical, Important, or Minor findings remain in the scoped transport,
+authorization, classifier, SocketCAN/netlink backend, C ABI, packaging, tests,
+or documentation.
 
-The corrective commit resolves all five original findings: the public ABI is
-query-only; private authorities are random, instance-bound, exact-frame,
-five-second, one-shot grants; unknown/MIT/POS/raw frames fail closed; register
-writes round-trip through the checked codec; close joins both I/O directions;
-netlink batches preserve down/up order; and deadline equality consistently times
-out. Targeted token-forging, replay, cross-instance, wrong-frame, expiry,
-physical-backend-fake, classifier, close/send/receive, and synthetic netlink
-tests pass.
+## Final finding disposition
 
-## Remaining findings
-
-### Important 1 — “Virtual” sysfs location does not prove that a CAN interface cannot reach hardware
-
-`SocketCanBackend::permitsAuthorityIssuance()` trusts
-`isVirtualInterface()`, which returns true for any CAN netdev whose sysfs path
-contains `/devices/virtual/net/` (`transport/src/socketcan_backend.cpp:219-221,483-493`).
-That is broader than `vcan`/`vxcan`. Linux `slcan` is a serial-line CAN driver
-(`modinfo slcan` describes it as “serial line CAN interface”); its dynamically
-created netdev can live under the virtual-net sysfs hierarchy while transmitting
-through a physical serial CAN adapter. The private integration API could
-therefore issue enable/write/zero/save authority on a physical bus, contrary to
-the Stage-A categorical refusal claim.
-
-Authority issuance must allowlist an attested non-hardware kind (normally exact
-rtnetlink `IFLA_INFO_KIND == "vcan"`, with `vxcan` only if deliberately accepted),
-not infer safety from sysfs placement. The current test uses only
-`FakeBackend(false)` and does not exercise SocketCAN interface-kind detection.
-
-### Important 2 — The installed static C API archive has unresolved codec dependencies
-
-The fix makes `openarm_transport` call `oa_can_register_info_for_id()` and
-`oa_can_make_register_write()`, linking `openarm_can` privately in the build tree
-(`transport/CMakeLists.txt:62-78`). Installation still emits only
-`libopenarm_transport.a` and `openarm_transport.h`; it neither bundles nor
-installs/exports `libopenarm_can.a` and dependency metadata. A fresh install
-followed by compiling the provided strict C11 consumer and linking it against the
-installed transport archive fails with undefined references to both codec
-symbols. The built-tree C11 test passes because CMake silently supplies the
-private static dependency.
-
-Install a self-contained combined archive/shared library, or install/export the
-codec target and a CMake/pkg-config dependency contract, then add an
-install-tree consumer test.
-
-### Minor 1 — Netlink socket truncation is not reliably detected
-
-`drainLinkEvents()` receives into 8192 bytes with plain `recv(...,
-MSG_DONTWAIT)` (`transport/src/socketcan_backend.cpp:311-330`). The parser
-rejects a buffer cut inside a message, but plain `recv` does not report the
-original datagram size. If an oversized netlink datagram is truncated exactly at
-a valid message boundary, parsing succeeds and later transitions are silently
-lost despite the report's claim that truncation fails closed. Use `recvmsg()` and
-check `MSG_TRUNC`, or request `MSG_TRUNC` and reject a returned length larger than
-the buffer. The synthetic test truncates a parser buffer mid-message and does
-not cover socket-level truncation.
+- **Stage-A physical authority:** fixed. The installed C API is permanently
+  query-only and has no authority issuer. Every Linux SocketCAN backend returns
+  false from authority issuance regardless of interface name, sysfs placement,
+  or driver, so physical CAN, `slcan`, `vcan`, and `vxcan` cannot acquire a
+  dangerous token. Only an explicitly injected simulator/test backend can issue.
+- **Token forging/replay:** fixed. Private authorities use unpredictable IDs and
+  a per-transport two-word nonce, live only in the issuing transport's registry,
+  bind one exact frame/class/instance, expire within five seconds, require the
+  I/O deadline not exceed expiry, and are erased before the backend syscall.
+  Cross-instance, wrong-frame, expired, over-deadline, and replay attempts fail.
+- **Frame classification:** fixed. Exact padded `0x7ff` register/status queries
+  remain the only public sends. Save/write and motor specials are recognized
+  exactly but require unavailable public authority; `0x7ff` cannot masquerade as
+  a motor special. Register writes round-trip byte-for-byte through the verified
+  codec, rejecting invalid target/RID/type/value/mode/bitrate/nonfinite/range
+  inputs. Raw MIT, POS_VEL, POS_FORCE, feedback-like, malformed, and unrelated
+  standard frames remain unknown and are rejected before the backend.
+- **Shutdown/concurrency/lifetime:** fixed. Close publishes closure, signals the
+  persistent eventfd, joins backend send/receive locks, then joins public
+  operation locks and clears grants. Blocked send and receive return closed;
+  neither can succeed after close returns. Concurrent close is serialized and
+  the documented destroy-after-completed-calls ownership rule remains sound.
+- **Deadlines/timestamps/diagnostics:** fixed/verified. Equality consistently
+  means timeout, horizons are bounded, send rechecks immediately before syscall,
+  and timestamp clock labeling, CAN-error masks, overflow total/delta, output
+  preservation, malformed-frame rejection, and EFF/RTR filtering remain sound.
+- **Netlink transitions/truncation/sender:** fixed. Subscription precedes the
+  initial snapshot; matching transitions are queued in order and down/up cannot
+  collapse. The bounded parser fails closed on malformed, overrun, and overflow.
+  `recvmsg(MSG_TRUNC)` now checks both returned original length and `MSG_TRUNC`,
+  validates a full `AF_NETLINK` sender address with kernel PID zero, and rejects
+  before parsing on any mismatch.
+- **Installed C link contract:** fixed. The required strict-C11 codec object is
+  embedded in the static transport archive. Installation exports the versioned
+  `OpenArm::openarm_transport` CMake target, header, Threads/C++ link contract,
+  and package/version files. A separate clean project finds only that installed
+  package, compiles the C11 consumer, links, and runs successfully.
+- **Socket/interface safety:** retained. Exact bounded interface names, ifindex
+  round-trip, `CAN_MTU`, `ARPHRD_CAN`, getter-only ioctls, initialized
+  `sockaddr_can`, nonblocking/CLOEXEC descriptors, receive-only route netlink,
+  and absence of shell/sudo/SETLINK/setter ioctl remain verified.
 
 ## Fresh verification
 
-- GCC 15.2 Release/Werror build and `ctest`: **PASS**, 3/3.
-- Debug ASan+UBSan with leak detection/halt-on-error: **PASS**, 3/3.
+- GCC 15.2 Release/Werror configure/build and `ctest`: **PASS**, 4/4, including
+  the staged external install-tree C11 consumer.
+- Debug ASan+UBSan with leak detection and halt-on-error: **PASS**, 3/3.
 - Debug ThreadSanitizer with halt-on-error: **PASS**, 3/3.
-- TSan authority/classifier/close/netlink test executable repeated 100 times:
-  **PASS**.
-- `vcan0` was unavailable, so the read-only smoke test skipped. No CAN interface
-  was created, configured, opened, or transmitted on; no hardware/link mutation
-  occurred.
-- Install-tree strict C11 consumer link: **FAIL**, confirming Important 2.
-- `git diff --check 5dd2493 446c494`: only trailing whitespace in review/fix
-  Markdown status lines; below review severity.
+- Export inspection: all seven `oa_transport_*` C entry points are present and
+  unmangled; the codec symbols needed by classification are contained in the
+  installed archive.
+- `git diff --check 446c494 321366a`: one trailing-space warning only in
+  `.swarm/socketcan_rereview_fix.md:3`; documentation-only and below severity.
+- `vcan0` was unavailable, so the smoke test safely skipped. No CAN interface
+  was created, reconfigured, or transmitted on; no physical device was opened
+  and no hardware or link state was mutated during review.
 
-No source files were edited. This report is the only re-review artifact changed.
+No source files were edited. This report is the only review artifact changed.
