@@ -1,58 +1,40 @@
-# Final stop-policy review of `27cfa72`
+# Final control-core review of `69550a8`
 
-Verdict: **CHANGES REQUIRED — one Medium eligibility edge remains.** The commit
-correctly adds encoder-visible, two-arm controlled holds for coherent producer/
-command/cycle watchdog stops and disable fallback for ordinary stale-feedback,
-CAN/partial/skew, and motor-fault paths. Release, ASan/UBSan, and TSan pass 3/3.
+Verdict: **CLEAN**. No Critical, High, Medium, or Low findings remain in the
+reviewed Stage-A scope.
 
-## Medium — timeout is declared controllable without checking feedback coherence or motor health
+## Final edge verified
 
-The missed-cycle gate updates `now_ns_` and calls
-`latch_fault(OA_ETIMEOUT, true)` unconditionally before checking `fresh()` or
-`healthy()` (`control/src/control_core.cpp:805-825`). Command expiry likewise
-passes unconditional availability before the later health check (`:829-842`).
-`latch_fault` therefore retains enabled hold whenever the request selected
-`OA_STOP_CONTROLLED` (`:1166-1182`).
+- `advance()` now checks motor health and complete/fresh/coherent feedback before
+  classifying a cycle miss as eligible for controlled hold
+  (`control/src/control_core.cpp:818-836`).
+- A stale-plus-missed-cycle condition returns `OA_ESTALE` and materializes an
+  encoder-visible, zero-dq disable on both arms.
+- A motor-fault-plus-missed-cycle condition returns `OA_EFAULT`, disables both
+  arms, emits zero-dq feedback, and preserves the original motor fault status and
+  fault mask.
+- `latch_fault()` defensively requires `fresh() && healthy()` in addition to an
+  eligible cause, virtual backend, active command, and controlled-stop request
+  before retaining enabled hold (`control/src/control_core.cpp:1188-1205`). This
+  prevents future callers from bypassing the eligibility gate.
 
-Two unsafe combinations remain:
+## Regression disposition
 
-- With the configured 10 ms cycle and 50 ms feedback timeout, an initial
-  `advance(60 ms)` is both a missed cycle and stale feedback. It is classified as
-  controllable timeout, holds the last stale q enabled, and synthesizes a new
-  complete feedback generation instead of taking the required disable fallback.
-- If a motor fault is injected before an advance that also misses its cycle or
-  crosses command expiry, timeout wins before `healthy()` is evaluated. The
-  fault status is preserved, but the controller still selects enabled hold rather
-  than motor-fault disable fallback.
-
-Expected fix/test: compute controlled-stop availability from a coherent, fresh,
-fault-free pre-stop snapshot (or prioritize feedback/motor-integrity faults over
-timeout). Add controlled-request tests for a cycle gap beyond feedback timeout
-and for simultaneous motor-fault-plus-timeout; both arms must show disabled,
-quantized-zero dq while the event and fault status preserve the original cause.
-
-## Verified closed behavior
-
-- Coherent producer expiry, command expiry, and ordinary missed cycle materialize
-  zero-dq feedback on both arms; controlled requests retain enabled hold and
-  disable requests report disabled.
-- Missing feedback, partial send, cross-bus skew, and motor status faults normally
-  force two-arm disable with quantized-zero dq. Motor fault status/fault mask and
-  event cause remain visible.
-- `materialize_stop` preserves measured q and fault status while emitting decoded
-  feedback (`control/src/control_core.cpp:324-332,1166-1182`).
-- All earlier findings remain closed: frozen old-V1 compatibility/defaults;
-  typed arbitrary/cross/stale/destroy-overlap handle safety; active-only monotonic
-  token storage; allocation transactionality; positive dwell/cycle deadline;
-  encoder-independent simulation; arming gates; plan ownership/start drift;
-  coherent feedback/skew/paired stop; waypoint IK; mapping/no double gearing;
-  collision and physical hard gates; lifecycle, heartbeat, reset, and events.
+All earlier findings remain closed: frozen 8bc V1 binary layouts/prefix defaults;
+ISO-C record/canary/exception behavior; arbitrary, cross-type, stale, and
+destroy-overlap handle safety; active-only monotonic token storage and allocation
+transactionality; independent decoded encoder truth; fault-free arming; no double
+gearing; controller/epoch-bound plans and start drift; coherent feedback, skew,
+partial-send and paired-stop behavior; waypoint/predecessor-seeded IK and measured
+FK completion; limits/trajectory/dwell enforcement; collision reject-all and
+physical hard gates; lifecycle, ESTOP, heartbeat, reset/reverify, events, and
+concurrency/lifetime behavior.
 
 ## Fresh verification
 
 - Release/Werror CTest: **3/3 passed**.
 - ASan/UBSan CTest: **3/3 passed**.
 - TSan CTest: **3/3 passed**.
-- Cause-specific suite covers producer expiry, command expiry, missed cycle,
-  missing feedback, partial send, skew, and motor faults for encoder-visible
-  two-arm results; the two combined eligibility cases above are not covered.
+- Focused regressions include stale-plus-missed-cycle and
+  motor-fault-plus-missed-cycle precedence, two-arm disable fallback,
+  encoder-visible quantized-zero dq, and preserved motor fault evidence.
