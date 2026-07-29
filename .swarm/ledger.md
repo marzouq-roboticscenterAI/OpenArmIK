@@ -30,7 +30,7 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
 - [x] Atomic dual-arm Cartesian virtual control verified through ROS 2 and TF.
 - [x] C CAN and kinematics/IK APIs implemented and independently reviewed.
 - [x] Strict, sanitizer, deterministic-generator, ROS, and coverage suites green.
-- [ ] Final fresh independent whole-branch sweep in progress.
+- [x] Final fresh independent whole-branch audits clean.
 
 ## Decisions and evidence
 
@@ -63,6 +63,9 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   with `SIGSEGV` during Ctrl-C teardown after successful operation; both project
   ROS nodes exited cleanly. This shutdown-only issue does not affect the verified
   virtual transaction but remains disclosed.
+- 2026-07-28: Two fresh independent final passes reported CLEAN for the
+  hardware-free scope. See `final_audit.md` and `final_verification.md` for exact
+  commands, results, coverage, and limitations.
 
 ## Open items
 
