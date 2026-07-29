@@ -32,7 +32,9 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
 - [x] Strict, sanitizer, deterministic-generator, ROS, and coverage suites green.
 - [x] Final fresh independent whole-branch audits clean.
 - [x] RViz live-resize renderer workaround, centered camera, single-instance guard, and graceful Ctrl+C/window-close lifecycle verified.
-- [ ] Encoder-closed-loop physical C ABI/C++ controller requested on 2026-07-29; protocol research and design review are in progress.
+- [x] Encoder-closed-loop controller protocol research independently cross-verified.
+- [x] C ABI/C++ OOP controller design independently critiqued and approved for staged implementation.
+- [ ] Stage A fail-closed runtime, simulator, calibration workflows, and measured-state joint/TCP planning in implementation.
 
 ## Decisions and evidence
 
@@ -81,6 +83,18 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
 - 2026-07-29: A fresh paired virtual request reached left/right hand TCP targets
   `(0.20, 0.30, 0.85)` / `(0.20, -0.30, 0.85)` with approximately
   `6.06e-8 m` residual per side under the stable renderer.
+- 2026-07-29: Independent pinned-source audits confirmed that DaMiao feedback is
+  output-shaft encoder q/dq/torque-estimate/status/temperature. Host code must not
+  apply the integrated reduction again, must verify configured PMAX/VMAX/TMAX,
+  and must never treat command position as measured state.
+- 2026-07-29: Encoder feedback cannot infer side, joint identity, URDF zero,
+  sign, or TCP. First-time manual calibration requires a known fixture/reference;
+  automatic hard-stop calibration is separately supervised and recipe-gated.
+  Upstream's incomplete precise-home sequence will not be copied.
+- 2026-07-29: The approved architecture is a C++17 object model behind a
+  versioned C ABI with one owner, two bus workers, immutable measured snapshots,
+  bounded trajectories, explicit lifecycle/watchdogs, fail-closed collision
+  policy, a deterministic motor simulator, and a separate commissioning product.
 
 ## Open items
 
