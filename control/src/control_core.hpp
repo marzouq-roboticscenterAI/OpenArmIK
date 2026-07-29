@@ -193,10 +193,11 @@ public:
     [[nodiscard]] std::uint32_t lifecycle() const noexcept { return lifecycle_; }
 
 private:
-    void publish(std::uint32_t kind, oa_control_status cause, std::uint64_t command_id) noexcept;
+    [[nodiscard]] bool publish(std::uint32_t kind, oa_control_status cause,
+                               std::uint64_t command_id) noexcept;
     void materialize_stop(bool enabled_hold) noexcept;
-    void latch_fault(oa_control_status cause,
-                     bool controlled_stop_available = false) noexcept;
+    [[nodiscard]] oa_control_status latch_fault(
+        oa_control_status cause, bool controlled_stop_available = false) noexcept;
     [[nodiscard]] oa_control_status feedback_integrity() const noexcept;
     [[nodiscard]] bool fresh() const noexcept;
     [[nodiscard]] bool healthy() const noexcept;

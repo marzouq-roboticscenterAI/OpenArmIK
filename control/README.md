@@ -80,6 +80,9 @@ Explicit stops, disarm, E-stop, event-overflow faults, and watchdog or transport
 faults retire delayed history before atomically publishing their measured hold
 or disable generation. Reset-to-closed retires pending history without creating
 a measurement when verification has never completed.
+The event ring is fail-closed: a full-ring publication replaces the oldest event
+with `OA_EVENT_FAULTED`, disables the virtual plant coherently, and makes the
+triggering controller operation return `OA_EBUSY` without continuing execution.
 
 Build and test without Python:
 

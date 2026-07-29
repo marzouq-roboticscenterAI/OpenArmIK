@@ -130,3 +130,34 @@ above. Release, ASan/UBSan with leak/error halting, and TSan with error halting
 each passed 3/3 registered tests. Both ABI executables were also run directly
 from the fresh Release build and returned zero. Cppcheck and the staged
 base-to-HEAD whitespace check passed without diagnostics.
+
+## Re-review event-overflow correction
+
+Re-review of `1d2b9478b91449ccafdcb52fbea0b35f263e40fb` found that
+`publish()` could clear `executing_` on event-ring overflow while its caller
+continued. The deferred STARTED path then dereferenced a disengaged
+`std::optional<MotionPlan>` and returned `OA_OK` despite the public lifecycle and
+event both reporting FAULT.
+
+Controller event publication now returns an explicit success result. Every
+caller—verification, arm, immediate or queued execution, deferred start,
+settling, completion, E-stop, abort, stop, disarm, and fault latching—terminates
+its operation on overflow. The triggering public operation returns `OA_EBUSY`,
+the delayed queue is retired, the measured plant is coherently disabled, and the
+ring contains `OA_EVENT_FAULTED` with `OA_EBUSY` and the triggering command ID.
+Fault latching returns its original nonzero cause when its event fits and
+`OA_EBUSY` when publication itself overflows.
+
+Public-ABI tests fill the ring exactly and force overflow independently at
+QUEUED execute, deferred STARTED, SETTLING, COMPLETED, ABORTED, STOPPED,
+heartbeat fault, ARM, VERIFY, DISARM, and E-stop events. They assert non-success
+returns, unchanged caller output on failed execute, disabled FAULT snapshots,
+coherent timestamps/sequences, measured-q preservation, and fault-event cause,
+lifecycle, sequence, and command identity.
+
+Fresh final verification used `/tmp/openarmik-feedback-gate3-release`,
+`/tmp/openarmik-feedback-gate3-asan`, and
+`/tmp/openarmik-feedback-gate3-tsan`. Release, ASan/UBSan with leak/error
+halting, and TSan with error halting each passed 3/3 registered tests. Both ABI
+executables returned zero when run directly from the Release build. Cppcheck
+and the complete base-to-HEAD whitespace check passed without diagnostics.

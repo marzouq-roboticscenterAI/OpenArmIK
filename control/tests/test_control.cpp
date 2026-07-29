@@ -344,7 +344,7 @@ void check_stop_payload(const oa_snapshot &state, const std::uint32_t lifecycle,
     }
 }
 
-void reset_and_reverify(Fixture &fixture) {
+void drain_events(Fixture &fixture) {
     for (;;) {
         oa_event event{};
         init(event);
@@ -352,6 +352,42 @@ void reset_and_reverify(Fixture &fixture) {
             break;
         }
     }
+}
+
+void fill_event_ring(Fixture &fixture, const std::size_t event_count) {
+    CHECK(event_count <= 64U);
+    drain_events(fixture);
+    const std::size_t cycles = event_count / 3U;
+    for (std::size_t cycle = 0U; cycle < cycles; ++cycle) {
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_stop(fixture.controller, OA_STOP_CONTROLLED) == OA_CONTROL_OK);
+        oa_motion_plan_destroy(plan);
+    }
+    for (std::size_t event = cycles * 3U; event < event_count; ++event) {
+        CHECK(oa_controller_stop(fixture.controller, OA_STOP_CONTROLLED) == OA_CONTROL_OK);
+    }
+}
+
+oa_event take_overflow_event(Fixture &fixture) {
+    for (;;) {
+        oa_event event{};
+        init(event);
+        CHECK(oa_controller_poll_event(fixture.controller, 0U, &event) == OA_CONTROL_OK);
+        if (event.kind == OA_EVENT_FAULTED && event.cause == OA_CONTROL_EBUSY) {
+            CHECK(event.lifecycle == OA_LIFECYCLE_FAULT);
+            return event;
+        }
+    }
+}
+
+void reset_and_reverify(Fixture &fixture) {
+    drain_events(fixture);
     oa_arm_challenge challenge{};
     init(challenge);
     CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_CONTROL_OK);
@@ -1238,7 +1274,7 @@ void test_delayed_feedback_is_retired_by_lifecycle_transitions() {
         set_feedback_delay(fixture, 20000000U);
         CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_OK);
         CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_CONTROL_OK);
-        CHECK(oa_controller_set_interlock(fixture.controller, 1U, 0U) == OA_CONTROL_EESTOP);
+        CHECK(oa_controller_set_interlock(fixture.controller, 1U, 0U) == OA_CONTROL_EBUSY);
         const oa_snapshot overflow = controller_snapshot(fixture);
         check_stop_payload(overflow, OA_LIFECYCLE_FAULT, false);
         CHECK(overflow.arm[0].t_ns == 20000000U);
@@ -1264,6 +1300,186 @@ void test_delayed_feedback_is_retired_by_lifecycle_transitions() {
         CHECK(state.arm[1].fresh_mask == 0U);
         oa_controller_destroy(controller);
         oa_manifest_destroy(manifest);
+    }
+}
+
+void test_event_overflow_terminates_every_publishing_path() {
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 64U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report, 10000000U);
+        std::uint64_t command = UINT64_MAX;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_EBUSY);
+        CHECK(command == UINT64_MAX);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id != 0U);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 63U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.2);
+        const auto report = plan_report(plan);
+        set_feedback_delay(fixture, 20000000U);
+        auto request = request_for(report, 10000000U);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        const oa_snapshot before = controller_snapshot(fixture);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_EBUSY);
+        const oa_snapshot overflow = controller_snapshot(fixture);
+        check_stop_payload(overflow, OA_LIFECYCLE_FAULT, false);
+        CHECK(overflow.arm[0].feedback_seq == before.arm[0].feedback_seq + 1U);
+        CHECK(overflow.arm[1].feedback_seq == before.arm[1].feedback_seq + 1U);
+        CHECK(overflow.arm[0].t_ns == 10000000U);
+        CHECK(overflow.arm[1].t_ns == 10000000U);
+        for (std::size_t side = 0U; side < 2U; ++side) {
+            for (std::size_t joint = 0U; joint < 7U; ++joint) {
+                CHECK(overflow.arm[side].q[joint] == before.arm[side].q[joint]);
+                CHECK(overflow.arm[side].raw_q[joint] == before.arm[side].raw_q[joint]);
+            }
+        }
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 63U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        oa_control_status status = OA_CONTROL_OK;
+        for (std::uint64_t now = 10000000U;
+             status == OA_CONTROL_OK && now <= report.duration_ns + 1000000000ULL;
+             now += 10000000U) {
+            status = oa_controller_advance(fixture.controller, now);
+        }
+        CHECK(status == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 62U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        oa_control_status status = OA_CONTROL_OK;
+        bool post_duration_advance_succeeded = false;
+        for (std::uint64_t now = 10000000U;
+             status == OA_CONTROL_OK && now <= report.duration_ns + 1000000000ULL;
+             now += 10000000U) {
+            status = oa_controller_advance(fixture.controller, now);
+            post_duration_advance_succeeded =
+                post_duration_advance_succeeded ||
+                (status == OA_CONTROL_OK && now >= report.duration_ns);
+        }
+        CHECK(post_duration_advance_succeeded);
+        CHECK(status == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 63U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_stop(fixture.controller, OA_STOP_DISABLE) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 62U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_stop(fixture.controller, OA_STOP_CONTROLLED) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 63U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_heartbeat(fixture.controller, command, 0U) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        drain_events(fixture);
+        for (std::size_t event = 0U; event < 64U; ++event) {
+            CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_CONTROL_OK);
+        }
+        oa_arm_challenge challenge{};
+        init(challenge);
+        CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_CONTROL_OK);
+        CHECK(oa_controller_arm(fixture.controller, &challenge) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+
+        oa_arm_challenge reset_challenge{};
+        init(reset_challenge);
+        CHECK(oa_controller_get_arm_challenge(fixture.controller, &reset_challenge) == OA_CONTROL_OK);
+        oa_reset_request reset{};
+        init(reset);
+        reset.verify_epoch = reset_challenge.verify_epoch;
+        reset.nonce = reset_challenge.nonce;
+        CHECK(oa_controller_reset_fault(fixture.controller, &reset) == OA_CONTROL_OK);
+        oa_verify_report verify{};
+        init(verify);
+        CHECK(oa_controller_open_and_verify(fixture.controller, &verify) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == 0U);
+    }
+
+    {
+        Fixture fixture;
+        drain_events(fixture);
+        for (std::size_t event = 0U; event < 64U; ++event) {
+            CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_CONTROL_OK);
+        }
+        CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == 0U);
     }
 }
 
@@ -1326,7 +1542,7 @@ void test_watchdog_estop_event_overflow_and_concurrency() {
         for (std::size_t index = 0; index < 70U; ++index) {
             const oa_control_status status = oa_controller_disarm(fixture.controller, UINT64_MAX);
             if (status != OA_CONTROL_OK) {
-                CHECK(status == OA_CONTROL_ESTATE);
+                CHECK(status == OA_CONTROL_EBUSY);
                 break;
             }
         }
@@ -1780,6 +1996,7 @@ int main() {
     test_feedback_generation_atomicity_and_bounds();
     test_completion_requires_distinct_delivered_generations();
     test_delayed_feedback_is_retired_by_lifecycle_transitions();
+    test_event_overflow_terminates_every_publishing_path();
     test_cartesian_path_policies_and_scene_binding();
     test_watchdog_estop_event_overflow_and_concurrency();
     test_invalid_handles_and_transactional_create();
