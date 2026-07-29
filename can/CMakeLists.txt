@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(openarm_can_diagnostics VERSION 1.0.0 LANGUAGES C)
 
 option(OA_CAN_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+set(CMAKE_C_EXTENSIONS OFF)
 
 add_library(openarm_can STATIC
     src/openarm_can.c
@@ -9,6 +10,7 @@ add_library(openarm_can STATIC
 )
 target_include_directories(openarm_can PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_features(openarm_can PUBLIC c_std_11)
+set_target_properties(openarm_can PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
 
 if(MSVC)
     target_compile_options(openarm_can PRIVATE /W4 /WX)
@@ -36,6 +38,7 @@ if(BUILD_TESTING)
         target_link_libraries(openarm_can_tests PRIVATE m)
     endif()
     target_compile_features(openarm_can_tests PRIVATE c_std_11)
+    set_target_properties(openarm_can_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
     if(MSVC)
         target_compile_options(openarm_can_tests PRIVATE /W4 /WX)
     elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")

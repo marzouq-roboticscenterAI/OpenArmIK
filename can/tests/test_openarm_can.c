@@ -9,10 +9,10 @@
 
 #ifdef __linux__
 #include <linux/can/netlink.h>
+#include <linux/if.h>
 #include <linux/if_link.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-#include <net/if.h>
 #endif
 
 static int failures;
@@ -401,6 +401,35 @@ static void test_probe_rejects_stale_enabled_fault_and_busy(void) {
     oa_can_fake_destroy(fake);
 }
 
+static void test_probe_receive_budget_boundary(void) {
+    oa_can_arm_manifest manifest = manifest_two();
+    oa_can_transport transport;
+    oa_can_probe_options options = probe_options(2u);
+    oa_can_probe_report report;
+    oa_can_frame frame;
+    oa_can_fake *fake;
+    INITIALIZE(report);
+    fake = create_fake(&transport, 4u);
+    frame = feedback_frame(0x11u, 1u, OA_CAN_FEEDBACK_DISABLED, 0x8000u, 0x800u, 0x800u);
+    CHECK(oa_can_fake_enqueue_feedback(fake, &frame, 110u) == OA_CAN_OK);
+    frame = feedback_frame(0x12u, 2u, OA_CAN_FEEDBACK_DISABLED, 0x8000u, 0x800u, 0x800u);
+    CHECK(oa_can_fake_enqueue_feedback(fake, &frame, 111u) == OA_CAN_OK);
+    CHECK(oa_can_probe_expected(&transport, &manifest, &options, &report) == OA_CAN_ETIMEOUT);
+    CHECK(report.fresh_mask == 3u && report.received_frames == 2u && report.receive_limit_reached == 1u);
+    oa_can_fake_destroy(fake);
+
+    options = probe_options(3u);
+    INITIALIZE(report);
+    fake = create_fake(&transport, 4u);
+    frame = feedback_frame(0x11u, 1u, OA_CAN_FEEDBACK_DISABLED, 0x8000u, 0x800u, 0x800u);
+    CHECK(oa_can_fake_enqueue_feedback(fake, &frame, 110u) == OA_CAN_OK);
+    frame = feedback_frame(0x12u, 2u, OA_CAN_FEEDBACK_DISABLED, 0x8000u, 0x800u, 0x800u);
+    CHECK(oa_can_fake_enqueue_feedback(fake, &frame, 111u) == OA_CAN_OK);
+    CHECK(oa_can_probe_expected(&transport, &manifest, &options, &report) == OA_CAN_OK);
+    CHECK(report.fresh_mask == 3u && report.received_frames == 2u && report.receive_limit_reached == 0u);
+    oa_can_fake_destroy(fake);
+}
+
 static void test_fake_rejects_control_frames(void) {
     oa_can_transport transport;
     oa_can_fake *fake = create_fake(&transport, 2u);
@@ -554,7 +583,12 @@ static void test_synthetic_netlink_parser(void) {
 }
 #else
 static void test_synthetic_netlink_parser(void) {
-    CHECK(1);
+    size_t count = 99u;
+    int done = 0;
+    CHECK(oa_can_linux_list_interfaces(NULL, 0u, &count) == OA_CAN_EUNSUPPORTED);
+    CHECK(count == 0u);
+    CHECK(oa_can_linux_parse_datagram(NULL, 0u, 0u, 0u, 0, NULL, 0u, &count, &done) ==
+          OA_CAN_EUNSUPPORTED);
 }
 #endif
 
@@ -567,6 +601,7 @@ int main(void) {
     test_public_integer_widths();
     test_probe_fresh_disabled_only();
     test_probe_rejects_stale_enabled_fault_and_busy();
+    test_probe_receive_budget_boundary();
     test_fake_rejects_control_frames();
     test_synthetic_netlink_parser();
     if (failures != 0) {

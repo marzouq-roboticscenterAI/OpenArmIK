@@ -5,10 +5,10 @@
 
 #ifdef __linux__
 #include <linux/can/netlink.h>
+#include <linux/if.h>
 #include <linux/if_link.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-#include <net/if.h>
 #include <stddef.h>
 #include <sys/socket.h>
 #include <sys/time.h>

@@ -29,7 +29,12 @@ expected embedded ID nibble, and reported disabled status.  It does not verify
 motor family, serial, physical joint assignment, firmware, configuration,
 direction, gearing, limits, timeout, or control mode.  The caller-owned transport
 must timestamp receives with a monotonic clock and honor the supplied deadline;
-the probe also enforces a caller-selected receive-count bound.
+the probe also enforces a caller-selected receive-count bound.  Success requires
+the transport to report `OA_CAN_ETIMEOUT` before `max_receive_frames` successful
+receives.  Consuming exactly the budget is deliberately inconclusive and returns
+`OA_CAN_ETIMEOUT`, even if its final frame completed the expected mask, because
+another duplicate, enabled, or fault frame may remain unseen.  Set the budget
+greater than the expected reply count and allow margin for unrelated traffic.
 
 `oa_can_linux_list_interfaces` is Linux-only.  It issues a read-only rtnetlink
 `RTM_GETLINK` dump addressed to the kernel and parses CAN link attributes; it
@@ -38,10 +43,13 @@ a CAN socket.  Parser tests use synthetic, deliberately unaligned and malformed
 datagrams.  The test suite never invokes the live enumerator, so no host interface
 is inspected during tests.
 
-The codec/fake-transport surface is portable C11.  Linux rtnetlink inspection is
-compiled only on Linux and otherwise returns `OA_CAN_EUNSUPPORTED`.  CMake avoids
-the Unix math-library dependency under MSVC; the verified configuration for this
-revision is Linux/GCC, as recorded in the change handoff.
+The codec/fake-transport surface is strict ISO C11.  CMake disables C language
+extensions for both library and tests.  Rtnetlink inspection is an explicitly
+Linux-UAPI feature: it uses Linux UAPI headers (including `linux/if.h`) and libc
+socket calls, compiles only on Linux, and returns `OA_CAN_EUNSUPPORTED` elsewhere.
+CMake avoids the Unix math-library dependency under MSVC; the verified
+configuration for this revision is Linux/GCC plus the forced non-Linux stub
+build recorded in the change handoff.
 
 Build it independently:
 

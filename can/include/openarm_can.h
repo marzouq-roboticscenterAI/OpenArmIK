@@ -175,6 +175,13 @@ typedef struct oa_can_probe_options {
     uint32_t struct_size;
     uint32_t abi_version;
     uint64_t timeout_ns;
+    /*
+     * Maximum successfully received frames before the result is inconclusive.
+     * Success requires the transport to return OA_CAN_ETIMEOUT before this many
+     * frames are consumed. Reaching the exact cap returns OA_CAN_ETIMEOUT even
+     * when all expected IDs were seen, because an unseen duplicate/fault may
+     * remain. Choose a value greater than the expected reply count.
+     */
     uint32_t max_receive_frames;
 } oa_can_probe_options;
 
@@ -229,7 +236,10 @@ oa_can_status oa_can_probe_expected(const oa_can_transport *transport,
                                     const oa_can_probe_options *options,
                                     oa_can_probe_report *out_report);
 
-/* Linux-only and read-only: no SETLINK, ioctl write, shell command, or CAN socket. */
+/*
+ * Linux-UAPI-only and read-only: no SETLINK, ioctl write, shell command, or CAN
+ * socket. Caller initializes every output slot's size/version before the call.
+ */
 oa_can_status oa_can_linux_list_interfaces(oa_can_linux_interface *interfaces,
                                            size_t capacity, size_t *out_count);
 
