@@ -31,6 +31,22 @@ endif()
 
 option(OPENARM_IK_ROS_COVERAGE "Instrument authored adapter code for gcov" OFF)
 
+set(OPENARM_STAGE_A_VISUALIZATION_URDF
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/openarm_v10_bimanual_stage_a_visualization.urdf")
+add_custom_command(
+  OUTPUT "${OPENARM_STAGE_A_VISUALIZATION_URDF}"
+  COMMAND "${CMAKE_COMMAND}"
+    "-DINPUT_URDF=${openarm_model_GENERATED_URDF}"
+    "-DOUTPUT_URDF=${OPENARM_STAGE_A_VISUALIZATION_URDF}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateStageAVisualizationUrdf.cmake"
+  DEPENDS
+    "${openarm_model_GENERATED_URDF}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateStageAVisualizationUrdf.cmake"
+  COMMENT "Deriving the Stage-A visualization-only URDF"
+  VERBATIM)
+add_custom_target(openarm_stage_a_visualization_urdf ALL
+  DEPENDS "${OPENARM_STAGE_A_VISUALIZATION_URDF}")
+
 add_library(openarm_virtual_control_session STATIC src/virtual_control_session.cpp)
 target_include_directories(openarm_virtual_control_session PUBLIC include)
 target_compile_options(openarm_virtual_control_session PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -98,6 +114,7 @@ install(TARGETS openarm_ik_ros_node openarm_control_cli close_rviz_window openar
 install(DIRECTORY launch rviz DESTINATION share/${PROJECT_NAME})
 install(FILES package.xml README.md DESTINATION share/${PROJECT_NAME})
 install(FILES "${openarm_model_GENERATED_URDF}" DESTINATION share/${PROJECT_NAME}/urdf)
+install(FILES "${OPENARM_STAGE_A_VISUALIZATION_URDF}" DESTINATION share/${PROJECT_NAME}/urdf)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -145,6 +162,16 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_generated_urdf.py
       --urdf ${openarm_model_GENERATED_URDF}
       --description-root ${OPENARM_DESCRIPTION_SHARE})
+  add_test(
+    NAME test_visualization_urdf
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_visualization_urdf.py
+      --canonical ${openarm_model_GENERATED_URDF}
+      --visualization ${OPENARM_STAGE_A_VISUALIZATION_URDF}
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateStageAVisualizationUrdf.cmake
+      --cmake ${CMAKE_COMMAND})
+  find_program(CHECK_URDF_EXECUTABLE NAMES check_urdf REQUIRED)
+  add_test(NAME test_visualization_urdf_parser
+    COMMAND ${CHECK_URDF_EXECUTABLE} ${OPENARM_STAGE_A_VISUALIZATION_URDF})
   add_test(
     NAME test_invalid_expiry_parameter
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_invalid_expiry_parameter.py)

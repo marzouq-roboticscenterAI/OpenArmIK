@@ -12,7 +12,9 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     share = Path(get_package_share_directory("openarm_ik_ros"))
-    robot_description = (share / "urdf" / "openarm_v10_bimanual.urdf").read_text()
+    robot_description = (
+        share / "urdf" / "openarm_v10_bimanual_stage_a_visualization.urdf"
+    ).read_text()
     return LaunchDescription([
         DeclareLaunchArgument("rviz", default_value="true"),
         Node(

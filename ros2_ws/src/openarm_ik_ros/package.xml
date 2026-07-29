@@ -30,5 +30,6 @@
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>python3</test_depend>
   <test_depend>rclpy</test_depend>
+  <test_depend>urdfdom</test_depend>
   <export><build_type>ament_cmake</build_type></export>
 </package>
