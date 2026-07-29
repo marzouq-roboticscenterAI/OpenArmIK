@@ -310,6 +310,7 @@ typedef struct oa_sim_fault {
     uint32_t fault_mask;
     uint32_t fault_status;
     uint32_t command_fail_mask;
+    /* Capture-to-publication latency for immutable quantized feedback generations. */
     uint64_t feedback_delay_ns;
 } oa_sim_fault;
 

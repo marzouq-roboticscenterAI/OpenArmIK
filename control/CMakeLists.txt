@@ -207,6 +207,8 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
         -Wall -Wextra -Wpedantic -Werror)
 
     add_executable(openarm_control_tests tests/test_control.cpp)
+    target_include_directories(openarm_control_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(openarm_control_tests PRIVATE openarm_control Threads::Threads)
     target_compile_options(openarm_control_tests PRIVATE
         -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2)

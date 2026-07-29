@@ -46,8 +46,9 @@ public:
     void set_enabled(bool enabled) noexcept;
     void set_fault(std::uint8_t status) noexcept;
     void command(double q_model, double dq_model) noexcept;
-    bool step(double dt_s, std::uint64_t feedback_ns, bool frozen,
-              bool dropped) noexcept;
+    [[nodiscard]] FeedbackFrame capture(double dt_s, std::uint64_t capture_ns,
+                                        bool frozen) noexcept;
+    void publish(const FeedbackFrame &frame) noexcept;
     void force_state(double q_model, double dq_model,
                      std::uint64_t feedback_ns) noexcept;
     [[nodiscard]] const MeasuredMotor &measured() const noexcept { return measured_; }
@@ -58,13 +59,19 @@ public:
 private:
     oa_motor_config config_{};
     MeasuredMotor measured_{};
-    FeedbackFrame feedback_frame_{};
     double plant_raw_q_{};
     double plant_raw_dq_{};
     double command_raw_q_{};
     double command_raw_dq_{};
     bool enabled_{};
     std::uint8_t fault_status_{};
+};
+
+struct FeedbackGeneration {
+    std::array<FeedbackFrame, 7> frame{};
+    std::uint64_t capture_ns{};
+    std::uint64_t ready_ns{};
+    std::uint32_t member_mask{};
 };
 
 class FakeTransport final {
@@ -108,7 +115,13 @@ public:
     [[nodiscard]] const FakeTransport &transport() const noexcept { return transport_; }
 
 private:
+    static constexpr std::size_t kFeedbackQueueCapacity = 64U;
+    [[nodiscard]] bool enqueue(FeedbackGeneration generation) noexcept;
+    [[nodiscard]] bool publish_due(std::uint64_t now_ns) noexcept;
+    void clear_queue() noexcept;
+
     std::array<DamiaoMotorSimulator, 7> motor_;
+    std::array<FeedbackGeneration, kFeedbackQueueCapacity> feedback_queue_{};
     FakeTransport transport_{};
     std::uint64_t feedback_seq_{};
     std::uint32_t freeze_mask_{};
@@ -118,6 +131,8 @@ private:
     std::uint64_t feedback_delay_ns_{};
     std::uint32_t generation_mask_{};
     std::uint64_t generation_timestamp_{};
+    std::size_t feedback_queue_head_{};
+    std::size_t feedback_queue_count_{};
 };
 
 class MotionPlan final {
@@ -209,6 +224,8 @@ private:
     std::uint64_t command_expiry_ns_{};
     std::uint64_t producer_deadline_ns_{};
     std::uint64_t settle_start_ns_{};
+    std::array<std::uint64_t, 2> settle_feedback_seq_{};
+    std::uint32_t settle_feedback_intervals_{};
     std::uint32_t active_stop_kind_{OA_STOP_DISABLE};
     bool command_started_{};
     bool settling_published_{};

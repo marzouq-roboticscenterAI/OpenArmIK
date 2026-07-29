@@ -6,6 +6,10 @@ write path. The Stage-A backend is a deterministic DaMiao encoder simulator
 with an independent bounded-velocity/acceleration plant. Commands update only
 the plant reference; the lagging plant emits quantized eight-byte DaMiao
 feedback frames, and only decoded frames update measured state.
+`oa_sim_fault.feedback_delay_ns` delays complete immutable quantized feedback
+generations, including their values, capture timestamps, and sequence delivery.
+The allocation-free delay ring is bounded and fails closed on arithmetic or
+capacity overflow.
 The physical backend is deliberately present only as a fail-closed gate and
 returns `OA_CONTROL_EUNSUPPORTED` before verification or motion.
 
@@ -64,7 +68,8 @@ documented defaults exercised by the frozen-header compatibility executable.
 
 While armed, `advance` must be called at the configured positive cycle. Missed
 cycles latch timeout, equal timestamps generate neither feedback nor dwell, and
-completion requires three full cycle intervals of measured in-tolerance state.
+completion requires three full cycle intervals backed by distinct complete
+delivered generations of measured in-tolerance state.
 The execution request's controlled and disable stop policies produce distinct
 simulator stop states while physical execution remains hard-gated. Only
 complete, fresh, coherent, fault-free producer/cycle watchdog faults materialize

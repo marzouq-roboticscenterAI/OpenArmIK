@@ -164,11 +164,9 @@ void DamiaoMotorSimulator::command(const double q_model, const double dq_model) 
     command_raw_dq_ = dq_model / config_.q_scale;
 }
 
-bool DamiaoMotorSimulator::step(const double dt_s, const std::uint64_t feedback_ns,
-                                const bool frozen, const bool dropped) noexcept {
-    if (dropped) {
-        return false;
-    }
+FeedbackFrame DamiaoMotorSimulator::capture(const double dt_s,
+                                            const std::uint64_t capture_ns,
+                                            const bool frozen) noexcept {
     if (!frozen) {
         const double max_velocity = config_.max_velocity_rad_s;
         const double max_acceleration = config_.max_acceleration_rad_s2;
@@ -198,36 +196,38 @@ bool DamiaoMotorSimulator::step(const double dt_s, const std::uint64_t feedback_
     const std::uint32_t dq_field = encode_field(plant_raw_dq_, config_.vmax_rad_s, 4095U);
     const std::uint32_t tau_field = encode_field(0.0, config_.tmax_nm, 4095U);
     const std::uint8_t status = fault_status_ != 0U ? fault_status_ : (enabled_ ? 1U : 0U);
-    feedback_frame_.data[0] = static_cast<std::uint8_t>(
+    FeedbackFrame frame{};
+    frame.data[0] = static_cast<std::uint8_t>(
         (static_cast<std::uint32_t>(status) << 4U) | (config_.embedded_motor_id & 0x0fU));
-    feedback_frame_.data[1] = static_cast<std::uint8_t>((q_field >> 8U) & 0xffU);
-    feedback_frame_.data[2] = static_cast<std::uint8_t>(q_field & 0xffU);
-    feedback_frame_.data[3] = static_cast<std::uint8_t>((dq_field >> 4U) & 0xffU);
-    feedback_frame_.data[4] = static_cast<std::uint8_t>(((dq_field & 0x0fU) << 4U) |
-                                                        ((tau_field >> 8U) & 0x0fU));
-    feedback_frame_.data[5] = static_cast<std::uint8_t>(tau_field & 0xffU);
-    feedback_frame_.data[6] = 25U;
-    feedback_frame_.data[7] = 25U;
-    feedback_frame_.t_ns = feedback_ns;
+    frame.data[1] = static_cast<std::uint8_t>((q_field >> 8U) & 0xffU);
+    frame.data[2] = static_cast<std::uint8_t>(q_field & 0xffU);
+    frame.data[3] = static_cast<std::uint8_t>((dq_field >> 4U) & 0xffU);
+    frame.data[4] = static_cast<std::uint8_t>(((dq_field & 0x0fU) << 4U) |
+                                             ((tau_field >> 8U) & 0x0fU));
+    frame.data[5] = static_cast<std::uint8_t>(tau_field & 0xffU);
+    frame.data[6] = 25U;
+    frame.data[7] = 25U;
+    frame.t_ns = capture_ns;
+    return frame;
+}
 
-    measured_.status = static_cast<std::uint8_t>(feedback_frame_.data[0] >> 4U);
+void DamiaoMotorSimulator::publish(const FeedbackFrame &frame) noexcept {
+    measured_.status = static_cast<std::uint8_t>(frame.data[0] >> 4U);
     const std::uint32_t decoded_q =
-        (static_cast<std::uint32_t>(feedback_frame_.data[1]) << 8U) |
-        feedback_frame_.data[2];
+        (static_cast<std::uint32_t>(frame.data[1]) << 8U) | frame.data[2];
     const std::uint32_t decoded_dq =
-        (static_cast<std::uint32_t>(feedback_frame_.data[3]) << 4U) |
-        (static_cast<std::uint32_t>(feedback_frame_.data[4]) >> 4U);
+        (static_cast<std::uint32_t>(frame.data[3]) << 4U) |
+        (static_cast<std::uint32_t>(frame.data[4]) >> 4U);
     const std::uint32_t decoded_tau =
-        ((static_cast<std::uint32_t>(feedback_frame_.data[4]) & 0x0fU) << 8U) |
-        feedback_frame_.data[5];
+        ((static_cast<std::uint32_t>(frame.data[4]) & 0x0fU) << 8U) |
+        frame.data[5];
     measured_.raw_q = decode_field(decoded_q, config_.pmax_rad, 65535U);
     measured_.raw_dq = decode_field(decoded_dq, config_.vmax_rad_s, 4095U);
     measured_.raw_tau = decode_field(decoded_tau, config_.tmax_nm, 4095U);
-    measured_.mos_c = feedback_frame_.data[6];
-    measured_.coil_c = feedback_frame_.data[7];
-    measured_.t_ns = feedback_frame_.t_ns;
+    measured_.mos_c = frame.data[6];
+    measured_.coil_c = frame.data[7];
+    measured_.t_ns = frame.t_ns;
     measured_.valid = true;
-    return true;
 }
 
 void DamiaoMotorSimulator::force_state(const double q_model, const double dq_model,
@@ -236,7 +236,7 @@ void DamiaoMotorSimulator::force_state(const double q_model, const double dq_mod
     plant_raw_dq_ = dq_model / config_.q_scale;
     command_raw_q_ = plant_raw_q_;
     command_raw_dq_ = plant_raw_dq_;
-    (void)step(0.0, feedback_ns, true, false);
+    publish(capture(0.0, feedback_ns, true));
 }
 
 double DamiaoMotorSimulator::mapped_q() const noexcept {
@@ -292,27 +292,73 @@ bool ArmRuntime::command_and_step(const JointVector &q_reference,
         generation_mask_ = 0U;
         return false;
     }
-    generation_mask_ = 0U;
-    const std::uint64_t feedback_ns =
-        feedback_delay_ns_ > now_ns ? 0U : now_ns - feedback_delay_ns_;
+    if (feedback_delay_ns_ > std::numeric_limits<std::uint64_t>::max() - now_ns) {
+        return false;
+    }
+    FeedbackGeneration generation{};
+    generation.capture_ns = now_ns;
+    generation.ready_ns = now_ns + feedback_delay_ns_;
+    generation.member_mask = kAllJoints & ~drop_mask_;
     for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
         motor_[joint].command(q_reference[joint], dq_reference[joint]);
-        if (motor_[joint].step(dt_s, feedback_ns,
-                               (freeze_mask_ & (1U << joint)) != 0U,
-                               (drop_mask_ & (1U << joint)) != 0U)) {
-            generation_mask_ |= 1U << joint;
-        }
+        generation.frame[joint] = motor_[joint].capture(
+            dt_s, now_ns, (freeze_mask_ & (1U << joint)) != 0U);
     }
-    generation_timestamp_ = feedback_ns;
-    if (generation_mask_ == kAllJoints) {
-        ++feedback_seq_;
+    if (!enqueue(std::move(generation)) || !publish_due(now_ns)) {
+        return false;
     }
     transport_.record_complete_cycle();
     return true;
 }
 
+bool ArmRuntime::enqueue(FeedbackGeneration generation) noexcept {
+    if (feedback_queue_count_ == feedback_queue_.size()) {
+        return false;
+    }
+    const std::size_t tail =
+        (feedback_queue_head_ + feedback_queue_count_) % feedback_queue_.size();
+    feedback_queue_[tail] = std::move(generation);
+    ++feedback_queue_count_;
+    return true;
+}
+
+bool ArmRuntime::publish_due(const std::uint64_t now_ns) noexcept {
+    while (feedback_queue_count_ != 0U) {
+        const FeedbackGeneration &generation = feedback_queue_[feedback_queue_head_];
+        if (generation.ready_ns > now_ns) {
+            break;
+        }
+        const std::uint32_t member_mask = generation.member_mask;
+        if (member_mask == kAllJoints) {
+            if (feedback_seq_ == std::numeric_limits<std::uint64_t>::max()) {
+                return false;
+            }
+            for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
+                motor_[joint].publish(generation.frame[joint]);
+            }
+            generation_mask_ = kAllJoints;
+            generation_timestamp_ = generation.capture_ns;
+            ++feedback_seq_;
+        } else {
+            generation_mask_ = member_mask;
+        }
+        feedback_queue_head_ = (feedback_queue_head_ + 1U) % feedback_queue_.size();
+        --feedback_queue_count_;
+        if (member_mask != kAllJoints) {
+            break;
+        }
+    }
+    return true;
+}
+
+void ArmRuntime::clear_queue() noexcept {
+    feedback_queue_head_ = 0U;
+    feedback_queue_count_ = 0U;
+}
+
 void ArmRuntime::force_state(const JointVector &q, const JointVector &dq,
                              const std::uint64_t now_ns) noexcept {
+    clear_queue();
     generation_mask_ = kAllJoints;
     generation_timestamp_ = now_ns;
     for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
@@ -325,9 +371,7 @@ void ArmRuntime::materialize_stop(const bool enabled_hold,
                                   const std::uint64_t now_ns) noexcept {
     const JointVector held_q = measured_q();
     set_enabled(enabled_hold);
-    for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
-        motor_[joint].force_state(held_q[joint], 0.0, now_ns);
-    }
+    force_state(held_q, JointVector{}, now_ns);
 }
 
 oa_arm_snapshot ArmRuntime::snapshot(const std::uint64_t now_ns,
@@ -791,6 +835,8 @@ oa_control_status Controller::execute(const MotionPlan &plan, const oa_execute_r
     command_expiry_ns_ = request.expiry_ns;
     producer_deadline_ns_ = request.producer_deadline_ns;
     settle_start_ns_ = 0U;
+    settle_feedback_seq_ = {};
+    settle_feedback_intervals_ = 0U;
     active_stop_kind_ = request.stop_kind;
     command_started_ = start_ns == now_ns_;
     settling_published_ = false;
@@ -925,8 +971,20 @@ oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept
             }
             if (settle_start_ns_ == 0U) {
                 settle_start_ns_ = now_ns_;
+                settle_feedback_seq_ = {arm_[0].feedback_sequence(),
+                                        arm_[1].feedback_sequence()};
+                settle_feedback_intervals_ = 0U;
+            } else {
+                const std::array<std::uint64_t, 2> current_seq{
+                    arm_[0].feedback_sequence(), arm_[1].feedback_sequence()};
+                if (current_seq[0] != settle_feedback_seq_[0] &&
+                    current_seq[1] != settle_feedback_seq_[1]) {
+                    settle_feedback_seq_ = current_seq;
+                    ++settle_feedback_intervals_;
+                }
             }
-            if (now_ns_ - settle_start_ns_ >= options_.cycle_ns * 3U) {
+            if (settle_feedback_intervals_ >= 3U &&
+                now_ns_ - settle_start_ns_ >= options_.cycle_ns * 3U) {
                 const auto completed_id = command_id_;
                 executing_.reset();
                 command_id_ = 0U;
@@ -939,6 +997,8 @@ oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept
                 settling_published_ = true;
             }
             settle_start_ns_ = 0U;
+            settle_feedback_seq_ = {};
+            settle_feedback_intervals_ = 0U;
         }
     }
     return OA_CONTROL_OK;
