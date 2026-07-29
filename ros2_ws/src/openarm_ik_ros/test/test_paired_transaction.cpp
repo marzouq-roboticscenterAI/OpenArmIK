@@ -16,7 +16,7 @@ constexpr std::int64_t kExpiry = 1000000000LL;
 std::array<double, 3> fk_position(const oa_model * model, const std::array<double, OA_DOF> & q)
 {
   oa_fk_result fk{};
-  EXPECT_EQ(oa_fk(model, q.data(), &fk), OA_OK);
+  EXPECT_EQ(oa_fk(model, q.data(), &fk), OA_MODEL_OK);
   return {fk.hand_tcp.m[3], fk.hand_tcp.m[7], fk.hand_tcp.m[11]};
 }
 
@@ -53,7 +53,7 @@ TEST(PairedTransaction, InitialPoseIsLegalAndCoherent)
     for (std::size_t index = 0; index < OA_DOF; ++index) {
       double lower{};
       double upper{};
-      ASSERT_EQ(oa_model_limits(model, index, &lower, &upper), OA_OK);
+      ASSERT_EQ(oa_model_limits(model, index, &lower, &upper), OA_MODEL_OK);
       const auto & q = model == oa_model_left_v10_bimanual() ? processor.left_q() : processor.right_q();
       EXPECT_GE(q[index], lower);
       EXPECT_LE(q[index], upper);
@@ -67,8 +67,8 @@ TEST(PairedTransaction, CommitsBothArmsTogetherAndMeetsFkTolerance)
   const auto request = valid_request();
   const auto result = processor.process(request, kNow);
   ASSERT_TRUE(result.committed) << result.reason;
-  EXPECT_EQ(result.left.status, OA_OK);
-  EXPECT_EQ(result.right.status, OA_OK);
+  EXPECT_EQ(result.left.status, OA_MODEL_OK);
+  EXPECT_EQ(result.right.status, OA_MODEL_OK);
   EXPECT_EQ(result.left.collision_checked, 0U);
   EXPECT_EQ(result.right.collision_checked, 0U);
   EXPECT_TRUE(result.achieved_available);

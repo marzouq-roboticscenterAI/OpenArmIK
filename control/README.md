@@ -11,10 +11,17 @@ returns `OA_CONTROL_EUNSUPPORTED` before verification or motion.
 
 Public controller results use the ABI-neutral `oa_control_status` typedef and
 `OA_CONTROL_*` constants. The original V1 `oa_status` and `OA_*` source names
-remain available when this is the first model or control header included.
-Define `OPENARM_DISABLE_LEGACY_GENERIC_STATUS` before including OpenArm headers
-in new multi-module consumers. This changes no function symbol, calling
-convention, status representation, numeric value, or V1 record layout.
+remain available to control-only translation units. A translation unit
+combining model and control must define
+`OPENARM_DISABLE_LEGACY_GENERIC_STATUS` before either header and use the
+module-prefixed API; otherwise both include orders fail with a diagnostic
+instead of silently assigning generic names different meanings. This changes
+no function symbol, calling convention, status representation, numeric value,
+or V1 record layout.
+
+Installed CMake consumers use `find_package(openarm_control CONFIG REQUIRED)`
+and link `openarm_control::openarm_control`. The package discovers and links
+its installed `openarm_model::openarm_model` dependency.
 
 The manifest is built with `oa_manifest_create` from fixed-width C records and
 copied into immutable validated storage. Validation rejects duplicate buses,

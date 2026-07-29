@@ -151,22 +151,22 @@ struct Fixture {
     explicit Fixture(const std::uint32_t collision_policy = OA_COLLISION_VIRTUAL_UNCHECKED,
                      const bool arm_now = true) {
         auto config = valid_config();
-        CHECK(oa_manifest_create(&config, &manifest) == OA_OK);
+        CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_OK);
         auto options = virtual_options(collision_policy);
-        CHECK(oa_controller_create(manifest, &options, &controller) == OA_OK);
+        CHECK(oa_controller_create(manifest, &options, &controller) == OA_CONTROL_OK);
         oa_verify_report verify{};
         init(verify);
-        CHECK(oa_controller_open_and_verify(controller, &verify) == OA_OK);
+        CHECK(oa_controller_open_and_verify(controller, &verify) == OA_CONTROL_OK);
         CHECK(verify.verified_mask == 3U);
         init(state);
-        CHECK(oa_controller_snapshot(controller, &state) == OA_OK);
+        CHECK(oa_controller_snapshot(controller, &state) == OA_CONTROL_OK);
         if (arm_now) {
             oa_arm_challenge challenge{};
             init(challenge);
-            CHECK(oa_controller_get_arm_challenge(controller, &challenge) == OA_OK);
-            CHECK(oa_controller_arm(controller, &challenge) == OA_OK);
+            CHECK(oa_controller_get_arm_challenge(controller, &challenge) == OA_CONTROL_OK);
+            CHECK(oa_controller_arm(controller, &challenge) == OA_CONTROL_OK);
             init(state);
-            CHECK(oa_controller_snapshot(controller, &state) == OA_OK);
+            CHECK(oa_controller_snapshot(controller, &state) == OA_CONTROL_OK);
         }
     }
 
@@ -192,14 +192,14 @@ oa_motion_plan *joint_plan(Fixture &fixture, const std::uint32_t side,
     move.position_tol_rad = 5.0e-4;
     move.velocity_tol_rad_s = 2.0e-2;
     oa_motion_plan *plan = nullptr;
-    CHECK(oa_controller_plan_joint(fixture.controller, &move, &plan) == OA_OK);
+    CHECK(oa_controller_plan_joint(fixture.controller, &move, &plan) == OA_CONTROL_OK);
     return plan;
 }
 
 oa_motion_plan_report plan_report(oa_motion_plan *plan) {
     oa_motion_plan_report report{};
     init(report);
-    CHECK(oa_motion_plan_get_report(plan, &report) == OA_OK);
+    CHECK(oa_motion_plan_get_report(plan, &report) == OA_CONTROL_OK);
     return report;
 }
 
@@ -235,7 +235,7 @@ std::uint64_t execute(Fixture &fixture, oa_motion_plan *plan,
     request.producer_deadline_ns = request.expiry_ns + extra_ns;
     request.stop_kind = OA_STOP_DISABLE;
     std::uint64_t command = 0U;
-    CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+    CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
     CHECK(command != 0U);
     return command;
 }
@@ -245,11 +245,11 @@ bool has_event(oa_controller *controller, const std::uint32_t wanted,
     for (;;) {
         oa_event event{};
         init(event);
-        const oa_status status = oa_controller_poll_event(controller, 0U, &event);
-        if (status == OA_ETIMEOUT) {
+        const oa_control_status status = oa_controller_poll_event(controller, 0U, &event);
+        if (status == OA_CONTROL_ETIMEOUT) {
             return false;
         }
-        CHECK(status == OA_OK);
+        CHECK(status == OA_CONTROL_OK);
         if (event.kind == wanted && event.command_id == command_id) {
             return true;
         }
@@ -262,44 +262,44 @@ oa_execute_request request_for(const oa_motion_plan_report &report,
 void test_manifest_validation() {
     auto config = valid_config();
     oa_manifest *manifest = nullptr;
-    CHECK(oa_manifest_create(&config, &manifest) == OA_OK);
+    CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_OK);
     oa_manifest_destroy(manifest);
 
     config.arm[0].motor[0].gear_ratio = 10.0;
-    CHECK(oa_manifest_create(&config, &manifest) == OA_EINVAL);
+    CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_EINVAL);
     config = valid_config();
     std::strcpy(config.arm[1].bus_name, config.arm[0].bus_name);
-    CHECK(oa_manifest_create(&config, &manifest) == OA_EINVAL);
+    CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_EINVAL);
     config = valid_config();
     config.arm[0].motor[2].q_scale = 40.0;
-    CHECK(oa_manifest_create(&config, &manifest) == OA_EINVAL);
+    CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_EINVAL);
     config = valid_config();
     config.arm[1].motor[4].serial[0] = '\0';
-    CHECK(oa_manifest_create(&config, &manifest) == OA_EINVAL);
+    CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_EINVAL);
     config = valid_config();
     config.arm[0].motor[0].pmax_rad = 11.0;
-    CHECK(oa_manifest_create(&config, &manifest) == OA_EINVAL);
+    CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_EINVAL);
     config = valid_config();
     config.arm[0].motor[0].q_offset_rad = 12.5;
-    CHECK(oa_manifest_create(&config, &manifest) == OA_EINVAL);
+    CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_EINVAL);
 }
 
 void test_abi_and_physical_gate() {
     auto config = valid_config();
     config.abi_version = 99U;
     oa_manifest *manifest = nullptr;
-    CHECK(oa_manifest_create(&config, &manifest) == OA_EABI);
+    CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_EABI);
 
     config = valid_config();
-    CHECK(oa_manifest_create(&config, &manifest) == OA_OK);
+    CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_OK);
     auto options = virtual_options();
     options.backend = OA_BACKEND_PHYSICAL;
     options.collision_policy = OA_COLLISION_REJECT_ALL;
     oa_controller *controller = nullptr;
-    CHECK(oa_controller_create(manifest, &options, &controller) == OA_OK);
+    CHECK(oa_controller_create(manifest, &options, &controller) == OA_CONTROL_OK);
     oa_verify_report report{};
     init(report);
-    CHECK(oa_controller_open_and_verify(controller, &report) == OA_EUNSUPPORTED);
+    CHECK(oa_controller_open_and_verify(controller, &report) == OA_CONTROL_EUNSUPPORTED);
     CHECK(report.failure_mask == 3U);
     oa_controller_destroy(controller);
     oa_manifest_destroy(manifest);
@@ -310,7 +310,7 @@ void test_abi_and_physical_gate() {
     short_output->struct_size = 1U;
     short_output->abi_version = OA_CONTROL_ABI_V1;
     const auto before = canary;
-    CHECK(oa_controller_snapshot(nullptr, short_output) == OA_EINVAL);
+    CHECK(oa_controller_snapshot(nullptr, short_output) == OA_CONTROL_EINVAL);
     CHECK(canary == before);
 
     struct ExtendedSnapshot {
@@ -320,7 +320,7 @@ void test_abi_and_physical_gate() {
     Fixture fixture;
     init(extended.value);
     extended.trailing.fill(0x5aU);
-    CHECK(oa_controller_snapshot(fixture.controller, &extended.value) == OA_OK);
+    CHECK(oa_controller_snapshot(fixture.controller, &extended.value) == OA_CONTROL_OK);
     CHECK(std::all_of(extended.trailing.begin(), extended.trailing.end(),
                       [](const unsigned char value) { return value == 0x5aU; }));
 }
@@ -338,7 +338,7 @@ void test_mapping_kinematics_and_joint_convergence() {
         init(kinematics);
         CHECK(oa_controller_get_kinematics(
                   fixture.controller, static_cast<std::uint32_t>(side),
-                  fixture.state.arm[side].feedback_seq, &kinematics) == OA_OK);
+                  fixture.state.arm[side].feedback_seq, &kinematics) == OA_CONTROL_OK);
         CHECK(std::isfinite(kinematics.tcp_xyz_m[0]));
         CHECK(std::isfinite(kinematics.joint_xyz_m[6][2]));
     }
@@ -355,11 +355,11 @@ void test_mapping_kinematics_and_joint_convergence() {
     bool lag_observed = false;
     for (std::uint64_t now = 10000000U; now <= report.duration_ns + 900000000U;
         now += 10000000U) {
-        CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, now) == OA_CONTROL_OK);
         if (now < report.duration_ns) {
             oa_snapshot measured{};
             init(measured);
-            CHECK(oa_controller_snapshot(fixture.controller, &measured) == OA_OK);
+            CHECK(oa_controller_snapshot(fixture.controller, &measured) == OA_CONTROL_OK);
             for (std::size_t side = 0; side < 2U; ++side) {
                 for (std::size_t joint = 0; joint < 7U; ++joint) {
                     const double scale = ((side + joint) & 1U) == 0U ? 1.0 : -1.0;
@@ -375,7 +375,7 @@ void test_mapping_kinematics_and_joint_convergence() {
         } else if (!lag_observed) {
             oa_snapshot measured{};
             init(measured);
-            CHECK(oa_controller_snapshot(fixture.controller, &measured) == OA_OK);
+            CHECK(oa_controller_snapshot(fixture.controller, &measured) == OA_CONTROL_OK);
             lag_observed = std::abs(measured.arm[0].q[1] - report.target_q[0][1]) >
                            5.0e-4;
         }
@@ -383,7 +383,7 @@ void test_mapping_kinematics_and_joint_convergence() {
     CHECK(lag_observed);
     CHECK(has_event(fixture.controller, OA_EVENT_COMPLETED, command));
     init(fixture.state);
-    CHECK(oa_controller_snapshot(fixture.controller, &fixture.state) == OA_OK);
+    CHECK(oa_controller_snapshot(fixture.controller, &fixture.state) == OA_CONTROL_OK);
     CHECK(std::abs(fixture.state.arm[0].q[1] + 0.1) < 5.0e-4);
     CHECK(std::abs(fixture.state.arm[0].raw_q[1] - 0.225) < 5.0e-4);
     oa_motion_plan_destroy(plan);
@@ -397,18 +397,18 @@ void test_frozen_encoder_never_completes() {
     init(fault);
     fault.side = OA_LEFT;
     fault.freeze_mask = 1U;
-    CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
+    CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
     const auto command = execute(fixture, plan, report, 50000000U);
     for (std::uint64_t now = 10000000U; now <= report.duration_ns + 50000000U;
          now += 10000000U) {
-        CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, now) == OA_CONTROL_OK);
     }
     CHECK(!has_event(fixture.controller, OA_EVENT_COMPLETED, command));
     CHECK(oa_controller_advance(fixture.controller, report.duration_ns + 60000000U) ==
-          OA_ETIMEOUT);
+          OA_CONTROL_ETIMEOUT);
     oa_snapshot state{};
     init(state);
-    CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+    CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
     CHECK(state.lifecycle == OA_LIFECYCLE_FAULT);
     CHECK(std::abs(state.arm[0].q[0]) < 3.0e-4);
     oa_motion_plan_destroy(plan);
@@ -421,26 +421,26 @@ void test_stale_feedback_and_paired_fault_stop() {
         init(fault);
         fault.side = OA_RIGHT;
         fault.drop_mask = 1U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_ESTALE);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_ESTALE);
         oa_snapshot state{};
         init(state);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
         CHECK(state.lifecycle == OA_LIFECYCLE_FAULT);
         oa_arm_challenge challenge{};
         init(challenge);
-        CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_OK);
+        CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_CONTROL_OK);
         oa_reset_request reset{};
         init(reset);
         reset.verify_epoch = challenge.verify_epoch;
         reset.nonce = challenge.nonce;
-        CHECK(oa_controller_reset_fault(fixture.controller, &reset) == OA_OK);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_ESTATE);
+        CHECK(oa_controller_reset_fault(fixture.controller, &reset) == OA_CONTROL_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_ESTATE);
         oa_verify_report reverify{};
         init(reverify);
-        CHECK(oa_controller_open_and_verify(fixture.controller, &reverify) == OA_OK);
+        CHECK(oa_controller_open_and_verify(fixture.controller, &reverify) == OA_CONTROL_OK);
         init(state);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
         CHECK(state.lifecycle == OA_LIFECYCLE_DISARMED);
         CHECK(state.arm[1].fresh_mask == 0x7fU);
     }
@@ -448,18 +448,18 @@ void test_stale_feedback_and_paired_fault_stop() {
         Fixture fixture;
         auto move = paired_move(fixture);
         oa_motion_plan *plan = nullptr;
-        CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) == OA_OK);
+        CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) == OA_CONTROL_OK);
         const auto report = plan_report(plan);
         (void)execute(fixture, plan, report);
         oa_sim_fault fault{};
         init(fault);
         fault.side = OA_RIGHT;
         fault.fault_mask = 1U << 3U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_EFAULT);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_EFAULT);
         oa_snapshot state{};
         init(state);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
         CHECK(state.lifecycle == OA_LIFECYCLE_FAULT);
         CHECK(state.arm[1].status[3] == 8U);
         CHECK((state.arm[1].fault_mask & (1U << 3U)) != 0U);
@@ -470,19 +470,19 @@ void test_stale_feedback_and_paired_fault_stop() {
         Fixture fixture;
         auto move = paired_move(fixture);
         oa_motion_plan *plan = nullptr;
-        CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) == OA_OK);
+        CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) == OA_CONTROL_OK);
         const auto report = plan_report(plan);
         auto request = request_for(report);
         request.producer_deadline_ns = 50000000U;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
         for (std::uint64_t now = 10000000U; now <= 40000000U; now += 10000000U) {
-            CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+            CHECK(oa_controller_advance(fixture.controller, now) == OA_CONTROL_OK);
         }
-        CHECK(oa_controller_heartbeat(fixture.controller, command, 500000000U) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 50000000U) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_OK);
-        CHECK(oa_controller_stop(fixture.controller, OA_STOP_DISABLE) == OA_OK);
+        CHECK(oa_controller_heartbeat(fixture.controller, command, 500000000U) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 50000000U) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_CONTROL_OK);
+        CHECK(oa_controller_stop(fixture.controller, OA_STOP_DISABLE) == OA_CONTROL_OK);
         CHECK(has_event(fixture.controller, OA_EVENT_ABORTED, command));
         oa_motion_plan_destroy(plan);
     }
@@ -503,21 +503,21 @@ void test_collision_rejection_and_limits() {
     move.position_tol_rad = 1.0e-3;
     move.velocity_tol_rad_s = 1.0e-3;
     oa_motion_plan *plan = nullptr;
-    CHECK(oa_controller_plan_joint(fixture.controller, &move, &plan) == OA_ECOLLISION);
+    CHECK(oa_controller_plan_joint(fixture.controller, &move, &plan) == OA_CONTROL_ECOLLISION);
 
     Fixture allowed;
     move.required_feedback_seq = allowed.state.arm[0].feedback_seq;
     move.target_rad = 2.0;
-    CHECK(oa_controller_plan_joint(allowed.controller, &move, &plan) == OA_ELIMIT);
+    CHECK(oa_controller_plan_joint(allowed.controller, &move, &plan) == OA_CONTROL_ELIMIT);
     move.target_rad = std::numeric_limits<double>::quiet_NaN();
-    CHECK(oa_controller_plan_joint(allowed.controller, &move, &plan) == OA_EINVAL);
+    CHECK(oa_controller_plan_joint(allowed.controller, &move, &plan) == OA_CONTROL_EINVAL);
 }
 
 void test_paired_tcp_measured_convergence() {
     Fixture fixture;
     auto move = paired_move(fixture);
     oa_motion_plan *plan = nullptr;
-    CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) == OA_OK);
+    CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) == OA_CONTROL_OK);
     const auto report = plan_report(plan);
     CHECK(report.kind == OA_PLAN_PAIRED_TCP);
     CHECK(report.collision_checked == 0U);
@@ -526,17 +526,17 @@ void test_paired_tcp_measured_convergence() {
     const auto command = execute(fixture, plan, report, 5000000000ULL);
     for (std::uint64_t now = 10000000U; now <= report.duration_ns + 4500000000ULL;
          now += 10000000U) {
-        CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, now) == OA_CONTROL_OK);
     }
     CHECK(has_event(fixture.controller, OA_EVENT_COMPLETED, command));
     init(fixture.state);
-    CHECK(oa_controller_snapshot(fixture.controller, &fixture.state) == OA_OK);
+    CHECK(oa_controller_snapshot(fixture.controller, &fixture.state) == OA_CONTROL_OK);
     for (std::size_t side = 0; side < 2U; ++side) {
         oa_arm_kinematics kinematics{};
         init(kinematics);
         CHECK(oa_controller_get_kinematics(
                   fixture.controller, static_cast<std::uint32_t>(side),
-                  fixture.state.arm[side].feedback_seq, &kinematics) == OA_OK);
+                  fixture.state.arm[side].feedback_seq, &kinematics) == OA_CONTROL_OK);
         const double *target = side == 0U ? move.left_tcp_m : move.right_tcp_m;
         double squared = 0.0;
         for (std::size_t axis = 0; axis < 3U; ++axis) {
@@ -556,13 +556,13 @@ void test_faults_gate_arming_and_idle_motion() {
         fault.side = OA_LEFT;
         fault.fault_mask = 1U;
         fault.fault_status = status_code;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
         oa_arm_challenge challenge{};
         init(challenge);
-        CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_EFAULT);
+        CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_CONTROL_EFAULT);
         oa_snapshot state{};
         init(state);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
         CHECK(state.lifecycle == OA_LIFECYCLE_FAULT);
         CHECK(state.arm[0].status[0] == status_code);
     }
@@ -570,14 +570,14 @@ void test_faults_gate_arming_and_idle_motion() {
         Fixture fixture(OA_COLLISION_VIRTUAL_UNCHECKED, false);
         oa_arm_challenge challenge{};
         init(challenge);
-        CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_OK);
+        CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_CONTROL_OK);
         oa_sim_fault fault{};
         init(fault);
         fault.side = OA_RIGHT;
         fault.fault_mask = 2U;
         fault.fault_status = 10U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_arm(fixture.controller, &challenge) == OA_EFAULT);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_arm(fixture.controller, &challenge) == OA_CONTROL_EFAULT);
     }
     {
         Fixture fixture;
@@ -586,7 +586,7 @@ void test_faults_gate_arming_and_idle_motion() {
         fault.side = OA_LEFT;
         fault.fault_mask = 4U;
         fault.fault_status = 14U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
         oa_motion_plan *plan = nullptr;
         oa_joint_move move{};
         init(move);
@@ -600,7 +600,7 @@ void test_faults_gate_arming_and_idle_motion() {
         move.jerk_scale = 1.0;
         move.position_tol_rad = 5.0e-4;
         move.velocity_tol_rad_s = 2.0e-2;
-        CHECK(oa_controller_plan_joint(fixture.controller, &move, &plan) == OA_EFAULT);
+        CHECK(oa_controller_plan_joint(fixture.controller, &move, &plan) == OA_CONTROL_EFAULT);
     }
 }
 
@@ -622,31 +622,31 @@ void test_plan_ownership_and_start_drift() {
     const auto report = plan_report(plan);
     auto request = request_for(report);
     std::uint64_t command = 0U;
-    CHECK(oa_controller_execute(second.controller, plan, &request, &command) == OA_EIDENTITY);
+    CHECK(oa_controller_execute(second.controller, plan, &request, &command) == OA_CONTROL_EIDENTITY);
 
     oa_sim_state moved{};
     init(moved);
     moved.side = OA_LEFT;
     std::copy(std::begin(first.state.arm[0].q), std::end(first.state.arm[0].q), moved.q);
     moved.q[0] += 0.05;
-    CHECK(oa_controller_sim_set_state(first.controller, &moved) == OA_OK);
-    CHECK(oa_controller_execute(first.controller, plan, &request, &command) == OA_ESTALE);
+    CHECK(oa_controller_sim_set_state(first.controller, &moved) == OA_CONTROL_OK);
+    CHECK(oa_controller_execute(first.controller, plan, &request, &command) == OA_CONTROL_ESTALE);
     oa_motion_plan_destroy(plan);
 
     Fixture future;
     plan = joint_plan(future, OA_LEFT, 0U, 0.1);
     const auto future_report = plan_report(plan);
     request = request_for(future_report, 100000000U);
-    CHECK(oa_controller_execute(future.controller, plan, &request, &command) == OA_OK);
+    CHECK(oa_controller_execute(future.controller, plan, &request, &command) == OA_CONTROL_OK);
     for (std::uint64_t now = 10000000U; now <= 90000000U; now += 10000000U) {
-        CHECK(oa_controller_advance(future.controller, now) == OA_OK);
+        CHECK(oa_controller_advance(future.controller, now) == OA_CONTROL_OK);
     }
     init(moved);
     moved.side = OA_LEFT;
     std::copy(std::begin(future.state.arm[0].q), std::end(future.state.arm[0].q), moved.q);
     moved.q[0] += 0.05;
-    CHECK(oa_controller_sim_set_state(future.controller, &moved) == OA_OK);
-    CHECK(oa_controller_advance(future.controller, 100000000U) == OA_ESTALE);
+    CHECK(oa_controller_sim_set_state(future.controller, &moved) == OA_CONTROL_OK);
+    CHECK(oa_controller_advance(future.controller, 100000000U) == OA_CONTROL_ESTALE);
     oa_motion_plan_destroy(plan);
 }
 
@@ -657,11 +657,11 @@ void test_coherent_feedback_skew_and_partial_send() {
         init(fault);
         fault.side = OA_RIGHT;
         fault.drop_mask = 1U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_ESTALE);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_ESTALE);
         oa_snapshot state{};
         init(state);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
         CHECK(state.arm[1].fresh_mask == 0x7eU);
     }
     {
@@ -670,25 +670,25 @@ void test_coherent_feedback_skew_and_partial_send() {
         init(fault);
         fault.side = OA_RIGHT;
         fault.feedback_delay_ns = 2000000U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_ECAN);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_ECAN);
     }
     {
         Fixture fixture;
         auto move = paired_move(fixture);
         oa_motion_plan *plan = nullptr;
-        CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) == OA_OK);
+        CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) == OA_CONTROL_OK);
         const auto report = plan_report(plan);
         (void)execute(fixture, plan, report);
         oa_sim_fault fault{};
         init(fault);
         fault.side = OA_LEFT;
         fault.command_fail_mask = 1U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_ECAN);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_ECAN);
         oa_snapshot state{};
         init(state);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
         CHECK(state.lifecycle == OA_LIFECYCLE_FAULT);
         oa_motion_plan_destroy(plan);
     }
@@ -700,18 +700,18 @@ void test_cartesian_path_policies_and_scene_binding() {
     oa_motion_plan *plan = nullptr;
     move.max_branch_step_rad = 1.0e-9;
     CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) ==
-          OA_EUNREACHABLE);
+          OA_CONTROL_EUNREACHABLE);
     move = paired_move(fixture);
     move.min_singular_value = 100.0;
     CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) ==
-          OA_EUNREACHABLE);
+          OA_CONTROL_EUNREACHABLE);
     move = paired_move(fixture);
-    CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) == OA_OK);
+    CHECK(oa_controller_plan_paired_tcp(fixture.controller, &move, &plan) == OA_CONTROL_OK);
     const auto report = plan_report(plan);
-    CHECK(oa_controller_set_collision_scene_revision(fixture.controller, 2U) == OA_OK);
+    CHECK(oa_controller_set_collision_scene_revision(fixture.controller, 2U) == OA_CONTROL_OK);
     auto request = request_for(report);
     std::uint64_t command = 0U;
-    CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_ESTALE);
+    CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_ESTALE);
     oa_motion_plan_destroy(plan);
 }
 
@@ -723,43 +723,43 @@ void test_watchdog_estop_event_overflow_and_concurrency() {
         auto request = request_for(report);
         request.producer_deadline_ns = 50000000U;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
         for (std::uint64_t now = 10000000U; now <= 50000000U; now += 10000000U) {
-            CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+            CHECK(oa_controller_advance(fixture.controller, now) == OA_CONTROL_OK);
         }
-        CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_ESTALE);
+        CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_CONTROL_ESTALE);
         oa_motion_plan_destroy(plan);
     }
     {
         Fixture fixture;
-        CHECK(oa_controller_set_interlock(fixture.controller, 1U, 0U) == OA_EESTOP);
+        CHECK(oa_controller_set_interlock(fixture.controller, 1U, 0U) == OA_CONTROL_EESTOP);
         oa_snapshot state{};
         init(state);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
         CHECK(state.lifecycle == OA_LIFECYCLE_ESTOP);
         oa_arm_challenge challenge{};
         init(challenge);
-        CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_OK);
+        CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_CONTROL_OK);
         oa_reset_request reset{};
         init(reset);
         reset.verify_epoch = challenge.verify_epoch;
         reset.nonce = challenge.nonce;
-        CHECK(oa_controller_reset_fault(fixture.controller, &reset) == OA_OK);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_ESTATE);
+        CHECK(oa_controller_reset_fault(fixture.controller, &reset) == OA_CONTROL_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_ESTATE);
     }
     {
         Fixture fixture;
-        CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_OK);
+        CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_CONTROL_OK);
         for (std::size_t index = 0; index < 70U; ++index) {
-            const oa_status status = oa_controller_disarm(fixture.controller, UINT64_MAX);
-            if (status != OA_OK) {
-                CHECK(status == OA_ESTATE);
+            const oa_control_status status = oa_controller_disarm(fixture.controller, UINT64_MAX);
+            if (status != OA_CONTROL_OK) {
+                CHECK(status == OA_CONTROL_ESTATE);
                 break;
             }
         }
         oa_snapshot state{};
         init(state);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
         CHECK(state.lifecycle == OA_LIFECYCLE_FAULT);
     }
     {
@@ -767,11 +767,11 @@ void test_watchdog_estop_event_overflow_and_concurrency() {
         for (;;) {
             oa_event event{};
             init(event);
-            if (oa_controller_poll_event(fixture.controller, 0U, &event) == OA_ETIMEOUT) {
+            if (oa_controller_poll_event(fixture.controller, 0U, &event) == OA_CONTROL_ETIMEOUT) {
                 break;
             }
         }
-        std::atomic<oa_status> waited_status{OA_EFAULT};
+        std::atomic<oa_control_status> waited_status{OA_CONTROL_EFAULT};
         std::thread waiter([&]() {
             oa_event event{};
             init(event);
@@ -784,9 +784,9 @@ void test_watchdog_estop_event_overflow_and_concurrency() {
                 oa_controller_poll_event(fixture.controller, deadline_ns, &event));
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_OK);
+        CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_CONTROL_OK);
         waiter.join();
-        CHECK(waited_status.load() == OA_OK);
+        CHECK(waited_status.load() == OA_CONTROL_OK);
     }
     {
         Fixture fixture;
@@ -796,8 +796,8 @@ void test_watchdog_estop_event_overflow_and_concurrency() {
             while (run.load()) {
                 oa_snapshot state{};
                 init(state);
-                const oa_status status = oa_controller_snapshot(fixture.controller, &state);
-                if (status != OA_OK && status != OA_EINVAL && status != OA_ESTATE) {
+                const oa_control_status status = oa_controller_snapshot(fixture.controller, &state);
+                if (status != OA_CONTROL_OK && status != OA_CONTROL_EINVAL && status != OA_CONTROL_ESTATE) {
                     failed.store(true);
                 }
             }
@@ -806,15 +806,15 @@ void test_watchdog_estop_event_overflow_and_concurrency() {
             while (run.load()) {
                 oa_event event{};
                 init(event);
-                const oa_status status = oa_controller_poll_event(fixture.controller, 0U, &event);
-                if (status != OA_OK && status != OA_ETIMEOUT && status != OA_EINVAL &&
-                    status != OA_ESTATE) {
+                const oa_control_status status = oa_controller_poll_event(fixture.controller, 0U, &event);
+                if (status != OA_CONTROL_OK && status != OA_CONTROL_ETIMEOUT && status != OA_CONTROL_EINVAL &&
+                    status != OA_CONTROL_ESTATE) {
                     failed.store(true);
                 }
             }
         });
         for (std::uint64_t index = 1U; index <= 100U; ++index) {
-            CHECK(oa_controller_advance(fixture.controller, index * 10000000U) == OA_OK);
+            CHECK(oa_controller_advance(fixture.controller, index * 10000000U) == OA_CONTROL_OK);
         }
         oa_controller_destroy(fixture.controller);
         fixture.controller = nullptr;
@@ -828,12 +828,12 @@ void test_watchdog_estop_event_overflow_and_concurrency() {
 void test_invalid_handles_and_transactional_create() {
     auto config = valid_config();
     oa_manifest *manifest = nullptr;
-    CHECK(oa_manifest_create(&config, &manifest) == OA_OK);
+    CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_OK);
     auto options = virtual_options();
     std::array<unsigned char, 1> arbitrary{};
     auto *invalid_manifest = reinterpret_cast<oa_manifest *>(arbitrary.data());
     oa_controller *controller = reinterpret_cast<oa_controller *>(UINTPTR_MAX - 16U);
-    CHECK(oa_controller_create(invalid_manifest, &options, &controller) == OA_EINVAL);
+    CHECK(oa_controller_create(invalid_manifest, &options, &controller) == OA_CONTROL_EINVAL);
     CHECK(controller == reinterpret_cast<oa_controller *>(UINTPTR_MAX - 16U));
     oa_manifest_destroy(invalid_manifest);
 
@@ -841,15 +841,15 @@ void test_invalid_handles_and_transactional_create() {
     for (std::int32_t checkpoint = 0; checkpoint < 3; ++checkpoint) {
         controller = reinterpret_cast<oa_controller *>(UINTPTR_MAX - 32U);
         oa_control_test_fail_controller_create_after(checkpoint);
-        CHECK(oa_controller_create(manifest, &options, &controller) == OA_ENOMEM);
+        CHECK(oa_controller_create(manifest, &options, &controller) == OA_CONTROL_ENOMEM);
         CHECK(controller == reinterpret_cast<oa_controller *>(UINTPTR_MAX - 32U));
         CHECK(oa_control_test_active_controller_count() == 0U);
     }
     oa_control_test_fail_controller_create_after(-1);
     controller = nullptr;
-    CHECK(oa_controller_create(manifest, &options, &controller) == OA_OK);
+    CHECK(oa_controller_create(manifest, &options, &controller) == OA_CONTROL_OK);
     CHECK(oa_controller_create(reinterpret_cast<oa_manifest *>(controller),
-                               &options, &controller) == OA_EINVAL);
+                               &options, &controller) == OA_CONTROL_EINVAL);
     oa_controller_destroy(controller);
 
     oa_manifest *stale_manifest = manifest;
@@ -858,11 +858,11 @@ void test_invalid_handles_and_transactional_create() {
     std::thread manifest_user([&]() {
         while (manifest_run.load()) {
             oa_controller *temporary = nullptr;
-            const oa_status status =
+            const oa_control_status status =
                 oa_controller_create(stale_manifest, &options, &temporary);
-            if (status == OA_OK) {
+            if (status == OA_CONTROL_OK) {
                 oa_controller_destroy(temporary);
-            } else if (status != OA_EINVAL) {
+            } else if (status != OA_CONTROL_EINVAL) {
                 manifest_failed.store(true);
             }
         }
@@ -873,18 +873,18 @@ void test_invalid_handles_and_transactional_create() {
     manifest_user.join();
     CHECK(!manifest_failed.load());
     controller = nullptr;
-    CHECK(oa_controller_create(stale_manifest, &options, &controller) == OA_EINVAL);
+    CHECK(oa_controller_create(stale_manifest, &options, &controller) == OA_CONTROL_EINVAL);
 
     Fixture fixture;
     oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
     oa_motion_plan_report report{};
     init(report);
     auto *invalid_plan = reinterpret_cast<oa_motion_plan *>(arbitrary.data());
-    CHECK(oa_motion_plan_get_report(invalid_plan, &report) == OA_EINVAL);
+    CHECK(oa_motion_plan_get_report(invalid_plan, &report) == OA_CONTROL_EINVAL);
     CHECK(oa_motion_plan_get_report(reinterpret_cast<oa_motion_plan *>(fixture.controller),
-                                    &report) == OA_EINVAL);
+                                    &report) == OA_CONTROL_EINVAL);
     CHECK(oa_motion_plan_get_report(reinterpret_cast<oa_motion_plan *>(stale_manifest),
-                                    &report) == OA_EINVAL);
+                                    &report) == OA_CONTROL_EINVAL);
     oa_motion_plan_destroy(invalid_plan);
     oa_motion_plan *stale_plan = plan;
     std::atomic<bool> plan_run{true};
@@ -893,9 +893,9 @@ void test_invalid_handles_and_transactional_create() {
         while (plan_run.load()) {
             oa_motion_plan_report concurrent_report{};
             init(concurrent_report);
-            const oa_status status =
+            const oa_control_status status =
                 oa_motion_plan_get_report(stale_plan, &concurrent_report);
-            if (status != OA_OK && status != OA_EINVAL) {
+            if (status != OA_CONTROL_OK && status != OA_CONTROL_EINVAL) {
                 plan_failed.store(true);
             }
         }
@@ -905,7 +905,7 @@ void test_invalid_handles_and_transactional_create() {
     plan_run.store(false);
     plan_user.join();
     CHECK(!plan_failed.load());
-    CHECK(oa_motion_plan_get_report(stale_plan, &report) == OA_EINVAL);
+    CHECK(oa_motion_plan_get_report(stale_plan, &report) == OA_CONTROL_EINVAL);
     oa_execute_request request{};
     init(request);
     request.start_ns = 0U;
@@ -914,7 +914,7 @@ void test_invalid_handles_and_transactional_create() {
     request.stop_kind = OA_STOP_DISABLE;
     std::uint64_t command = 0U;
     CHECK(oa_controller_execute(fixture.controller, stale_plan, &request, &command) ==
-          OA_EINVAL);
+          OA_CONTROL_EINVAL);
 }
 
 void test_registry_storage_is_bounded() {
@@ -922,9 +922,9 @@ void test_registry_storage_is_bounded() {
     auto options = virtual_options();
     const auto cycle_handles = [&]() {
         oa_manifest *manifest = nullptr;
-        CHECK(oa_manifest_create(&config, &manifest) == OA_OK);
+        CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_OK);
         oa_controller *controller = nullptr;
-        CHECK(oa_controller_create(manifest, &options, &controller) == OA_OK);
+        CHECK(oa_controller_create(manifest, &options, &controller) == OA_CONTROL_OK);
         oa_controller_destroy(controller);
         oa_manifest_destroy(manifest);
     };
@@ -971,7 +971,7 @@ void check_materialized_fault_stop(Fixture &fixture, const bool enabled_hold,
                                    const std::int32_t fault_joint = -1) {
     oa_snapshot state{};
     init(state);
-    CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+    CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
     CHECK(state.lifecycle == OA_LIFECYCLE_FAULT);
     for (std::size_t side = 0U; side < 2U; ++side) {
         for (std::size_t joint = 0U; joint < 7U; ++joint) {
@@ -993,9 +993,9 @@ void test_fault_stop_policy_by_cause() {
         request.stop_kind = stop_kind;
         request.producer_deadline_ns = 10000000U;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ESTALE);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_CONTROL_ESTALE);
         check_materialized_fault_stop(fixture, stop_kind == OA_STOP_CONTROLLED);
         oa_motion_plan_destroy(plan);
     }
@@ -1007,13 +1007,13 @@ void test_fault_stop_policy_by_cause() {
         request.stop_kind = OA_STOP_CONTROLLED;
         request.expiry_ns = report.duration_ns;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
         std::uint64_t now = 0U;
         while (now + 10000000U <= request.expiry_ns) {
             now += 10000000U;
-            CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+            CHECK(oa_controller_advance(fixture.controller, now) == OA_CONTROL_OK);
         }
-        CHECK(oa_controller_advance(fixture.controller, now + 10000000U) == OA_ETIMEOUT);
+        CHECK(oa_controller_advance(fixture.controller, now + 10000000U) == OA_CONTROL_ETIMEOUT);
         check_materialized_fault_stop(fixture, true);
         oa_motion_plan_destroy(plan);
     }
@@ -1024,14 +1024,14 @@ void test_fault_stop_policy_by_cause() {
         auto request = request_for(report);
         request.stop_kind = OA_STOP_CONTROLLED;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_OK);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_OK);
         oa_sim_fault fault{};
         init(fault);
         fault.side = OA_RIGHT;
         fault.drop_mask = 1U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ESTALE);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_CONTROL_ESTALE);
         check_materialized_fault_stop(fixture, false);
         oa_motion_plan_destroy(plan);
     }
@@ -1042,14 +1042,14 @@ void test_fault_stop_policy_by_cause() {
         auto request = request_for(report);
         request.stop_kind = OA_STOP_CONTROLLED;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_OK);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_OK);
         oa_sim_fault fault{};
         init(fault);
         fault.side = OA_LEFT;
         fault.command_fail_mask = 1U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ECAN);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_CONTROL_ECAN);
         check_materialized_fault_stop(fixture, false);
         oa_motion_plan_destroy(plan);
     }
@@ -1060,14 +1060,14 @@ void test_fault_stop_policy_by_cause() {
         auto request = request_for(report);
         request.stop_kind = OA_STOP_CONTROLLED;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_OK);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_OK);
         oa_sim_fault fault{};
         init(fault);
         fault.side = OA_RIGHT;
         fault.feedback_delay_ns = 2000000U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ECAN);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_CONTROL_ECAN);
         check_materialized_fault_stop(fixture, false);
         oa_motion_plan_destroy(plan);
     }
@@ -1078,14 +1078,14 @@ void test_fault_stop_policy_by_cause() {
         auto request = request_for(report);
         request.stop_kind = OA_STOP_CONTROLLED;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_OK);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_OK);
         oa_sim_fault fault{};
         init(fault);
         fault.side = OA_RIGHT;
         fault.fault_mask = 1U << 3U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_EFAULT);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_CONTROL_EFAULT);
         check_materialized_fault_stop(fixture, false, 1, 3);
         oa_motion_plan_destroy(plan);
     }
@@ -1099,11 +1099,11 @@ void test_cycle_deadline_dwell_and_stop_policy() {
         auto request = request_for(report);
         request.stop_kind = OA_STOP_DISABLE;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ETIMEOUT);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_CONTROL_ETIMEOUT);
         oa_snapshot state{};
         init(state);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
         CHECK(state.arm[0].status[0] == 0U);
         oa_motion_plan_destroy(plan);
     }
@@ -1114,11 +1114,11 @@ void test_cycle_deadline_dwell_and_stop_policy() {
         auto request = request_for(report);
         request.stop_kind = OA_STOP_CONTROLLED;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ETIMEOUT);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_CONTROL_ETIMEOUT);
         oa_snapshot state{};
         init(state);
-        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
         CHECK(state.arm[0].status[0] == 1U);
         oa_motion_plan_destroy(plan);
     }
@@ -1129,8 +1129,8 @@ void test_cycle_deadline_dwell_and_stop_policy() {
         auto request = request_for(report);
         request.stop_kind = OA_STOP_CONTROLLED;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_ESTALE);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_CONTROL_ESTALE);
         check_materialized_fault_stop(fixture, false);
         oa_motion_plan_destroy(plan);
     }
@@ -1141,13 +1141,13 @@ void test_cycle_deadline_dwell_and_stop_policy() {
         auto request = request_for(report);
         request.stop_kind = OA_STOP_CONTROLLED;
         std::uint64_t command = 0U;
-        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
         oa_sim_fault fault{};
         init(fault);
         fault.side = OA_RIGHT;
         fault.fault_mask = 1U << 3U;
-        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_EFAULT);
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_CONTROL_EFAULT);
         check_materialized_fault_stop(fixture, false, 1, 3);
         oa_motion_plan_destroy(plan);
     }
@@ -1160,31 +1160,31 @@ void test_cycle_deadline_dwell_and_stop_policy() {
         bool measured_goal = false;
         while (!measured_goal && now < report.duration_ns + 1500000000ULL) {
             now += 10000000U;
-            CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+            CHECK(oa_controller_advance(fixture.controller, now) == OA_CONTROL_OK);
             oa_snapshot state{};
             init(state);
-            CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+            CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
             measured_goal = now >= report.duration_ns &&
                             std::abs(state.arm[0].q[0] - report.target_q[0][0]) <= 5.0e-4 &&
                             std::abs(state.arm[0].dq[0]) <= 2.0e-2;
             for (;;) {
                 oa_event event{};
                 init(event);
-                const oa_status status =
+                const oa_control_status status =
                     oa_controller_poll_event(fixture.controller, 0U, &event);
-                if (status == OA_ETIMEOUT) break;
-                CHECK(status == OA_OK);
+                if (status == OA_CONTROL_ETIMEOUT) break;
+                CHECK(status == OA_CONTROL_OK);
                 CHECK(event.kind != OA_EVENT_COMPLETED);
             }
         }
         CHECK(measured_goal);
         for (std::size_t repeat = 0; repeat < 10U; ++repeat) {
-            CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+            CHECK(oa_controller_advance(fixture.controller, now) == OA_CONTROL_OK);
         }
         CHECK(!has_event(fixture.controller, OA_EVENT_COMPLETED, command));
-        CHECK(oa_controller_advance(fixture.controller, now + 10000000U) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, now + 20000000U) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, now + 30000000U) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, now + 10000000U) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, now + 20000000U) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, now + 30000000U) == OA_CONTROL_OK);
         CHECK(has_event(fixture.controller, OA_EVENT_COMPLETED, command));
         oa_motion_plan_destroy(plan);
     }

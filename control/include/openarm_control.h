@@ -17,6 +17,7 @@ typedef struct oa_manifest oa_manifest;
 typedef struct oa_controller oa_controller;
 typedef struct oa_motion_plan oa_motion_plan;
 typedef uint32_t oa_control_status;
+#define OPENARM_CONTROL_STATUS_NAMESPACE_PRESENT 1
 typedef uint32_t oa_side;
 
 /* Opaque handles are validated without dereferencing caller memory. Calls on one
@@ -49,9 +50,14 @@ typedef uint32_t oa_side;
 #define OA_CONTROL_ENOMEM UINT32_C(15)
 #define OA_CONTROL_EUNSUPPORTED UINT32_C(16)
 
-#if !defined(OPENARM_DISABLE_LEGACY_GENERIC_STATUS) && \
-    !defined(OPENARM_LEGACY_GENERIC_STATUS_DEFINED)
-#define OPENARM_LEGACY_GENERIC_STATUS_DEFINED 1
+#if defined(OPENARM_MODEL_LEGACY_GENERIC_STATUS_ACTIVE)
+#error "model and control legacy status names cannot coexist; define OPENARM_DISABLE_LEGACY_GENERIC_STATUS before both headers"
+#endif
+#if !defined(OPENARM_DISABLE_LEGACY_GENERIC_STATUS)
+#if defined(OPENARM_MODEL_STATUS_NAMESPACE_PRESENT)
+#error "define OPENARM_DISABLE_LEGACY_GENERIC_STATUS before combining model and control headers"
+#endif
+#define OPENARM_CONTROL_LEGACY_GENERIC_STATUS_ACTIVE 1
 typedef oa_control_status oa_status;
 #define OA_OK           OA_CONTROL_OK
 #define OA_EINVAL       OA_CONTROL_EINVAL

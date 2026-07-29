@@ -13,10 +13,11 @@ python3 tools/generate_model.py /path/to/openarm_description src/generated/oa_mo
 `oa_fk` returns body-relative base, pre-joint, post-link, world/body-frame axes, and the selected tip. `oa_geometric_jacobian` is `[linear; angular]`, 6x7, body-frame, row-major. `oa_ik_position_v2` requires a seed, posture reference/weights, explicit numerical controls, and caller-provided output version/capacity. It validates output metadata before the first write. The legacy ABI-v1 `oa_ik_position` symbol fails closed with `OA_MODEL_EINVAL` and performs no output write. The solver uses adaptive damped least squares, an active feasible set, strict primary-position-error line search, and a secondary posture projection. Every accepted iterate is projected into the effective URDF box including `limit_margin_rad`; `OA_MODEL_OK` revalidates both tolerance and feasibility.
 
 Public model results use `oa_model_status` and `OA_MODEL_*` constants. The old
-generic `oa_status` and `OA_*` status names remain available when this is the
-first model or control header included. Define
-`OPENARM_DISABLE_LEGACY_GENERIC_STATUS` before including OpenArm headers in new
-multi-module consumers to expose only the unambiguous module-prefixed API.
+generic `oa_status` and `OA_*` status names remain available to model-only
+translation units. A translation unit combining model and control must define
+`OPENARM_DISABLE_LEGACY_GENERIC_STATUS` before either header and use the
+module-prefixed API; otherwise both include orders fail with a diagnostic
+instead of silently assigning generic names different meanings.
 
 Every valid ABI-v2 output buffer receives a finite result carrying `abi_version`, `struct_size`, status, and `collision_checked=0`. Statuses distinguish invalid/non-finite input, invalid bound margins, line-search non-convergence, bound stagnation, undamped rank loss, and iteration-budget exhaustion. `min_singular_value` is the weighted translational active-set Jacobian metric in body coordinates. Public status and flag fields are fixed-width; ABI version 2 requires `OA_IK_OPTIONS_REQUIRED_SIZE`, output version `OA_IK_DIAGNOSTICS_VERSION`, and capacity of at least `OA_IK_DIAGNOSTICS_SIZE`.
 

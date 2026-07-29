@@ -13,10 +13,10 @@ int main(void) {
     oa_controller *controller = NULL;
     short_record.struct_size = 1U;
     short_record.abi_version = OA_CONTROL_ABI_V1;
-    if (oa_controller_create(NULL, &short_record, &controller) != OA_EINVAL) {
+    if (oa_controller_create(NULL, &short_record, &controller) != OA_CONTROL_EINVAL) {
         return 1;
     }
-    if (oa_controller_get_arm_challenge(NULL, NULL) != OA_EINVAL) {
+    if (oa_controller_get_arm_challenge(NULL, NULL) != OA_CONTROL_EINVAL) {
         return 2;
     }
     return 0;

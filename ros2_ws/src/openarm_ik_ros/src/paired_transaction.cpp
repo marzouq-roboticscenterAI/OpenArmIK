@@ -65,13 +65,13 @@ TransactionResult PairedTransactionProcessor::process(
 
   const auto left_options = options_for(left_q_);
   const auto right_options = options_for(right_q_);
-  const oa_status left_status = oa_ik_position_v2(
+  const oa_model_status left_status = oa_ik_position_v2(
     oa_model_left_v10_bimanual(), request.left.data(), &left_options,
     OA_IK_DIAGNOSTICS_VERSION, OA_IK_DIAGNOSTICS_SIZE, &result.left);
-  const oa_status right_status = oa_ik_position_v2(
+  const oa_model_status right_status = oa_ik_position_v2(
     oa_model_right_v10_bimanual(), request.right.data(), &right_options,
     OA_IK_DIAGNOSTICS_VERSION, OA_IK_DIAGNOSTICS_SIZE, &result.right);
-  if (left_status != OA_OK || right_status != OA_OK) {
+  if (left_status != OA_MODEL_OK || right_status != OA_MODEL_OK) {
     result.reason = "position_ik_failed";
     return result;
   }
@@ -149,7 +149,7 @@ void PairedTransactionProcessor::initialize_diagnostics(oa_ik_diagnostics * diag
   std::memset(diagnostics, 0, sizeof(*diagnostics));
   diagnostics->abi_version = OA_MODEL_ABI_VERSION;
   diagnostics->struct_size = OA_IK_DIAGNOSTICS_SIZE;
-  diagnostics->status = OA_EINVAL;
+  diagnostics->status = OA_MODEL_EINVAL;
 }
 
 }  // namespace openarm_ik_ros

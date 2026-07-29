@@ -426,9 +426,9 @@ Controller::Controller(std::shared_ptr<const Manifest> manifest,
     }
 }
 
-oa_status Controller::open_and_verify(oa_verify_report &out) noexcept {
+oa_control_status Controller::open_and_verify(oa_verify_report &out) noexcept {
     if (lifecycle_ != OA_LIFECYCLE_CLOSED) {
-        return OA_ESTATE;
+        return OA_CONTROL_ESTATE;
     }
     lifecycle_ = OA_LIFECYCLE_VERIFYING;
     if (options_.backend == OA_BACKEND_PHYSICAL) {
@@ -436,7 +436,7 @@ oa_status Controller::open_and_verify(oa_verify_report &out) noexcept {
         out.verify_epoch = 0U;
         out.verified_mask = 0U;
         out.failure_mask = 0x3U;
-        return OA_EUNSUPPORTED;
+        return OA_CONTROL_EUNSUPPORTED;
     }
     const JointVector zero{};
     for (auto &runtime : arm_) {
@@ -449,13 +449,13 @@ oa_status Controller::open_and_verify(oa_verify_report &out) noexcept {
     out.verify_epoch = verify_epoch_;
     out.verified_mask = 0x3U;
     out.failure_mask = 0U;
-    publish(OA_EVENT_VERIFIED, OA_OK, 0U);
-    return OA_OK;
+    publish(OA_EVENT_VERIFIED, OA_CONTROL_OK, 0U);
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::snapshot(oa_snapshot &out) noexcept {
+oa_control_status Controller::snapshot(oa_snapshot &out) noexcept {
     if (lifecycle_ == OA_LIFECYCLE_CLOSED || lifecycle_ == OA_LIFECYCLE_VERIFYING) {
-        return OA_ESTATE;
+        return OA_CONTROL_ESTATE;
     }
     out.arm[0] = arm_[0].snapshot(now_ns_, options_.feedback_timeout_ns);
     out.arm[1] = arm_[1].snapshot(now_ns_, options_.feedback_timeout_ns);
@@ -465,23 +465,23 @@ oa_status Controller::snapshot(oa_snapshot &out) noexcept {
                                     ? out.arm[0].t_ns - out.arm[1].t_ns
                                     : out.arm[1].t_ns - out.arm[0].t_ns;
     out.lifecycle = lifecycle_;
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::kinematics(const std::uint32_t side,
+oa_control_status Controller::kinematics(const std::uint32_t side,
                                  const std::uint64_t required_seq,
                                  oa_arm_kinematics &out) noexcept {
     if (side > OA_RIGHT || !fresh()) {
-        return side > OA_RIGHT ? OA_EINVAL : OA_ESTALE;
+        return side > OA_RIGHT ? OA_CONTROL_EINVAL : OA_CONTROL_ESTALE;
     }
     const auto &runtime = arm_[side];
     if (runtime.feedback_sequence() != required_seq) {
-        return OA_ESTALE;
+        return OA_CONTROL_ESTALE;
     }
     KinematicResult result{};
     const auto q = runtime.measured_q();
     if (!forward(side, q, result)) {
-        return OA_EFAULT;
+        return OA_CONTROL_EFAULT;
     }
     out.feedback_seq = required_seq;
     std::copy(q.begin(), q.end(), out.q);
@@ -493,46 +493,46 @@ oa_status Controller::kinematics(const std::uint32_t side,
     }
     std::copy(result.tcp_transform.begin(), result.tcp_transform.end(), out.tcp_transform);
     std::copy(result.tcp_xyz.begin(), result.tcp_xyz.end(), out.tcp_xyz_m);
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::challenge(oa_arm_challenge &out) noexcept {
+oa_control_status Controller::challenge(oa_arm_challenge &out) noexcept {
     const bool reset_challenge = lifecycle_ == OA_LIFECYCLE_FAULT ||
                                  lifecycle_ == OA_LIFECYCLE_ESTOP;
     if (lifecycle_ != OA_LIFECYCLE_DISARMED && !reset_challenge) {
-        return OA_ESTATE;
+        return OA_CONTROL_ESTATE;
     }
     if (!reset_challenge && (!fresh() || !healthy() || !disabled())) {
         if (!healthy()) {
-            latch_fault(OA_EFAULT);
-            return OA_EFAULT;
+            latch_fault(OA_CONTROL_EFAULT);
+            return OA_CONTROL_EFAULT;
         }
-        return OA_ESTALE;
+        return OA_CONTROL_ESTALE;
     }
     outstanding_nonce_ = ++nonce_counter_;
     outstanding_challenge_expiry_ = now_ns_ + UINT64_C(1000000000);
     out.verify_epoch = verify_epoch_;
     out.nonce = outstanding_nonce_;
     out.expiry_ns = outstanding_challenge_expiry_;
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::arm(const oa_arm_challenge &challenge_record) noexcept {
+oa_control_status Controller::arm(const oa_arm_challenge &challenge_record) noexcept {
     if (lifecycle_ != OA_LIFECYCLE_DISARMED) {
-        return OA_ESTATE;
+        return OA_CONTROL_ESTATE;
     }
     if (challenge_record.verify_epoch != verify_epoch_ ||
         challenge_record.nonce != outstanding_nonce_ || outstanding_nonce_ == 0U ||
         challenge_record.expiry_ns != outstanding_challenge_expiry_ ||
         now_ns_ > outstanding_challenge_expiry_) {
-        return OA_EIDENTITY;
+        return OA_CONTROL_EIDENTITY;
     }
     if (!fresh()) {
-        return OA_ESTALE;
+        return OA_CONTROL_ESTALE;
     }
     if (!healthy() || !disabled() || !deadman_active_) {
-        latch_fault(!deadman_active_ ? OA_EESTOP : OA_EFAULT);
-        return !deadman_active_ ? OA_EESTOP : OA_EFAULT;
+        latch_fault(!deadman_active_ ? OA_CONTROL_EESTOP : OA_CONTROL_EFAULT);
+        return !deadman_active_ ? OA_CONTROL_EESTOP : OA_CONTROL_EFAULT;
     }
     lifecycle_ = OA_LIFECYCLE_ARMING;
     for (auto &runtime : arm_) {
@@ -541,8 +541,8 @@ oa_status Controller::arm(const oa_arm_challenge &challenge_record) noexcept {
     }
     outstanding_nonce_ = 0U;
     lifecycle_ = OA_LIFECYCLE_ARMED_IDLE;
-    publish(OA_EVENT_ARMED, OA_OK, 0U);
-    return OA_OK;
+    publish(OA_EVENT_ARMED, OA_CONTROL_OK, 0U);
+    return OA_CONTROL_OK;
 }
 
 bool Controller::collision_allowed() const noexcept {
@@ -550,20 +550,20 @@ bool Controller::collision_allowed() const noexcept {
            options_.collision_policy == OA_COLLISION_VIRTUAL_UNCHECKED;
 }
 
-oa_status Controller::plan_joint(const oa_joint_move &request,
+oa_control_status Controller::plan_joint(const oa_joint_move &request,
                                  std::unique_ptr<MotionPlan> &out) noexcept {
     if (lifecycle_ != OA_LIFECYCLE_ARMED_IDLE) {
-        return OA_ESTATE;
+        return OA_CONTROL_ESTATE;
     }
     if (!fresh()) {
-        return OA_ESTALE;
+        return OA_CONTROL_ESTALE;
     }
     if (!healthy()) {
-        latch_fault(OA_EFAULT);
-        return OA_EFAULT;
+        latch_fault(OA_CONTROL_EFAULT);
+        return OA_CONTROL_EFAULT;
     }
     if (!collision_allowed()) {
-        return OA_ECOLLISION;
+        return OA_CONTROL_ECOLLISION;
     }
     if (request.side > OA_RIGHT || request.joint >= 7U ||
         request.required_feedback_seq != arm_[request.side].feedback_sequence() ||
@@ -572,13 +572,13 @@ oa_status Controller::plan_joint(const oa_joint_move &request,
         !valid_scale(request.jerk_scale) || !finite(request.position_tol_rad) ||
         request.position_tol_rad <= 0.0 || !finite(request.velocity_tol_rad_s) ||
         request.velocity_tol_rad_s <= 0.0) {
-        return OA_EINVAL;
+        return OA_CONTROL_EINVAL;
     }
     const auto &motor = manifest_->config().arm[request.side].motor[request.joint];
     const double raw_target = (request.target_rad - motor.q_offset_rad) / motor.q_scale;
     if (request.target_rad < motor.lower_rad || request.target_rad > motor.upper_rad ||
         std::abs(raw_target) > motor.pmax_rad) {
-        return OA_ELIMIT;
+        return OA_CONTROL_ELIMIT;
     }
     auto plan = std::make_unique<MotionPlan>();
     plan->kind = OA_PLAN_JOINT;
@@ -610,23 +610,23 @@ oa_status Controller::plan_joint(const oa_joint_move &request,
         plan->waypoint_q[side][1] = plan->target_q[side];
     }
     out = std::move(plan);
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::plan_paired(const oa_paired_tcp_move &request,
+oa_control_status Controller::plan_paired(const oa_paired_tcp_move &request,
                                   std::unique_ptr<MotionPlan> &out) noexcept {
     if (lifecycle_ != OA_LIFECYCLE_ARMED_IDLE) {
-        return OA_ESTATE;
+        return OA_CONTROL_ESTATE;
     }
     if (!fresh()) {
-        return OA_ESTALE;
+        return OA_CONTROL_ESTALE;
     }
     if (!healthy()) {
-        latch_fault(OA_EFAULT);
-        return OA_EFAULT;
+        latch_fault(OA_CONTROL_EFAULT);
+        return OA_CONTROL_EFAULT;
     }
     if (!collision_allowed()) {
-        return OA_ECOLLISION;
+        return OA_CONTROL_ECOLLISION;
     }
     if (request.expiry_ns <= now_ns_ ||
         request.required_feedback_seq[0] != arm_[0].feedback_sequence() ||
@@ -637,7 +637,7 @@ oa_status Controller::plan_paired(const oa_paired_tcp_move &request,
         request.max_branch_step_rad <= 0.0 || !finite(request.min_singular_value) ||
         request.min_singular_value < 0.0 ||
         request.collision_scene_revision != options_.collision_scene_revision) {
-        return OA_EINVAL;
+        return OA_CONTROL_EINVAL;
     }
     auto plan = std::make_unique<MotionPlan>();
     plan->kind = OA_PLAN_PAIRED_TCP;
@@ -656,7 +656,7 @@ oa_status Controller::plan_paired(const oa_paired_tcp_move &request,
         std::copy(target_data, target_data + 3, plan->target_tcp[side].begin());
         for (const double value : plan->target_tcp[side]) {
             if (!finite(value)) {
-                return OA_EINVAL;
+                return OA_CONTROL_EINVAL;
             }
         }
         plan->tcp_tolerance[side] = request.tcp_tol_m;
@@ -664,7 +664,7 @@ oa_status Controller::plan_paired(const oa_paired_tcp_move &request,
         plan->joint_velocity_tolerance[side] = 2.0e-2;
         KinematicResult start_fk{};
         if (!forward(static_cast<std::uint32_t>(side), plan->start_q[side], start_fk)) {
-            return OA_EFAULT;
+            return OA_CONTROL_EFAULT;
         }
         plan->waypoint_q[side][0] = plan->start_q[side];
         JointVector predecessor = plan->start_q[side];
@@ -681,7 +681,7 @@ oa_status Controller::plan_paired(const oa_paired_tcp_move &request,
             if (!inverse(static_cast<std::uint32_t>(side), waypoint_tcp,
                          predecessor, ik) || ik.residual > request.tcp_tol_m ||
                 ik.min_singular_value < request.min_singular_value) {
-                return OA_EUNREACHABLE;
+                return OA_CONTROL_EUNREACHABLE;
             }
             for (std::size_t joint = 0; joint < 7U; ++joint) {
                 const auto &motor = manifest_->config().arm[side].motor[joint];
@@ -690,7 +690,7 @@ oa_status Controller::plan_paired(const oa_paired_tcp_move &request,
                     std::abs(raw) > motor.pmax_rad ||
                     std::abs(ik.q[joint] - predecessor[joint]) >
                         request.max_branch_step_rad) {
-                    return OA_EUNREACHABLE;
+                    return OA_CONTROL_EUNREACHABLE;
                 }
             }
             plan->waypoint_q[side][waypoint] = ik.q;
@@ -716,14 +716,14 @@ oa_status Controller::plan_paired(const oa_paired_tcp_move &request,
             request.jerk_scale, 0x3U);
         if (segment > std::numeric_limits<std::uint64_t>::max() -
                           plan->waypoint_time_ns[waypoint - 1U]) {
-            return OA_EUNREACHABLE;
+            return OA_CONTROL_EUNREACHABLE;
         }
         plan->waypoint_time_ns[waypoint] =
             plan->waypoint_time_ns[waypoint - 1U] + segment;
     }
     plan->duration_ns = plan->waypoint_time_ns[plan->waypoint_count - 1U];
     out = std::move(plan);
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
 std::uint64_t Controller::trajectory_duration(
@@ -756,34 +756,34 @@ std::uint64_t Controller::trajectory_duration(
                : static_cast<std::uint64_t>(ns);
 }
 
-oa_status Controller::execute(const MotionPlan &plan, const oa_execute_request &request,
+oa_control_status Controller::execute(const MotionPlan &plan, const oa_execute_request &request,
                               std::uint64_t &command_id) noexcept {
     if (lifecycle_ != OA_LIFECYCLE_ARMED_IDLE) {
-        return OA_ESTATE;
+        return OA_CONTROL_ESTATE;
     }
     if (!fresh()) {
-        return OA_ESTALE;
+        return OA_CONTROL_ESTALE;
     }
     if (!healthy()) {
-        latch_fault(OA_EFAULT);
-        return OA_EFAULT;
+        latch_fault(OA_CONTROL_EFAULT);
+        return OA_CONTROL_EFAULT;
     }
     if (plan.controller_instance != instance_id_ || plan.verify_epoch != verify_epoch_) {
-        return OA_EIDENTITY;
+        return OA_CONTROL_EIDENTITY;
     }
     if (plan.manifest_revision != manifest_->config().manifest_revision ||
         plan.model_revision != manifest_->config().model_revision ||
         plan.collision_scene_revision != options_.collision_scene_revision ||
         plan.seed_seq[0] != arm_[0].feedback_sequence() ||
         plan.seed_seq[1] != arm_[1].feedback_sequence() || !start_pose_matches(plan)) {
-        return OA_ESTALE;
+        return OA_CONTROL_ESTALE;
     }
     const std::uint64_t start_ns = request.start_ns == 0U ? now_ns_ : request.start_ns;
     if (start_ns < now_ns_ || request.expiry_ns <= start_ns ||
         request.expiry_ns > plan.expiry_ns || request.producer_deadline_ns <= now_ns_ ||
         (request.stop_kind != OA_STOP_DISABLE && request.stop_kind != OA_STOP_CONTROLLED) ||
         plan.duration_ns > request.expiry_ns - start_ns) {
-        return OA_EINVAL;
+        return OA_CONTROL_EINVAL;
     }
     executing_ = plan;
     command_id_ = next_command_id_++;
@@ -796,42 +796,42 @@ oa_status Controller::execute(const MotionPlan &plan, const oa_execute_request &
     settling_published_ = false;
     lifecycle_ = OA_LIFECYCLE_EXECUTING;
     command_id = command_id_;
-    publish(command_started_ ? OA_EVENT_STARTED : OA_EVENT_QUEUED, OA_OK, command_id_);
-    return OA_OK;
+    publish(command_started_ ? OA_EVENT_STARTED : OA_EVENT_QUEUED, OA_CONTROL_OK, command_id_);
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
+oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
     if (monotonic_ns < now_ns_) {
-        return OA_EINVAL;
+        return OA_CONTROL_EINVAL;
     }
     if (monotonic_ns == now_ns_) {
         if (lifecycle_ == OA_LIFECYCLE_ARMED_IDLE ||
             lifecycle_ == OA_LIFECYCLE_EXECUTING ||
             lifecycle_ == OA_LIFECYCLE_DISARMED) {
-            return OA_OK;
+            return OA_CONTROL_OK;
         }
-        return lifecycle_ == OA_LIFECYCLE_FAULT ? OA_EFAULT : OA_ESTATE;
+        return lifecycle_ == OA_LIFECYCLE_FAULT ? OA_CONTROL_EFAULT : OA_CONTROL_ESTATE;
     }
     const std::uint64_t previous_ns = now_ns_;
     now_ns_ = monotonic_ns;
     if (lifecycle_ != OA_LIFECYCLE_ARMED_IDLE && lifecycle_ != OA_LIFECYCLE_EXECUTING &&
         lifecycle_ != OA_LIFECYCLE_DISARMED) {
-        return lifecycle_ == OA_LIFECYCLE_FAULT ? OA_EFAULT : OA_ESTATE;
+        return lifecycle_ == OA_LIFECYCLE_FAULT ? OA_CONTROL_EFAULT : OA_CONTROL_ESTATE;
     }
     if (lifecycle_ == OA_LIFECYCLE_ARMED_IDLE ||
         lifecycle_ == OA_LIFECYCLE_EXECUTING) {
         if (!healthy()) {
-            latch_fault(OA_EFAULT);
-            return OA_EFAULT;
+            latch_fault(OA_CONTROL_EFAULT);
+            return OA_CONTROL_EFAULT;
         }
-        const oa_status integrity = feedback_integrity();
-        if (integrity != OA_OK) {
+        const oa_control_status integrity = feedback_integrity();
+        if (integrity != OA_CONTROL_OK) {
             latch_fault(integrity);
             return integrity;
         }
         if (now_ns_ - previous_ns > options_.cycle_ns) {
-            latch_fault(OA_ETIMEOUT, true);
-            return OA_ETIMEOUT;
+            latch_fault(OA_CONTROL_ETIMEOUT, true);
+            return OA_CONTROL_ETIMEOUT;
         }
     }
 
@@ -839,24 +839,24 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
     std::array<JointVector, 2> dq_reference{};
     if (lifecycle_ == OA_LIFECYCLE_EXECUTING) {
         if (now_ns_ > producer_deadline_ns_) {
-            latch_fault(OA_ESTALE, true);
-            return OA_ESTALE;
+            latch_fault(OA_CONTROL_ESTALE, true);
+            return OA_CONTROL_ESTALE;
         }
         if (now_ns_ > command_expiry_ns_) {
-            latch_fault(OA_ETIMEOUT, true);
-            return OA_ETIMEOUT;
+            latch_fault(OA_CONTROL_ETIMEOUT, true);
+            return OA_CONTROL_ETIMEOUT;
         }
         if (!healthy()) {
-            latch_fault(OA_EFAULT);
-            return OA_EFAULT;
+            latch_fault(OA_CONTROL_EFAULT);
+            return OA_CONTROL_EFAULT;
         }
         if (!command_started_ && now_ns_ >= command_start_ns_) {
             if (!fresh() || !start_pose_matches(*executing_)) {
-                latch_fault(OA_ESTALE);
-                return OA_ESTALE;
+                latch_fault(OA_CONTROL_ESTALE);
+                return OA_CONTROL_ESTALE;
             }
             command_started_ = true;
-            publish(OA_EVENT_STARTED, OA_OK, command_id_);
+            publish(OA_EVENT_STARTED, OA_CONTROL_OK, command_id_);
         }
         const std::uint64_t elapsed = now_ns_ <= command_start_ns_ ? 0U : now_ns_ - command_start_ns_;
         std::size_t segment = 1U;
@@ -892,14 +892,14 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
     for (std::size_t side = 0; side < 2U; ++side) {
         if (!arm_[side].command_and_step(q_reference[side], dq_reference[side],
                                          now_ns_, dt_s)) {
-            latch_fault(OA_ECAN);
-            return OA_ECAN;
+            latch_fault(OA_CONTROL_ECAN);
+            return OA_CONTROL_ECAN;
         }
     }
     if (!arm_[0].complete_fresh(now_ns_, options_.feedback_timeout_ns) ||
         !arm_[1].complete_fresh(now_ns_, options_.feedback_timeout_ns)) {
-        latch_fault(OA_ESTALE);
-        return OA_ESTALE;
+        latch_fault(OA_CONTROL_ESTALE);
+        return OA_CONTROL_ESTALE;
     }
     const std::uint64_t skew = arm_[0].generation_timestamp() > arm_[1].generation_timestamp()
                                    ? arm_[0].generation_timestamp() -
@@ -907,20 +907,20 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
                                    : arm_[1].generation_timestamp() -
                                          arm_[0].generation_timestamp();
     if (skew > options_.max_cross_bus_skew_ns) {
-        latch_fault(OA_ECAN);
-        return OA_ECAN;
+        latch_fault(OA_CONTROL_ECAN);
+        return OA_CONTROL_ECAN;
     }
     for (std::size_t side = 0; side < 2U; ++side) {
         if (arm_[side].snapshot(now_ns_, options_.feedback_timeout_ns).fault_mask != 0U) {
-            latch_fault(OA_EFAULT);
-            return OA_EFAULT;
+            latch_fault(OA_CONTROL_EFAULT);
+            return OA_CONTROL_EFAULT;
         }
     }
     if (lifecycle_ == OA_LIFECYCLE_EXECUTING &&
         now_ns_ >= command_start_ns_ + executing_->duration_ns) {
         if (measured_at_goal()) {
             if (!settling_published_) {
-                publish(OA_EVENT_SETTLING, OA_OK, command_id_);
+                publish(OA_EVENT_SETTLING, OA_CONTROL_OK, command_id_);
                 settling_published_ = true;
             }
             if (settle_start_ns_ == 0U) {
@@ -931,17 +931,17 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
                 executing_.reset();
                 command_id_ = 0U;
                 lifecycle_ = OA_LIFECYCLE_ARMED_IDLE;
-                publish(OA_EVENT_COMPLETED, OA_OK, completed_id);
+                publish(OA_EVENT_COMPLETED, OA_CONTROL_OK, completed_id);
             }
         } else {
             if (!settling_published_) {
-                publish(OA_EVENT_SETTLING, OA_OK, command_id_);
+                publish(OA_EVENT_SETTLING, OA_CONTROL_OK, command_id_);
                 settling_published_ = true;
             }
             settle_start_ns_ = 0U;
         }
     }
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
 bool Controller::measured_at_goal() noexcept {
@@ -979,16 +979,16 @@ bool Controller::measured_at_goal() noexcept {
     return true;
 }
 
-oa_status Controller::set_sim_fault(const oa_sim_fault &fault) noexcept {
+oa_control_status Controller::set_sim_fault(const oa_sim_fault &fault) noexcept {
     if (options_.backend != OA_BACKEND_VIRTUAL) {
-        return OA_EUNSUPPORTED;
+        return OA_CONTROL_EUNSUPPORTED;
     }
     if (fault.side > OA_RIGHT || (fault.freeze_mask & ~kAllJoints) != 0U ||
         (fault.drop_mask & ~kAllJoints) != 0U || (fault.fault_mask & ~kAllJoints) != 0U ||
         (fault.command_fail_mask & ~kAllJoints) != 0U ||
         (fault.fault_mask != 0U && fault.fault_status != 0U &&
          (fault.fault_status < 8U || fault.fault_status > 14U))) {
-        return OA_EINVAL;
+        return OA_CONTROL_EINVAL;
     }
     const std::uint8_t fault_status = fault.fault_status == 0U
                                           ? 8U
@@ -1002,15 +1002,15 @@ oa_status Controller::set_sim_fault(const oa_sim_fault &fault) noexcept {
         arm_[fault.side].force_state(arm_[fault.side].measured_q(),
                                      arm_[fault.side].measured_dq(), now_ns_);
     }
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::set_sim_state(const oa_sim_state &state) noexcept {
+oa_control_status Controller::set_sim_state(const oa_sim_state &state) noexcept {
     if (options_.backend != OA_BACKEND_VIRTUAL) {
-        return OA_EUNSUPPORTED;
+        return OA_CONTROL_EUNSUPPORTED;
     }
     if (state.side > OA_RIGHT) {
-        return OA_EINVAL;
+        return OA_CONTROL_EINVAL;
     }
     JointVector q{};
     JointVector dq{};
@@ -1021,30 +1021,30 @@ oa_status Controller::set_sim_state(const oa_sim_state &state) noexcept {
             state.q[joint] < motor.lower_rad || state.q[joint] > motor.upper_rad ||
             std::abs(raw) > motor.pmax_rad ||
             std::abs(state.dq[joint]) > motor.max_velocity_rad_s) {
-            return OA_ELIMIT;
+            return OA_CONTROL_ELIMIT;
         }
         q[joint] = state.q[joint];
         dq[joint] = state.dq[joint];
     }
     arm_[state.side].force_state(q, dq, now_ns_);
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::heartbeat(const std::uint64_t command_id,
+oa_control_status Controller::heartbeat(const std::uint64_t command_id,
                                 const std::uint64_t producer_deadline_ns) noexcept {
     if (lifecycle_ != OA_LIFECYCLE_EXECUTING || command_id == 0U ||
         command_id != command_id_) {
-        return OA_ESTATE;
+        return OA_CONTROL_ESTATE;
     }
     if (producer_deadline_ns <= now_ns_) {
-        latch_fault(OA_ESTALE, true);
-        return OA_ESTALE;
+        latch_fault(OA_CONTROL_ESTALE, true);
+        return OA_CONTROL_ESTALE;
     }
     producer_deadline_ns_ = producer_deadline_ns;
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::set_interlock(const bool estop_active,
+oa_control_status Controller::set_interlock(const bool estop_active,
                                     const bool deadman_active) noexcept {
     deadman_active_ = deadman_active;
     if (estop_active || !deadman_active) {
@@ -1056,34 +1056,34 @@ oa_status Controller::set_interlock(const bool estop_active,
         }
         lifecycle_ = OA_LIFECYCLE_ESTOP;
         outstanding_nonce_ = ++nonce_counter_;
-        publish(OA_EVENT_ESTOP, OA_EESTOP, failed_id);
-        return OA_EESTOP;
+        publish(OA_EVENT_ESTOP, OA_CONTROL_EESTOP, failed_id);
+        return OA_CONTROL_EESTOP;
     }
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::set_collision_scene_revision(const std::uint64_t revision) noexcept {
+oa_control_status Controller::set_collision_scene_revision(const std::uint64_t revision) noexcept {
     if (options_.backend != OA_BACKEND_VIRTUAL || revision == 0U) {
-        return revision == 0U ? OA_EINVAL : OA_EUNSUPPORTED;
+        return revision == 0U ? OA_CONTROL_EINVAL : OA_CONTROL_EUNSUPPORTED;
     }
     if (lifecycle_ == OA_LIFECYCLE_EXECUTING) {
-        return OA_EBUSY;
+        return OA_CONTROL_EBUSY;
     }
     options_.collision_scene_revision = revision;
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::stop(const std::uint32_t stop_kind) noexcept {
+oa_control_status Controller::stop(const std::uint32_t stop_kind) noexcept {
     if (stop_kind != OA_STOP_DISABLE && stop_kind != OA_STOP_CONTROLLED) {
-        return OA_EINVAL;
+        return OA_CONTROL_EINVAL;
     }
     if (lifecycle_ != OA_LIFECYCLE_EXECUTING && lifecycle_ != OA_LIFECYCLE_ARMED_IDLE) {
-        return OA_ESTATE;
+        return OA_CONTROL_ESTATE;
     }
     lifecycle_ = OA_LIFECYCLE_STOPPING;
     const auto stopped_id = command_id_;
     if (executing_) {
-        publish(OA_EVENT_ABORTED, OA_OK, stopped_id);
+        publish(OA_EVENT_ABORTED, OA_CONTROL_OK, stopped_id);
     }
     executing_.reset();
     command_id_ = 0U;
@@ -1095,17 +1095,17 @@ oa_status Controller::stop(const std::uint32_t stop_kind) noexcept {
     } else {
         lifecycle_ = OA_LIFECYCLE_ARMED_IDLE;
     }
-    publish(OA_EVENT_STOPPED, OA_OK, stopped_id);
-    return OA_OK;
+    publish(OA_EVENT_STOPPED, OA_CONTROL_OK, stopped_id);
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::disarm(const std::uint64_t deadline_ns) noexcept {
+oa_control_status Controller::disarm(const std::uint64_t deadline_ns) noexcept {
     if (deadline_ns < now_ns_) {
-        return OA_ETIMEOUT;
+        return OA_CONTROL_ETIMEOUT;
     }
     if (lifecycle_ != OA_LIFECYCLE_ARMED_IDLE && lifecycle_ != OA_LIFECYCLE_EXECUTING &&
         lifecycle_ != OA_LIFECYCLE_DISARMED) {
-        return OA_ESTATE;
+        return OA_CONTROL_ESTATE;
     }
     executing_.reset();
     command_id_ = 0U;
@@ -1114,17 +1114,17 @@ oa_status Controller::disarm(const std::uint64_t deadline_ns) noexcept {
         runtime.force_state(runtime.measured_q(), JointVector{}, now_ns_);
     }
     lifecycle_ = OA_LIFECYCLE_DISARMED;
-    publish(OA_EVENT_DISARMED, OA_OK, 0U);
-    return OA_OK;
+    publish(OA_EVENT_DISARMED, OA_CONTROL_OK, 0U);
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::reset(const oa_reset_request &request) noexcept {
+oa_control_status Controller::reset(const oa_reset_request &request) noexcept {
     if (lifecycle_ != OA_LIFECYCLE_FAULT && lifecycle_ != OA_LIFECYCLE_ESTOP) {
-        return OA_ESTATE;
+        return OA_CONTROL_ESTATE;
     }
     if (request.verify_epoch != verify_epoch_ || request.nonce != outstanding_nonce_ ||
         request.nonce == 0U || now_ns_ > outstanding_challenge_expiry_) {
-        return OA_EIDENTITY;
+        return OA_CONTROL_EIDENTITY;
     }
     for (auto &runtime : arm_) {
         runtime.set_injection(0U, 0U, 0U, 0U, 0U, 0U);
@@ -1133,20 +1133,20 @@ oa_status Controller::reset(const oa_reset_request &request) noexcept {
     ++verify_epoch_;
     outstanding_nonce_ = 0U;
     lifecycle_ = OA_LIFECYCLE_CLOSED;
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
-oa_status Controller::poll_event(oa_event &out) noexcept {
+oa_control_status Controller::poll_event(oa_event &out) noexcept {
     if (event_count_ == 0U) {
-        return OA_ETIMEOUT;
+        return OA_CONTROL_ETIMEOUT;
     }
     out = events_[event_head_];
     event_head_ = (event_head_ + 1U) % events_.size();
     --event_count_;
-    return OA_OK;
+    return OA_CONTROL_OK;
 }
 
-void Controller::publish(const std::uint32_t kind, const oa_status cause,
+void Controller::publish(const std::uint32_t kind, const oa_control_status cause,
                          const std::uint64_t command_id) noexcept {
     const bool overflow = event_count_ == events_.size();
     if (overflow) {
@@ -1167,7 +1167,7 @@ void Controller::publish(const std::uint32_t kind, const oa_status cause,
     event.t_ns = now_ns_;
     event.command_id = command_id;
     event.feedback_seq = std::min(arm_[0].feedback_sequence(), arm_[1].feedback_sequence());
-    event.cause = overflow ? OA_EBUSY : cause;
+    event.cause = overflow ? OA_CONTROL_EBUSY : cause;
     const std::size_t tail = (event_head_ + event_count_) % events_.size();
     events_[tail] = event;
     ++event_count_;
@@ -1183,7 +1183,7 @@ void Controller::materialize_fault_stop(const bool enabled_hold) noexcept {
     }
 }
 
-void Controller::latch_fault(const oa_status cause,
+void Controller::latch_fault(const oa_control_status cause,
                              const bool controlled_stop_available) noexcept {
     const auto failed_id = command_id_;
     /* Only coherent watchdog paths may retain an enabled hold. Transport or
@@ -1202,19 +1202,19 @@ void Controller::latch_fault(const oa_status cause,
     publish(OA_EVENT_FAULTED, cause, failed_id);
 }
 
-oa_status Controller::feedback_integrity() const noexcept {
+oa_control_status Controller::feedback_integrity() const noexcept {
     if (!arm_[0].complete_fresh(now_ns_, options_.feedback_timeout_ns) ||
         !arm_[1].complete_fresh(now_ns_, options_.feedback_timeout_ns)) {
-        return OA_ESTALE;
+        return OA_CONTROL_ESTALE;
     }
     const std::uint64_t left = arm_[0].generation_timestamp();
     const std::uint64_t right = arm_[1].generation_timestamp();
     const std::uint64_t skew = left > right ? left - right : right - left;
-    return skew <= options_.max_cross_bus_skew_ns ? OA_OK : OA_ECAN;
+    return skew <= options_.max_cross_bus_skew_ns ? OA_CONTROL_OK : OA_CONTROL_ECAN;
 }
 
 bool Controller::fresh() const noexcept {
-    return feedback_integrity() == OA_OK;
+    return feedback_integrity() == OA_CONTROL_OK;
 }
 
 bool Controller::healthy() const noexcept {

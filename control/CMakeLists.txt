@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(openarm_control VERSION 1.0.0 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
 option(OA_CONTROL_BUILD_TESTS "Build the compiled control tests" ON)
 option(OA_CONTROL_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
@@ -18,6 +19,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+find_package(Threads REQUIRED)
+
 if(NOT TARGET openarm_model)
     set(OA_MODEL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(OA_MODEL_SANITIZERS ${OA_CONTROL_SANITIZERS} CACHE BOOL "" FORCE)
@@ -30,11 +33,18 @@ add_library(openarm_control STATIC
     src/control_core.cpp
     src/kinematics.cpp
 )
+add_library(openarm_control::openarm_control ALIAS openarm_control)
 target_include_directories(openarm_control
-    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(openarm_control PUBLIC openarm_model)
+target_link_libraries(openarm_control PUBLIC
+    $<BUILD_INTERFACE:openarm_model>
+    $<INSTALL_INTERFACE:openarm_model::openarm_model>
+    Threads::Threads)
 target_compile_features(openarm_control PUBLIC c_std_11 cxx_std_17)
+set_target_properties(openarm_control PROPERTIES EXPORT_NAME openarm_control)
 target_compile_options(openarm_control PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Werror;-Wshadow;-Wformat=2>
 )
@@ -50,16 +60,31 @@ if(OA_CONTROL_TSAN)
     target_link_options(openarm_control PUBLIC -fsanitize=thread)
 endif()
 
-install(TARGETS openarm_control
+install(TARGETS openarm_control EXPORT openarm_controlTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES include/openarm_control.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(EXPORT openarm_controlTargets
+    FILE openarm_controlTargets.cmake
+    NAMESPACE openarm_control::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/openarm_control)
+configure_package_config_file(
+    cmake/openarm_controlConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/openarm_controlConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/openarm_control)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/openarm_controlConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion)
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/openarm_controlConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/openarm_controlConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/openarm_control)
 
 include(CTest)
 if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
-    find_package(Threads REQUIRED)
-
     set(OA_PUBLIC_HEADERS
         openarm_can.h
         openarm_model.h
@@ -87,6 +112,13 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
                         set(standard cxx_std_17)
                     endif()
                     foreach(legacy_mode IN ITEMS legacy canonical)
+                        if(legacy_mode STREQUAL legacy AND
+                           ((first_header STREQUAL "openarm_model.h" AND
+                             second_header STREQUAL "openarm_control.h") OR
+                            (first_header STREQUAL "openarm_control.h" AND
+                             second_header STREQUAL "openarm_model.h")))
+                            continue()
+                        endif()
                         set(matrix_target
                             "oa_headers_${first_name}_${second_name}_${language}_${legacy_mode}")
                         set(matrix_source
@@ -113,6 +145,35 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
         endforeach()
     endforeach()
 
+    include(CheckCSourceCompiles)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_INCLUDES ${OA_PUBLIC_INCLUDE_DIRS})
+    set(CMAKE_REQUIRED_FLAGS "-pedantic-errors -Wall -Wextra -Werror")
+    set(model_control_source
+        "#ifdef OPENARM_DISABLE_LEGACY_GENERIC_STATUS\n#undef OPENARM_DISABLE_LEGACY_GENERIC_STATUS\n#endif\n#include <openarm_model.h>\n#include <openarm_control.h>\nint main(void) { return 0; }")
+    set(control_model_source
+        "#ifdef OPENARM_DISABLE_LEGACY_GENERIC_STATUS\n#undef OPENARM_DISABLE_LEGACY_GENERIC_STATUS\n#endif\n#include <openarm_control.h>\n#include <openarm_model.h>\nint main(void) { return 0; }")
+    set(model_late_optout_source
+        "#ifdef OPENARM_DISABLE_LEGACY_GENERIC_STATUS\n#undef OPENARM_DISABLE_LEGACY_GENERIC_STATUS\n#endif\n#include <openarm_model.h>\n#define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1\n#include <openarm_control.h>\nint main(void) { return 0; }")
+    set(control_late_optout_source
+        "#ifdef OPENARM_DISABLE_LEGACY_GENERIC_STATUS\n#undef OPENARM_DISABLE_LEGACY_GENERIC_STATUS\n#endif\n#include <openarm_control.h>\n#define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1\n#include <openarm_model.h>\nint main(void) { return 0; }")
+    foreach(order IN ITEMS model_control control_model model_late_optout control_late_optout)
+        check_c_source_compiles("${${order}_source}"
+            oa_${order}_legacy_c11_compiles)
+        if(oa_${order}_legacy_c11_compiles)
+            message(FATAL_ERROR
+                "${order} unexpectedly accepted ambiguous legacy status names in C11")
+        endif()
+        check_cxx_source_compiles("${${order}_source}"
+            oa_${order}_legacy_cxx17_compiles)
+        if(oa_${order}_legacy_cxx17_compiles)
+            message(FATAL_ERROR
+                "${order} unexpectedly accepted ambiguous legacy status names in C++17")
+        endif()
+    endforeach()
+    unset(CMAKE_REQUIRED_FLAGS)
+    unset(CMAKE_REQUIRED_INCLUDES)
+
     add_library(openarm_public_headers_c11 OBJECT tests/public_headers_c11.c)
     target_include_directories(openarm_public_headers_c11 PRIVATE
         ${OA_PUBLIC_INCLUDE_DIRS})
@@ -127,6 +188,22 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
     target_compile_features(openarm_public_headers_cxx17 PRIVATE cxx_std_17)
     set_target_properties(openarm_public_headers_cxx17 PROPERTIES CXX_EXTENSIONS OFF)
     target_compile_options(openarm_public_headers_cxx17 PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+
+    add_library(openarm_legacy_control_status OBJECT tests/legacy_control_status.c)
+    target_include_directories(openarm_legacy_control_status PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    target_compile_features(openarm_legacy_control_status PRIVATE c_std_11)
+    set_target_properties(openarm_legacy_control_status PROPERTIES C_EXTENSIONS OFF)
+    target_compile_options(openarm_legacy_control_status PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+
+    add_library(openarm_legacy_model_status OBJECT tests/legacy_model_status.c)
+    target_include_directories(openarm_legacy_model_status PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../model/include")
+    target_compile_features(openarm_legacy_model_status PRIVATE c_std_11)
+    set_target_properties(openarm_legacy_model_status PROPERTIES C_EXTENSIONS OFF)
+    target_compile_options(openarm_legacy_model_status PRIVATE
         -Wall -Wextra -Wpedantic -Werror)
 
     add_executable(openarm_control_tests tests/test_control.cpp)

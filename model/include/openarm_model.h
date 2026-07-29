@@ -23,6 +23,7 @@ extern "C" {
 typedef struct oa_transform { double m[16]; } oa_transform;
 
 typedef int32_t oa_model_status;
+#define OPENARM_MODEL_STATUS_NAMESPACE_PRESENT 1
 /* OA_MODEL_OK: tolerance and effective bounds (including margin) satisfied.
  * OA_MODEL_EINVAL: invalid ABI/options or numerically unsafe finite input.
  * OA_MODEL_ENONFINITE: NaN/Inf input or non-finite internal arithmetic.
@@ -40,9 +41,14 @@ typedef int32_t oa_model_status;
 #define OA_MODEL_ESINGULAR            ((oa_model_status)6)
 #define OA_MODEL_EBUDGET              ((oa_model_status)7)
 
-#if !defined(OPENARM_DISABLE_LEGACY_GENERIC_STATUS) && \
-    !defined(OPENARM_LEGACY_GENERIC_STATUS_DEFINED)
-#define OPENARM_LEGACY_GENERIC_STATUS_DEFINED 1
+#if defined(OPENARM_CONTROL_LEGACY_GENERIC_STATUS_ACTIVE)
+#error "model and control legacy status names cannot coexist; define OPENARM_DISABLE_LEGACY_GENERIC_STATUS before both headers"
+#endif
+#if !defined(OPENARM_DISABLE_LEGACY_GENERIC_STATUS)
+#if defined(OPENARM_CONTROL_STATUS_NAMESPACE_PRESENT)
+#error "define OPENARM_DISABLE_LEGACY_GENERIC_STATUS before combining model and control headers"
+#endif
+#define OPENARM_MODEL_LEGACY_GENERIC_STATUS_ACTIVE 1
 typedef oa_model_status oa_status;
 #define OA_OK                   OA_MODEL_OK
 #define OA_EINVAL               OA_MODEL_EINVAL

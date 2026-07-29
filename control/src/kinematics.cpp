@@ -16,7 +16,7 @@ const oa_model *model_for(const std::uint32_t side) noexcept {
 bool forward(const std::uint32_t side, const JointVector &q,
              KinematicResult &out) noexcept {
     oa_fk_result result{};
-    if (oa_fk(model_for(side), q.data(), &result) != OA_OK) {
+    if (oa_fk(model_for(side), q.data(), &result) != OA_MODEL_OK) {
         return false;
     }
     for (std::size_t joint = 0; joint < q.size(); ++joint) {
@@ -49,10 +49,10 @@ bool inverse(const std::uint32_t side, const std::array<double, 3> &target,
     options.max_iterations = 500U;
 
     oa_ik_diagnostics diagnostics{};
-    const oa_status status = oa_ik_position_v2(
+    const oa_model_status status = oa_ik_position_v2(
         model_for(side), target.data(), &options, OA_IK_DIAGNOSTICS_VERSION,
         sizeof(diagnostics), &diagnostics);
-    if (status != OA_OK || !std::isfinite(diagnostics.position_error_m)) {
+    if (status != OA_MODEL_OK || !std::isfinite(diagnostics.position_error_m)) {
         return false;
     }
     std::copy(std::begin(diagnostics.q), std::end(diagnostics.q), out.q.begin());
@@ -66,7 +66,7 @@ bool inverse(const std::uint32_t side, const std::array<double, 3> &target,
 
 bool model_limit(const std::uint32_t side, const std::size_t joint, double &lower,
                  double &upper) noexcept {
-    return oa_model_limits(model_for(side), joint, &lower, &upper) == OA_OK;
+    return oa_model_limits(model_for(side), joint, &lower, &upper) == OA_MODEL_OK;
 }
 
 }  // namespace openarm::control

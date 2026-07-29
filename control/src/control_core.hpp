@@ -151,37 +151,37 @@ class Controller final {
 public:
     Controller(std::shared_ptr<const Manifest> manifest,
                const oa_controller_options &options);
-    oa_status open_and_verify(oa_verify_report &out) noexcept;
-    oa_status snapshot(oa_snapshot &out) noexcept;
-    oa_status kinematics(std::uint32_t side, std::uint64_t required_seq,
+    oa_control_status open_and_verify(oa_verify_report &out) noexcept;
+    oa_control_status snapshot(oa_snapshot &out) noexcept;
+    oa_control_status kinematics(std::uint32_t side, std::uint64_t required_seq,
                          oa_arm_kinematics &out) noexcept;
-    oa_status challenge(oa_arm_challenge &out) noexcept;
-    oa_status arm(const oa_arm_challenge &challenge) noexcept;
-    oa_status plan_joint(const oa_joint_move &request,
+    oa_control_status challenge(oa_arm_challenge &out) noexcept;
+    oa_control_status arm(const oa_arm_challenge &challenge) noexcept;
+    oa_control_status plan_joint(const oa_joint_move &request,
                          std::unique_ptr<MotionPlan> &out) noexcept;
-    oa_status plan_paired(const oa_paired_tcp_move &request,
+    oa_control_status plan_paired(const oa_paired_tcp_move &request,
                           std::unique_ptr<MotionPlan> &out) noexcept;
-    oa_status execute(const MotionPlan &plan, const oa_execute_request &request,
+    oa_control_status execute(const MotionPlan &plan, const oa_execute_request &request,
                       std::uint64_t &command_id) noexcept;
-    oa_status advance(std::uint64_t monotonic_ns) noexcept;
-    oa_status set_sim_fault(const oa_sim_fault &fault) noexcept;
-    oa_status set_sim_state(const oa_sim_state &state) noexcept;
-    oa_status heartbeat(std::uint64_t command_id,
+    oa_control_status advance(std::uint64_t monotonic_ns) noexcept;
+    oa_control_status set_sim_fault(const oa_sim_fault &fault) noexcept;
+    oa_control_status set_sim_state(const oa_sim_state &state) noexcept;
+    oa_control_status heartbeat(std::uint64_t command_id,
                         std::uint64_t producer_deadline_ns) noexcept;
-    oa_status set_interlock(bool estop_active, bool deadman_active) noexcept;
-    oa_status set_collision_scene_revision(std::uint64_t revision) noexcept;
-    oa_status stop(std::uint32_t stop_kind) noexcept;
-    oa_status disarm(std::uint64_t deadline_ns) noexcept;
-    oa_status reset(const oa_reset_request &request) noexcept;
-    oa_status poll_event(oa_event &out) noexcept;
+    oa_control_status set_interlock(bool estop_active, bool deadman_active) noexcept;
+    oa_control_status set_collision_scene_revision(std::uint64_t revision) noexcept;
+    oa_control_status stop(std::uint32_t stop_kind) noexcept;
+    oa_control_status disarm(std::uint64_t deadline_ns) noexcept;
+    oa_control_status reset(const oa_reset_request &request) noexcept;
+    oa_control_status poll_event(oa_event &out) noexcept;
     [[nodiscard]] std::uint32_t lifecycle() const noexcept { return lifecycle_; }
 
 private:
-    void publish(std::uint32_t kind, oa_status cause, std::uint64_t command_id) noexcept;
+    void publish(std::uint32_t kind, oa_control_status cause, std::uint64_t command_id) noexcept;
     void materialize_fault_stop(bool enabled_hold) noexcept;
-    void latch_fault(oa_status cause,
+    void latch_fault(oa_control_status cause,
                      bool controlled_stop_available = false) noexcept;
-    [[nodiscard]] oa_status feedback_integrity() const noexcept;
+    [[nodiscard]] oa_control_status feedback_integrity() const noexcept;
     [[nodiscard]] bool fresh() const noexcept;
     [[nodiscard]] bool healthy() const noexcept;
     [[nodiscard]] bool disabled() const noexcept;
