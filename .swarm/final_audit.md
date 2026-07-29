@@ -1,6 +1,8 @@
 # Fresh whole-branch audit
 
-Audited revision: `3067e12353d490cb042daf23ac8b96bd231fc769`
+Audited implementation through `3067e12353d490cb042daf23ac8b96bd231fc769`,
+including the verification-only ledger update at
+`748fcc0abd166aae44f1163bf3ac75d5643876e8`.
 
 ## Verdict
 
