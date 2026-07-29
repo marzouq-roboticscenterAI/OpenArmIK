@@ -162,8 +162,8 @@ if ((run_tests)); then
   ros_test_listing=$(ctest --test-dir "$ros_build/openarm_ik_ros" -N)
   printf '%s\n' "$ros_test_listing"
   registered_ros_tests=$(awk '/Total Tests:/ {print $3}' <<<"$ros_test_listing")
-  if [[ "$registered_ros_tests" != 10 ]]; then
-    printf 'Expected 10 openarm_ik_ros tests, found %s\n' \
+  if [[ "$registered_ros_tests" != 11 ]]; then
+    printf 'Expected 11 openarm_ik_ros tests, found %s\n' \
       "${registered_ros_tests:-none}" >&2
     exit 1
   fi
