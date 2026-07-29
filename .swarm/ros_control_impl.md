@@ -66,6 +66,11 @@ Status: **DONE**
   with code 8 and `action server lost after goal acceptance`; context shutdown
   uses the same distinct code with a context-specific message. Neither path
   enters the 45-second timeout/cancel cascade.
+- Terminal and cancel futures are serviced by one executor loop. Terminal
+  readiness is checked before cancel readiness on every iteration and after a
+  final zero-duration callback service immediately before any timeout, server
+  loss, or context-shutdown failure. The terminal shared future is consumed
+  exactly once.
 - Existing timeouts and semantics remain unchanged for a reachable server:
   normal slow completion still succeeds, confirmed cancellation still returns
   code 6, and unconfirmed terminal/cancel timeouts still return code 5.
@@ -100,6 +105,11 @@ Status: **DONE**
   settling; a healthy one-second action; a cancel/result race; and context
   shutdown. Every loss case exits within two seconds and leaves no CLI or
   fixture process behind.
+- Adversarial terminal-precedence cases cover success before a delayed cancel
+  response, abort during the response wait, success at the cancel-response
+  timeout boundary, success after a rejected cancel response, and a canceled
+  result after an accepted response. Successful, aborted, and canceled terminal
+  results all override a pending cancel-response timeout.
 - `git diff --check` passes. No GUI, CAN, external network, hardware, or
   privileged action was performed.
 

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -45,41 +46,69 @@ static_assert(kCancelResultTimeout > 0ms);
 
 enum class PostAcceptanceWait
 {
-  ready,
+  awaited_ready,
+  terminal_ready,
   timeout,
   server_lost,
   context_shutdown
 };
 
-template<typename Future, typename Client>
+template<typename Future>
+bool future_ready(const Future & future)
+{
+  return future.wait_for(0ms) == std::future_status::ready;
+}
+
+template<typename AwaitedFuture, typename TerminalFuture, typename Client>
 PostAcceptanceWait wait_after_acceptance(
   rclcpp::executors::SingleThreadedExecutor & executor,
-  const Future & future,
+  const AwaitedFuture & awaited_future,
+  const TerminalFuture & terminal_future,
   const std::shared_ptr<Client> & client,
   const std::shared_ptr<rclcpp::Context> & context,
   const std::chrono::steady_clock::duration timeout)
 {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   std::optional<std::chrono::steady_clock::time_point> server_absent_since;
+  const auto ready = [&]() -> std::optional<PostAcceptanceWait> {
+      if (future_ready(terminal_future)) {
+        return PostAcceptanceWait::terminal_ready;
+      }
+      if (future_ready(awaited_future)) {
+        return PostAcceptanceWait::awaited_ready;
+      }
+      return std::nullopt;
+    };
+  const auto spin_once = [&](const std::chrono::steady_clock::duration duration) {
+      try {
+        executor.spin_once(duration);
+      } catch (...) {
+        if (ready() || (context && !context->is_valid())) {
+          return;
+        }
+        throw;
+      }
+    };
   for (;;) {
+    if (const auto state = ready()) {
+      return *state;
+    }
     if (!context || !context->is_valid()) {
       return PostAcceptanceWait::context_shutdown;
     }
     const auto before_spin = std::chrono::steady_clock::now();
     if (before_spin >= deadline) {
-      if (executor.spin_until_future_complete(future, 0ms) ==
-        rclcpp::FutureReturnCode::SUCCESS)
-      {
-        return PostAcceptanceWait::ready;
+      spin_once(0ms);
+      if (const auto state = ready()) {
+        return *state;
       }
       return PostAcceptanceWait::timeout;
     }
     const auto slice = std::min(
       std::chrono::steady_clock::duration(kWaitPollInterval), deadline - before_spin);
-    if (executor.spin_until_future_complete(future, slice) ==
-      rclcpp::FutureReturnCode::SUCCESS)
-    {
-      return PostAcceptanceWait::ready;
+    spin_once(slice);
+    if (const auto state = ready()) {
+      return *state;
     }
     if (!context->is_valid()) {
       return PostAcceptanceWait::context_shutdown;
@@ -99,10 +128,9 @@ PostAcceptanceWait wait_after_acceptance(
     } else if (!server_absent_since) {
       server_absent_since = after_spin;
     } else if (after_spin - *server_absent_since >= kServerLossGrace) {
-      if (executor.spin_until_future_complete(future, 0ms) ==
-        rclcpp::FutureReturnCode::SUCCESS)
-      {
-        return PostAcceptanceWait::ready;
+      spin_once(0ms);
+      if (const auto state = ready()) {
+        return *state;
       }
       return PostAcceptanceWait::server_lost;
     }
@@ -120,6 +148,41 @@ int report_post_acceptance_loss(const PostAcceptanceWait outcome)
     return 8;
   }
   return -1;
+}
+
+template<typename Action>
+int report_terminal_result(
+  const typename rclcpp_action::ClientGoalHandle<Action>::WrappedResult & wrapped)
+{
+  if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED ||
+    wrapped.result->outcome != Action::Result::OUTCOME_COMPLETED)
+  {
+    std::cerr << wrapped.result->reason << '\n';
+    return wrapped.code == rclcpp_action::ResultCode::CANCELED ? 6 : 7;
+  }
+  std::cout << "completed command_id=" << wrapped.result->command_id << '\n';
+  return 0;
+}
+
+template<typename Action, typename ResultFuture>
+std::optional<int> consume_terminal_if_ready(
+  rclcpp::executors::SingleThreadedExecutor & executor,
+  const ResultFuture & result_future,
+  const std::shared_ptr<rclcpp::Context> & context)
+{
+  if (!future_ready(result_future) && context && context->is_valid()) {
+    try {
+      executor.spin_once(0ms);
+    } catch (...) {
+      if (context->is_valid()) {
+        throw;
+      }
+    }
+  }
+  if (!future_ready(result_future)) {
+    return std::nullopt;
+  }
+  return report_terminal_result<Action>(result_future.get());
 }
 
 double number(const char * text)
@@ -196,13 +259,25 @@ int run_goal(
   (void)context_shutdown_timer;
 #endif
   auto result_future = client->async_get_result(handle);
-  auto wait = wait_after_acceptance(executor, result_future, client, context, kResultTimeout);
+  auto wait = wait_after_acceptance(
+    executor, result_future, result_future, client, context, kResultTimeout);
+  if (const auto terminal = consume_terminal_if_ready<Action>(
+      executor, result_future, context))
+  {
+    return *terminal;
+  }
   if (const int loss = report_post_acceptance_loss(wait); loss >= 0) {
     return loss;
   }
   if (wait == PostAcceptanceWait::timeout) {
     auto cancel_future = client->async_cancel_goal(handle);
-    wait = wait_after_acceptance(executor, cancel_future, client, context, kCancelTimeout);
+    wait = wait_after_acceptance(
+      executor, cancel_future, result_future, client, context, kCancelTimeout);
+    if (const auto terminal = consume_terminal_if_ready<Action>(
+        executor, result_future, context))
+    {
+      return *terminal;
+    }
     if (const int loss = report_post_acceptance_loss(wait); loss >= 0) {
       return loss;
     }
@@ -211,7 +286,12 @@ int run_goal(
       return 5;
     }
     wait = wait_after_acceptance(
-      executor, result_future, client, context, kCancelResultTimeout);
+      executor, result_future, result_future, client, context, kCancelResultTimeout);
+    if (const auto terminal = consume_terminal_if_ready<Action>(
+        executor, result_future, context))
+    {
+      return *terminal;
+    }
     if (const int loss = report_post_acceptance_loss(wait); loss >= 0) {
       return loss;
     }
@@ -220,15 +300,7 @@ int run_goal(
       return 5;
     }
   }
-  const auto wrapped = result_future.get();
-  if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED ||
-    wrapped.result->outcome != Action::Result::OUTCOME_COMPLETED)
-  {
-    std::cerr << wrapped.result->reason << '\n';
-    return wrapped.code == rclcpp_action::ResultCode::CANCELED ? 6 : 7;
-  }
-  std::cout << "completed command_id=" << wrapped.result->command_id << '\n';
-  return 0;
+  throw std::runtime_error("terminal future readiness was lost");
 }
 
 void usage()

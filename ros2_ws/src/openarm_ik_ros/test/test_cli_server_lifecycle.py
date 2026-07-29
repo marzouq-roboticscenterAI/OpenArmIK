@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 
@@ -29,6 +30,7 @@ def run_server(mode):
 
         def __init__(self):
             super().__init__('openarm_cli_lifecycle_fixture')
+            self.cancel_received = threading.Event()
             self.action_server = ActionServer(
                 self,
                 MoveJoint,
@@ -48,6 +50,16 @@ def run_server(mode):
 
         def cancel(self, _goal_handle):
             write_marker('cancel_requested')
+            self.cancel_received.set()
+            response_delay = {
+                'success_before_cancel_response': 0.35,
+                'aborted_during_cancel_response': 0.45,
+                'success_at_cancel_timeout': 0.9,
+            }.get(mode, 0.0)
+            if response_delay:
+                time.sleep(response_delay)
+            if mode == 'success_after_cancel_response':
+                return CancelResponse.REJECT
             return CancelResponse.ACCEPT
 
         def execute(self, goal_handle):
@@ -68,6 +80,42 @@ def run_server(mode):
                 feedback.measured_progress = 0.99
                 goal_handle.publish_feedback(feedback)
                 write_marker('settling')
+            terminal_races = {
+                'success_before_cancel_response': (0.05, 'succeeded'),
+                'aborted_during_cancel_response': (0.22, 'aborted'),
+                'success_at_cancel_timeout': (0.42, 'succeeded'),
+                'success_after_cancel_response': (0.20, 'succeeded'),
+                'canceled_after_cancel_response': (0.15, 'canceled'),
+            }
+            if mode in terminal_races:
+                while rclpy.ok() and not self.cancel_received.wait(0.02):
+                    pass
+                delay, outcome = terminal_races[mode]
+                deadline = time.monotonic() + delay
+                while rclpy.ok() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                result = MoveJoint.Result()
+                result.command_id = 42
+                if outcome == 'succeeded':
+                    goal_handle.succeed()
+                    result.outcome = MoveJoint.Result.OUTCOME_COMPLETED
+                    result.reason = f'{mode} completed'
+                elif outcome == 'aborted':
+                    goal_handle.abort()
+                    result.outcome = MoveJoint.Result.OUTCOME_ABORTED
+                    result.reason = f'{mode} fixture abort'
+                else:
+                    cancel_deadline = time.monotonic() + 0.5
+                    while (
+                            rclpy.ok() and
+                            not goal_handle.is_cancel_requested and
+                            time.monotonic() < cancel_deadline):
+                        time.sleep(0.01)
+                    goal_handle.canceled()
+                    result.outcome = MoveJoint.Result.OUTCOME_CANCELED
+                    result.reason = f'{mode} fixture cancel'
+                write_marker(f'terminal_{outcome}')
+                return result
             while rclpy.ok():
                 if mode == 'cancel_race' and goal_handle.is_cancel_requested:
                     time.sleep(0.05)
@@ -210,6 +258,32 @@ def verify_cancel_race(executable, domain, directory):
             client.communicate(timeout=2.0)
 
 
+def verify_terminal_precedence(
+        executable, mode, expected_code, expected_text, domain, directory):
+    server, client, marker = start_case(executable, mode, domain, directory)
+    try:
+        wait_marker(marker, 'started')
+        stdout, stderr = client.communicate(timeout=4.0)
+        assert client.returncode == expected_code, (
+            mode, client.returncode, stdout, stderr)
+        output = stdout if expected_code == 0 else stderr
+        assert expected_text in output, (mode, stdout, stderr)
+        assert 'terminal result timeout' not in stderr, (mode, stderr)
+        assert 'lost after goal acceptance' not in stderr, (mode, stderr)
+        wait_marker(marker, 'cancel_requested')
+        terminal = {
+            0: 'terminal_succeeded',
+            6: 'terminal_canceled',
+            7: 'terminal_aborted',
+        }[expected_code]
+        wait_marker(marker, terminal)
+    finally:
+        stop(server)
+        if client.poll() is None:
+            client.kill()
+            client.communicate(timeout=2.0)
+
+
 def verify_context_shutdown(executable, domain, directory):
     server, client, marker = start_case(
         executable, 'started', domain, directory, context_shutdown=True)
@@ -241,6 +315,16 @@ def run_test(executable, production_executable):
         verify_slow_success(executable, base_domain + 3, directory)
         verify_cancel_race(executable, base_domain + 4, directory)
         verify_context_shutdown(executable, base_domain + 5, directory)
+        terminal_cases = (
+            ('success_before_cancel_response', 0, 'completed command_id=42'),
+            ('aborted_during_cancel_response', 7, 'fixture abort'),
+            ('success_at_cancel_timeout', 0, 'completed command_id=42'),
+            ('success_after_cancel_response', 0, 'completed command_id=42'),
+            ('canceled_after_cancel_response', 6, 'fixture cancel'),
+        )
+        for offset, (mode, code, text) in enumerate(terminal_cases, start=6):
+            verify_terminal_precedence(
+                executable, mode, code, text, base_domain + offset, directory)
 
 
 def main():
@@ -248,7 +332,10 @@ def main():
     parser.add_argument('--executable')
     parser.add_argument('--production-executable')
     parser.add_argument('--server', choices=(
-        'queued', 'started', 'settling', 'slow', 'cancel_race'))
+        'queued', 'started', 'settling', 'slow', 'cancel_race',
+        'success_before_cancel_response', 'aborted_during_cancel_response',
+        'success_at_cancel_timeout', 'success_after_cancel_response',
+        'canceled_after_cancel_response'))
     arguments = parser.parse_args()
     if arguments.server:
         run_server(arguments.server)
