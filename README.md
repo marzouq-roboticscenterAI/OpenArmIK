@@ -48,4 +48,17 @@ Results are structured `diagnostic_msgs/DiagnosticArray` messages on `/openarm_i
 
 RViz may report four unrealistic finger-inertia errors from the pinned canonical generated URDF. They are inherited model data; meshes and TF still load, and this adapter neither edits nor reinterprets that URDF.
 
-`model/` is installed as an ordinary CMake package (`openarm_model::openarm_model`); the ROS package finds that export instead of compiling monorepo-relative sources. `scripts/install_ros_dependencies.sh` is review-only unless explicitly passed `--apply`; it is never run automatically. Build and test with `colcon test --test-result-base ros2_ws/build` after `scripts/build.sh`. `scripts/test_ros_coverage.sh` rebuilds the authored adapter with gcov instrumentation and writes a reproducible text report under `ros2_ws/coverage/`.
+`model/` is installed as an ordinary CMake package (`openarm_model::openarm_model`); the ROS package finds that export instead of compiling monorepo-relative sources. `scripts/install_ros_dependencies.sh` is review-only unless explicitly passed `--apply`; it is never run automatically. After `scripts/build.sh`, test only the authored adapter with:
+
+```bash
+source /opt/ros/lyrical/setup.bash
+source ros2_ws/install/setup.bash
+colcon --log-base ros2_ws/log test \
+  --base-paths ros2_ws/src \
+  --packages-select openarm_ik_ros \
+  --build-base ros2_ws/build \
+  --install-base ros2_ws/install
+colcon test-result --test-result-base ros2_ws/build/openarm_ik_ros --verbose
+```
+
+The explicit package scope prevents the pinned upstream repositories from being mistaken for this workspace's test targets. `scripts/test_ros_coverage.sh` rebuilds the authored adapter with gcov instrumentation and writes a reproducible text report under `ros2_ws/coverage/`.
