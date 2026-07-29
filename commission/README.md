@@ -19,11 +19,22 @@ fresh encoder feedback, explicit E-stop/deadman state, prior travel, low velocit
 plus torque contact evidence, time/travel/speed/torque/temperature/contact-energy
 ceilings, retreat/reapproach repeatability, review, and software-only commit.
 Every fault or caller abort latches `OA_RECIPE_ABORT` and makes commit impossible.
+The approach, first contact dwell, retreat, reapproach, and second contact dwell
+share one qualified travel envelope and enforced phase deadlines.
 
 Arm-joint recipes are rejected unless the caller provides an explicit nonzero
-hardware-qualification revision and record. A gripper recipe may be marked
-simulation-only, but it still passes the same sample, interlock, ceiling,
-repeatability, review, and commit gates. Simulation never qualifies hardware.
+hardware-qualification revision and record, fixture revision, and complete
+other-joint posture. Those revisions and the live posture are revalidated on
+every step. A gripper recipe may be marked simulation-only only with a distinct
+simulation-evidence record and revision; its patch remains explicitly marked as
+simulation evidence. It still passes the same sample, interlock, ceiling,
+two-contact-dwell, repeatability, review, and commit gates. Simulation never
+qualifies hardware.
+
+Public records are size/version checked before later fields are read. Live
+handles are tracked by type so stale, arbitrary, double-destroyed, and cross-type
+handles are rejected without dereference; operations and destruction are
+serialized against each other.
 
 Build and test independently from the repository root:
 

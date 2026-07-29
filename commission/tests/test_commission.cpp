@@ -1,9 +1,11 @@
 #include "openarm_commission.h"
+#include "test_hooks.hpp"
 
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -27,6 +29,18 @@ T output_record() {
     value.abi_version = OA_COMMISSION_ABI_V1;
     return value;
 }
+
+template <typename T>
+struct GuardedRecord {
+    std::uint64_t before{UINT64_C(0x1122334455667788)};
+    T record{output_record<T>()};
+    std::uint64_t after{UINT64_C(0x8877665544332211)};
+
+    void check() const {
+        CHECK(before == UINT64_C(0x1122334455667788));
+        CHECK(after == UINT64_C(0x8877665544332211));
+    }
+};
 
 oa_commission_encoder_sample sample(std::uint64_t sequence,
                                     std::uint64_t time_ns,
@@ -132,16 +146,18 @@ void test_manual_fail_closed() {
     options = manual_options(1U, 1);
     CHECK(oa_commission_manual_create(&options, &session) == OA_COMMISSION_OK);
     auto report = output_record<oa_commission_manual_report>();
+    auto first = sample(1U, 100U, 0.2);
+    CHECK(oa_commission_manual_sample(session, 0U, 101U, &first, &report) ==
+          OA_COMMISSION_OK);
     auto enabled = sample(1U, 100U, 0.2, 0.0, 0.0, 1U);
-    CHECK(oa_commission_manual_sample(session, 0U, 101U, &enabled, &report) ==
+    enabled.feedback_seq = 2U;
+    enabled.sample_time_ns = 105U;
+    CHECK(oa_commission_manual_sample(session, 0U, 106U, &enabled, &report) ==
           OA_COMMISSION_EINTERLOCK);
-    auto fresh = sample(2U, 110U, 0.2);
-    CHECK(oa_commission_manual_sample(session, 0U, 131U, &fresh, &report) ==
-          OA_COMMISSION_ESTALE);
-    auto moving = sample(3U, 120U, 0.2, 0.03);
-    CHECK(oa_commission_manual_sample(session, 0U, 121U, &moving, &report) ==
-          OA_COMMISSION_EUNSTABLE);
-    CHECK(report.state == OA_MANUAL_COLLECT_REFERENCE_1);
+    CHECK(report.state == OA_MANUAL_ABORTED);
+    auto fresh = sample(3U, 110U, 0.2);
+    CHECK(oa_commission_manual_sample(session, 0U, 111U, &fresh, &report) ==
+          OA_COMMISSION_ESTATE);
 
     auto patch = output_record<oa_commission_mapping_patch>();
     std::memset(patch.motor_serial, 0x5a, sizeof(patch.motor_serial));
@@ -149,10 +165,32 @@ void test_manual_fail_closed() {
     CHECK(oa_commission_manual_commit(session, 8U, "fixture", &patch) ==
           OA_COMMISSION_ESTATE);
     CHECK(std::memcmp(&patch, &before, sizeof(patch)) == 0);
-    CHECK(oa_commission_manual_abort(session) == OA_COMMISSION_OK);
+    CHECK(oa_commission_manual_abort(session) == OA_COMMISSION_ESTATE);
     CHECK(oa_commission_manual_get_report(session, &report) == OA_COMMISSION_OK);
     CHECK(report.state == OA_MANUAL_ABORTED);
     oa_commission_manual_destroy(session);
+}
+
+void test_manual_stale_and_fault_interruptions_latch() {
+    for (const bool stale : {false, true}) {
+        const auto options = manual_options(1U, 1);
+        oa_commission_manual_session *session = nullptr;
+        CHECK(oa_commission_manual_create(&options, &session) == OA_COMMISSION_OK);
+        auto report = output_record<oa_commission_manual_report>();
+        const auto first = sample(1U, 100U, 0.2);
+        CHECK(oa_commission_manual_sample(session, 0U, 101U, &first, &report) ==
+              OA_COMMISSION_OK);
+        auto interrupted = sample(2U, 105U, 0.2);
+        interrupted.drive_fault = stale ? 0U : 1U;
+        const auto status = oa_commission_manual_sample(
+            session, 0U, stale ? 200U : 106U, &interrupted, &report);
+        CHECK(status == (stale ? OA_COMMISSION_ESTALE : OA_COMMISSION_EINTERLOCK));
+        CHECK(report.state == OA_MANUAL_ABORTED);
+        auto patch = output_record<oa_commission_mapping_patch>();
+        CHECK(oa_commission_manual_commit(session, 8U, "fixture", &patch) ==
+              OA_COMMISSION_ESTATE);
+        oa_commission_manual_destroy(session);
+    }
 }
 
 oa_commission_recipe recipe() {
@@ -164,6 +202,8 @@ oa_commission_recipe recipe() {
     value.simulation_only = 1U;
     value.minimum_contact_samples = 2U;
     value.expected_revision = 10U;
+    value.simulation_evidence_revision = 1U;
+    value.fixture_revision = 1U;
     value.maximum_sample_age_ns = 50U;
     value.maximum_approach_time_ns = 100U;
     value.contact_dwell_ns = 10U;
@@ -183,7 +223,7 @@ oa_commission_recipe recipe() {
     value.retreat_distance_rad = 0.05;
     value.repeatability_tolerance_rad = 0.02;
     std::strcpy(value.motor_serial, "DM-GRIPPER-SIM");
-    std::strcpy(value.qualification_record, "simulation-recipe-v1");
+    std::strcpy(value.simulation_evidence_record, "simulation-recipe-v1");
     std::strcpy(value.fixture_record, "simulated-closed-stop");
     return value;
 }
@@ -199,6 +239,8 @@ oa_commission_recipe_input recipe_input(std::uint64_t sequence,
     value.encoder = sample(sequence, time_ns, q, dq, torque, enabled);
     value.estop_clear = 1U;
     value.deadman_held = 1U;
+    value.evidence_revision = 1U;
+    value.fixture_revision = 1U;
     return value;
 }
 
@@ -275,13 +317,15 @@ struct RecipeDriver {
         }
         CHECK(send(0.12, 0.005, 2.0, 1U) == OA_COMMISSION_OK);
         if (target_state == OA_RECIPE_REPEATABILITY) {
+            CHECK(send(0.121, 0.005, 2.0, 1U) == OA_COMMISSION_OK);
             return;
         }
-        CHECK(send(0.12, 0.0, 0.0, 0U) == OA_COMMISSION_OK);
+        CHECK(send(0.121, 0.005, 2.0, 1U) == OA_COMMISSION_OK);
+        CHECK(send(0.121, 0.0, 0.0, 0U) == OA_COMMISSION_OK);
         if (target_state == OA_RECIPE_CANDIDATE) {
             return;
         }
-        CHECK(send(0.12, 0.0, 0.0, 0U, 0U, OA_REVIEW_ACCEPT) ==
+        CHECK(send(0.121, 0.0, 0.0, 0U, 0U, OA_REVIEW_ACCEPT) ==
               OA_COMMISSION_OK);
         CHECK(target_state == OA_RECIPE_REVIEW);
     }
@@ -303,17 +347,20 @@ void test_recipe_happy_path() {
     CHECK(driver.report.state == OA_RECIPE_REVIEW);
     CHECK(driver.action.kind == OA_RECIPE_ACTION_COMMIT_READY);
     CHECK(std::abs(driver.report.first_stop_output_rad - 0.1105) < 1.0e-12);
-    CHECK(std::abs(driver.report.second_stop_output_rad - 0.12) < 1.0e-12);
+    CHECK(std::abs(driver.report.second_stop_output_rad - 0.1205) < 1.0e-12);
     CHECK(driver.report.candidate_a == 1.0);
-    CHECK(std::abs(driver.report.candidate_b_rad + 0.11525) < 1.0e-12);
+    CHECK(std::abs(driver.report.candidate_b_rad + 0.1155) < 1.0e-12);
 
     auto patch = output_record<oa_commission_mapping_patch>();
     CHECK(oa_commission_recipe_commit(driver.session, 11U, &patch) ==
           OA_COMMISSION_OK);
     CHECK(patch.replacement_revision == 11U);
     CHECK(patch.joint == 7U);
-    CHECK(std::abs(patch.b_rad + 0.11525) < 1.0e-12);
-    CHECK(std::string(patch.evidence_record) == "simulated-closed-stop");
+    CHECK(std::abs(patch.b_rad + 0.1155) < 1.0e-12);
+    CHECK(patch.evidence_kind == OA_EVIDENCE_SIMULATION_ONLY);
+    CHECK(patch.qualification_revision == 1U);
+    CHECK(patch.fixture_revision == 1U);
+    CHECK(std::string(patch.evidence_record) == "simulation-recipe-v1");
     CHECK(oa_commission_recipe_abort(driver.session) == OA_COMMISSION_ESTATE);
 
     auto input = recipe_input(++driver.sequence, driver.time + 10U, 0.12, 0.0, 0.0, 0U);
@@ -329,6 +376,8 @@ void test_unqualified_arm_recipe_rejected() {
     configuration.recipe_kind = OA_RECIPE_ARM_JOINT;
     configuration.joint = 3U;
     configuration.simulation_only = 0U;
+    configuration.simulation_evidence_revision = 0U;
+    configuration.simulation_evidence_record[0] = '\0';
     oa_commission_recipe_session *session = nullptr;
     CHECK(oa_commission_recipe_create(&configuration, &session) ==
           OA_COMMISSION_EUNSUPPORTED);
@@ -336,6 +385,8 @@ void test_unqualified_arm_recipe_rejected() {
 
     configuration.hardware_qualified = 1U;
     configuration.qualification_revision = 42U;
+    configuration.required_posture_mask = UINT32_C(0x77);
+    configuration.posture_tolerance_rad = 0.01;
     std::strcpy(configuration.qualification_record, "bench-record-42");
     CHECK(oa_commission_recipe_create(&configuration, &session) == OA_COMMISSION_OK);
     oa_commission_recipe_destroy(session);
@@ -458,8 +509,9 @@ void test_faults_abort_and_never_commit() {
         RecipeDriver driver(configuration);
         driver.advance_to(OA_RECIPE_REAPPROACH);
         CHECK(driver.send(0.12, 0.005, 2.0, 1U) == OA_COMMISSION_OK);
+        CHECK(driver.send(0.121, 0.005, 2.0, 1U) == OA_COMMISSION_OK);
         CHECK(driver.report.state == OA_RECIPE_REPEATABILITY);
-        CHECK(driver.send(0.12, 0.0, 0.0, 0U) ==
+        CHECK(driver.send(0.121, 0.0, 0.0, 0U) ==
               OA_COMMISSION_EREPEATABILITY);
         CHECK(driver.report.abort_reason == OA_ABORT_REPEATABILITY);
         verify_no_commit(driver);
@@ -513,6 +565,197 @@ void test_stale_and_temperature_faults() {
     }
 }
 
+void test_review_reproductions() {
+    {
+        RecipeDriver driver(recipe());
+        driver.advance_to(OA_RECIPE_REAPPROACH);
+        CHECK(driver.action.target_output_rad <= 0.2);
+        CHECK(driver.action.maximum_travel_rad < 0.15);
+        CHECK(driver.send(0.25, 0.0, 2.0, 1U) == OA_COMMISSION_ELIMIT);
+        CHECK(driver.report.abort_reason == OA_ABORT_LIMIT);
+        verify_no_commit(driver);
+    }
+    {
+        RecipeDriver driver(recipe());
+        driver.advance_to(OA_RECIPE_CONTACT_DWELL);
+        CHECK(driver.send(0.111, 0.005, 2.0, 1U, 0U, OA_REVIEW_NONE, 101U) ==
+              OA_COMMISSION_ELIMIT);
+        CHECK(driver.report.abort_reason == OA_ABORT_TIMEOUT);
+        verify_no_commit(driver);
+    }
+    {
+        RecipeDriver driver(recipe());
+        CHECK(driver.send(0.0, 0.0, 0.0, 0U) == OA_COMMISSION_OK);
+        ++driver.sequence;
+        driver.time += 10U;
+        auto input = recipe_input(driver.sequence, driver.time, 0.0, 0.0, 0.0, 0U);
+        input.operator_ready = 1U;
+        input.encoder.mos_temperature_c = 100.0;
+        auto action = output_record<oa_commission_next_action>();
+        auto report = output_record<oa_commission_recipe_report>();
+        CHECK(oa_commission_recipe_step(driver.session, &input, &action, &report) ==
+              OA_COMMISSION_ELIMIT);
+        CHECK(action.kind == OA_RECIPE_ACTION_ABORT_DISABLE);
+        CHECK(report.state == OA_RECIPE_ABORT);
+    }
+    {
+        RecipeDriver driver(recipe());
+        driver.advance_to(OA_RECIPE_APPROACH);
+        CHECK(driver.send(0.01, 0.0, 0.0, 0U) == OA_COMMISSION_EINTERLOCK);
+        CHECK(driver.report.state == OA_RECIPE_ABORT);
+    }
+    {
+        RecipeDriver driver(recipe());
+        driver.advance_to(OA_RECIPE_REAPPROACH);
+        CHECK(driver.send(0.12, 0.005, 2.0, 1U) == OA_COMMISSION_OK);
+        CHECK(driver.report.state == OA_RECIPE_REAPPROACH);
+        CHECK(driver.action.kind == OA_RECIPE_ACTION_CONTACT_DWELL);
+        CHECK(driver.send(0.121, 0.02, 0.2, 1U) == OA_COMMISSION_EFAULT);
+        CHECK(driver.report.abort_reason == OA_ABORT_CONTACT);
+        verify_no_commit(driver);
+    }
+}
+
+void test_recipe_evidence_and_posture_binding() {
+    auto configuration = recipe();
+    configuration.recipe_kind = OA_RECIPE_ARM_JOINT;
+    configuration.joint = 3U;
+    configuration.hardware_qualified = 1U;
+    configuration.simulation_only = 1U;
+    configuration.qualification_revision = 42U;
+    std::strcpy(configuration.qualification_record, "bench-record-42");
+    oa_commission_recipe_session *session = nullptr;
+    CHECK(oa_commission_recipe_create(&configuration, &session) ==
+          OA_COMMISSION_EINVAL);
+
+    configuration.simulation_only = 0U;
+    configuration.simulation_evidence_revision = 0U;
+    configuration.simulation_evidence_record[0] = '\0';
+    configuration.required_posture_mask = UINT32_C(0x77);
+    configuration.posture_tolerance_rad = 0.01;
+    CHECK(oa_commission_recipe_create(&configuration, &session) == OA_COMMISSION_OK);
+    auto input = recipe_input(1U, 100U, 0.0, 0.0, 0.0, 0U);
+    input.evidence_revision = 42U;
+    input.fixture_revision = configuration.fixture_revision;
+    input.posture_mask = configuration.required_posture_mask;
+    input.posture_output_rad[0] = 0.02;
+    auto action = output_record<oa_commission_next_action>();
+    auto report = output_record<oa_commission_recipe_report>();
+    CHECK(oa_commission_recipe_step(session, &input, &action, &report) ==
+          OA_COMMISSION_EFAULT);
+    CHECK(report.abort_reason == OA_ABORT_UNQUALIFIED);
+    CHECK(action.kind == OA_RECIPE_ACTION_ABORT_DISABLE);
+    oa_commission_recipe_destroy(session);
+
+    RecipeDriver sim_driver(recipe());
+    ++sim_driver.sequence;
+    sim_driver.time += 10U;
+    auto wrong_fixture = recipe_input(
+        sim_driver.sequence, sim_driver.time, 0.0, 0.0, 0.0, 0U);
+    wrong_fixture.fixture_revision = 999U;
+    action = output_record<oa_commission_next_action>();
+    report = output_record<oa_commission_recipe_report>();
+    CHECK(oa_commission_recipe_step(
+              sim_driver.session, &wrong_fixture, &action, &report) ==
+          OA_COMMISSION_EFAULT);
+    CHECK(report.abort_reason == OA_ABORT_UNQUALIFIED);
+}
+
+void test_short_records_handles_canaries_and_exceptions() {
+    struct HeaderOnly {
+        std::uint32_t struct_size;
+        std::uint32_t abi_version;
+    };
+    auto short_recipe = std::make_unique<HeaderOnly>(
+        HeaderOnly{sizeof(HeaderOnly), OA_COMMISSION_ABI_V1});
+    oa_commission_recipe_session *recipe_session = nullptr;
+    CHECK(oa_commission_recipe_create(
+              reinterpret_cast<const oa_commission_recipe *>(short_recipe.get()),
+              &recipe_session) == OA_COMMISSION_EABI);
+    CHECK(recipe_session == nullptr);
+    auto four_byte_recipe = std::make_unique<std::uint32_t>(sizeof(std::uint32_t));
+    CHECK(oa_commission_recipe_create(
+              reinterpret_cast<const oa_commission_recipe *>(
+                  four_byte_recipe.get()),
+              &recipe_session) == OA_COMMISSION_EABI);
+
+    const auto configuration = recipe();
+    CHECK(oa_commission_recipe_create(&configuration, &recipe_session) ==
+          OA_COMMISSION_OK);
+    auto short_input = std::make_unique<HeaderOnly>(
+        HeaderOnly{sizeof(HeaderOnly), OA_COMMISSION_ABI_V1});
+    GuardedRecord<oa_commission_next_action> guarded_action;
+    GuardedRecord<oa_commission_recipe_report> guarded_report;
+    CHECK(oa_commission_recipe_step(
+              recipe_session,
+              reinterpret_cast<const oa_commission_recipe_input *>(short_input.get()),
+              &guarded_action.record,
+              &guarded_report.record) == OA_COMMISSION_EABI);
+    guarded_action.check();
+    guarded_report.check();
+
+    auto input = recipe_input(1U, 100U, 0.0, 0.0, 0.0, 0U);
+    CHECK(oa_commission_recipe_step(recipe_session,
+                                    &input,
+                                    &guarded_action.record,
+                                    &guarded_report.record) == OA_COMMISSION_OK);
+    guarded_action.check();
+    guarded_report.check();
+
+    auto short_output = HeaderOnly{sizeof(HeaderOnly), OA_COMMISSION_ABI_V1};
+    input = recipe_input(2U, 110U, 0.0, 0.0, 0.0, 0U);
+    CHECK(oa_commission_recipe_step(
+              recipe_session,
+              &input,
+              reinterpret_cast<oa_commission_next_action *>(&short_output),
+              &guarded_report.record) == OA_COMMISSION_EABI);
+
+    const auto manual_configuration = manual_options(1U, 1);
+    oa_commission_manual_session *manual_session = nullptr;
+    CHECK(oa_commission_manual_create(&manual_configuration, &manual_session) ==
+          OA_COMMISSION_OK);
+    CHECK(oa_commission_recipe_abort(
+              reinterpret_cast<oa_commission_recipe_session *>(manual_session)) ==
+          OA_COMMISSION_EINVAL);
+    oa_commission_recipe_destroy(
+        reinterpret_cast<oa_commission_recipe_session *>(manual_session));
+    GuardedRecord<oa_commission_manual_report> manual_report;
+    CHECK(oa_commission_manual_get_report(manual_session, &manual_report.record) ==
+          OA_COMMISSION_OK);
+    manual_report.check();
+
+    CHECK(oa_commission_manual_abort(
+              reinterpret_cast<oa_commission_manual_session *>(
+                  static_cast<std::uintptr_t>(UINT32_C(0x1234)))) ==
+          OA_COMMISSION_EINVAL);
+    auto *stale_manual = manual_session;
+    oa_commission_manual_destroy(manual_session);
+    CHECK(oa_commission_manual_abort(stale_manual) == OA_COMMISSION_EINVAL);
+    oa_commission_manual_destroy(stale_manual);
+    oa_commission_manual_session *replacement_manual = nullptr;
+    CHECK(oa_commission_manual_create(&manual_configuration, &replacement_manual) ==
+          OA_COMMISSION_OK);
+    CHECK(replacement_manual != stale_manual);
+    CHECK(oa_commission_manual_abort(stale_manual) == OA_COMMISSION_EINVAL);
+    oa_commission_manual_destroy(replacement_manual);
+
+    openarm::commission::test::throw_next_exception();
+    CHECK(oa_commission_recipe_get_report(recipe_session, &guarded_report.record) ==
+          OA_COMMISSION_EFAULT);
+    CHECK(oa_commission_recipe_get_report(recipe_session, &guarded_report.record) ==
+          OA_COMMISSION_OK);
+    oa_commission_recipe_destroy(recipe_session);
+    CHECK(oa_commission_recipe_abort(recipe_session) == OA_COMMISSION_EINVAL);
+    oa_commission_recipe_destroy(recipe_session);
+
+    openarm::commission::test::fail_next_allocation();
+    manual_session = reinterpret_cast<oa_commission_manual_session *>(
+        static_cast<std::uintptr_t>(UINT32_C(0x1234)));
+    CHECK(oa_commission_manual_create(&manual_configuration, &manual_session) ==
+          OA_COMMISSION_ENOMEM);
+    CHECK(manual_session == nullptr);
+}
+
 void test_abi_validation() {
     auto options = manual_options(1U, 1);
     options.abi_version = 999U;
@@ -520,7 +763,7 @@ void test_abi_validation() {
     CHECK(oa_commission_manual_create(&options, &session) == OA_COMMISSION_EABI);
     options.abi_version = OA_COMMISSION_ABI_V1;
     options.struct_size = 4U;
-    CHECK(oa_commission_manual_create(&options, &session) == OA_COMMISSION_EINVAL);
+    CHECK(oa_commission_manual_create(&options, &session) == OA_COMMISSION_EABI);
     CHECK(oa_commission_manual_abort(nullptr) == OA_COMMISSION_EINVAL);
     CHECK(oa_commission_recipe_abort(nullptr) == OA_COMMISSION_EINVAL);
 }
@@ -531,6 +774,7 @@ int main() {
     test_manual_known_sign();
     test_manual_two_reference_sign();
     test_manual_fail_closed();
+    test_manual_stale_and_fault_interruptions_latch();
     test_recipe_happy_path();
     test_unqualified_arm_recipe_rejected();
     test_abort_from_every_nonterminal_state();
@@ -538,6 +782,9 @@ int main() {
     test_faults_abort_and_never_commit();
     test_false_contact_requires_prior_travel();
     test_stale_and_temperature_faults();
+    test_review_reproductions();
+    test_recipe_evidence_and_posture_binding();
+    test_short_records_handles_canaries_and_exceptions();
     test_abi_validation();
     if (failures != 0) {
         std::cerr << failures << " test assertion(s) failed\n";

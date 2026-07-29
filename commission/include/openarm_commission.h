@@ -92,6 +92,12 @@ enum {
     OA_ABORT_UNQUALIFIED = 10
 };
 
+enum {
+    OA_EVIDENCE_MANUAL_FIXTURE = 1,
+    OA_EVIDENCE_HARDWARE_QUALIFIED = 2,
+    OA_EVIDENCE_SIMULATION_ONLY = 3
+};
+
 typedef struct oa_commission_manual_session oa_commission_manual_session;
 typedef struct oa_commission_recipe_session oa_commission_recipe_session;
 
@@ -149,6 +155,10 @@ typedef struct {
     uint64_t replacement_revision;
     uint32_t side;
     uint32_t joint;
+    uint32_t evidence_kind;
+    uint32_t recipe_kind;
+    uint64_t qualification_revision;
+    uint64_t fixture_revision;
     double a;
     double b_rad;
     char motor_serial[OA_COMMISSION_TEXT_CAPACITY];
@@ -167,6 +177,8 @@ typedef struct {
     uint32_t minimum_contact_samples;
     uint64_t expected_revision;
     uint64_t qualification_revision;
+    uint64_t simulation_evidence_revision;
+    uint64_t fixture_revision;
     uint64_t maximum_sample_age_ns;
     uint64_t maximum_approach_time_ns;
     uint64_t contact_dwell_ns;
@@ -185,8 +197,13 @@ typedef struct {
     double maximum_temperature_c;
     double retreat_distance_rad;
     double repeatability_tolerance_rad;
+    uint32_t required_posture_mask;
+    uint32_t reserved0;
+    double required_posture_output_rad[7];
+    double posture_tolerance_rad;
     char motor_serial[OA_COMMISSION_TEXT_CAPACITY];
     char qualification_record[OA_COMMISSION_TEXT_CAPACITY];
+    char simulation_evidence_record[OA_COMMISSION_TEXT_CAPACITY];
     char fixture_record[OA_COMMISSION_TEXT_CAPACITY];
 } oa_commission_recipe;
 
@@ -200,7 +217,10 @@ typedef struct {
     uint32_t operator_ready;
     uint32_t action_complete;
     uint32_t review_decision;
-    uint32_t reserved0;
+    uint32_t posture_mask;
+    uint64_t evidence_revision;
+    uint64_t fixture_revision;
+    double posture_output_rad[7];
 } oa_commission_recipe_input;
 
 typedef struct {

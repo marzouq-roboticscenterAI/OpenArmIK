@@ -51,6 +51,7 @@ private:
                                          const oa_commission_encoder_sample &sample) const noexcept;
     oa_commission_status finish_reference(std::uint32_t reference_index) noexcept;
     oa_commission_status calculate_candidate() noexcept;
+    oa_commission_status latch_abort(oa_commission_status status) noexcept;
 };
 
 class RecipeCalibrationSession final {
@@ -71,20 +72,25 @@ private:
     std::uint64_t last_feedback_seq_{0};
     std::uint64_t last_sample_time_ns_{0};
     std::uint64_t phase_start_ns_{0};
+    std::uint64_t phase_deadline_ns_{0};
     std::uint64_t dwell_start_ns_{0};
     std::uint64_t last_energy_time_ns_{0};
     std::uint32_t contact_samples_{0};
     double phase_start_q_{0.0};
+    double envelope_start_q_{0.0};
+    double envelope_end_q_{0.0};
     double contact_sum_q_{0.0};
     double first_stop_q_{0.0};
     double second_stop_q_{0.0};
     double candidate_a_{0.0};
     double candidate_b_{0.0};
     double contact_energy_j_{0.0};
+    bool second_contact_active_{false};
 
     oa_commission_status validate_input(const oa_commission_recipe_input &input) noexcept;
     oa_commission_status fail(oa_commission_status status, std::uint32_t reason) noexcept;
     oa_commission_status enforce_motion_limits(const oa_commission_recipe_input &input) noexcept;
+    oa_commission_status validate_binding(const oa_commission_recipe_input &input) noexcept;
     oa_commission_status update_energy(const oa_commission_recipe_input &input) noexcept;
     [[nodiscard]] bool contact_evidence(const oa_commission_recipe_input &input,
                                         double travel) const noexcept;

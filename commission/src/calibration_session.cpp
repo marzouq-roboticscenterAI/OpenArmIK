@@ -114,7 +114,7 @@ oa_commission_status ManualCalibrationSession::sample(
     }
     const auto validation = validate_sample(now_ns, sample_value);
     if (validation != OA_COMMISSION_OK) {
-        return validation;
+        return latch_abort(validation);
     }
     last_feedback_seq_ = sample_value.feedback_seq;
     last_sample_time_ns_ = sample_value.sample_time_ns;
@@ -140,6 +140,17 @@ oa_commission_status ManualCalibrationSession::sample(
         return OA_COMMISSION_OK;
     }
     return finish_reference(reference_index);
+}
+
+oa_commission_status ManualCalibrationSession::latch_abort(
+    oa_commission_status status) noexcept {
+    state_ = OA_MANUAL_ABORTED;
+    accumulators_ = {};
+    means_ = {};
+    spreads_ = {};
+    candidate_a_ = 0.0;
+    candidate_b_ = 0.0;
+    return status;
 }
 
 oa_commission_status ManualCalibrationSession::finish_reference(
@@ -210,6 +221,10 @@ oa_commission_status ManualCalibrationSession::commit(
     candidate.replacement_revision = replacement_revision;
     candidate.side = options_.side;
     candidate.joint = options_.joint;
+    candidate.evidence_kind = OA_EVIDENCE_MANUAL_FIXTURE;
+    candidate.recipe_kind = 0U;
+    candidate.qualification_revision = 0U;
+    candidate.fixture_revision = 0U;
     candidate.a = candidate_a_;
     candidate.b_rad = candidate_b_;
     copy_text(candidate.motor_serial, options_.motor_serial);
@@ -279,6 +294,40 @@ oa_commission_status RecipeCalibrationSession::validate_input(
     if (input.encoder.drive_fault != 0U) {
         return fail(OA_COMMISSION_EFAULT, OA_ABORT_INTERLOCK);
     }
+    if (input.encoder.mos_temperature_c > recipe_.maximum_temperature_c ||
+        input.encoder.coil_temperature_c > recipe_.maximum_temperature_c) {
+        return fail(OA_COMMISSION_ELIMIT, OA_ABORT_LIMIT);
+    }
+    return validate_binding(input);
+}
+
+oa_commission_status RecipeCalibrationSession::validate_binding(
+    const oa_commission_recipe_input &input) noexcept {
+    const std::uint64_t expected_evidence_revision =
+        recipe_.simulation_only != 0U ? recipe_.simulation_evidence_revision
+                                     : recipe_.qualification_revision;
+    if (input.evidence_revision != expected_evidence_revision ||
+        input.fixture_revision != recipe_.fixture_revision) {
+        return fail(OA_COMMISSION_EFAULT, OA_ABORT_UNQUALIFIED);
+    }
+    if (recipe_.recipe_kind != OA_RECIPE_ARM_JOINT) {
+        return OA_COMMISSION_OK;
+    }
+    if (input.posture_mask != recipe_.required_posture_mask) {
+        return fail(OA_COMMISSION_EFAULT, OA_ABORT_UNQUALIFIED);
+    }
+    for (std::size_t index = 0; index < 7U; ++index) {
+        const auto bit = static_cast<std::uint32_t>(1U << index);
+        if ((recipe_.required_posture_mask & bit) == 0U) {
+            continue;
+        }
+        if (!std::isfinite(input.posture_output_rad[index]) ||
+            std::abs(input.posture_output_rad[index] -
+                     recipe_.required_posture_output_rad[index]) >
+                recipe_.posture_tolerance_rad) {
+            return fail(OA_COMMISSION_EFAULT, OA_ABORT_UNQUALIFIED);
+        }
+    }
     return OA_COMMISSION_OK;
 }
 
@@ -303,6 +352,9 @@ oa_commission_status RecipeCalibrationSession::update_energy(
 oa_commission_status RecipeCalibrationSession::enforce_motion_limits(
     const oa_commission_recipe_input &input) noexcept {
     if (input.estop_clear == 0U || input.deadman_held == 0U) {
+        return fail(OA_COMMISSION_EINTERLOCK, OA_ABORT_INTERLOCK);
+    }
+    if (input.encoder.drive_enabled == 0U) {
         return fail(OA_COMMISSION_EINTERLOCK, OA_ABORT_INTERLOCK);
     }
     if (std::abs(input.encoder.dq_output_rad_s) > recipe_.maximum_speed_rad_s ||
@@ -343,30 +395,31 @@ oa_commission_next_action RecipeCalibrationSession::action(
     switch (kind) {
         case OA_RECIPE_ACTION_APPROACH:
         case OA_RECIPE_ACTION_CONTACT_DWELL:
-            value.valid_until_ns =
-                saturating_add(phase_start_ns_, recipe_.maximum_approach_time_ns);
+            value.valid_until_ns = phase_deadline_ns_;
             value.direction = recipe_.approach_direction;
-            value.maximum_travel_rad = recipe_.maximum_approach_travel_rad;
-            value.target_output_rad =
-                phase_start_q_ + recipe_.approach_direction *
-                                     recipe_.maximum_approach_travel_rad;
+            value.maximum_travel_rad = std::max(
+                0.0,
+                directional_travel(phase_start_q_,
+                                   envelope_end_q_,
+                                   recipe_.approach_direction));
+            value.target_output_rad = envelope_end_q_;
             break;
         case OA_RECIPE_ACTION_RETREAT:
-            value.valid_until_ns =
-                saturating_add(phase_start_ns_, recipe_.maximum_retreat_time_ns);
+            value.valid_until_ns = phase_deadline_ns_;
             value.direction = -recipe_.approach_direction;
             value.maximum_travel_rad = recipe_.retreat_distance_rad;
             value.target_output_rad =
                 first_stop_q_ - recipe_.approach_direction * recipe_.retreat_distance_rad;
             break;
         case OA_RECIPE_ACTION_REAPPROACH:
-            value.valid_until_ns =
-                saturating_add(phase_start_ns_, recipe_.maximum_approach_time_ns);
+            value.valid_until_ns = phase_deadline_ns_;
             value.direction = recipe_.approach_direction;
-            value.maximum_travel_rad = recipe_.maximum_approach_travel_rad;
-            value.target_output_rad =
-                phase_start_q_ + recipe_.approach_direction *
-                                     recipe_.maximum_approach_travel_rad;
+            value.maximum_travel_rad = std::max(
+                0.0,
+                directional_travel(phase_start_q_,
+                                   envelope_end_q_,
+                                   recipe_.approach_direction));
+            value.target_output_rad = envelope_end_q_;
             break;
         default:
             value.valid_until_ns = input.now_ns;
@@ -420,6 +473,12 @@ oa_commission_status RecipeCalibrationSession::step(
             state_ = OA_RECIPE_APPROACH;
             phase_start_ns_ = input.now_ns;
             phase_start_q_ = input.encoder.q_output_rad;
+            envelope_start_q_ = phase_start_q_;
+            envelope_end_q_ = envelope_start_q_ +
+                              recipe_.approach_direction *
+                                  recipe_.maximum_approach_travel_rad;
+            phase_deadline_ns_ =
+                saturating_add(phase_start_ns_, recipe_.maximum_approach_time_ns);
             last_energy_time_ns_ = input.encoder.sample_time_ns;
             next_action = action(OA_RECIPE_ACTION_APPROACH, input);
             return OA_COMMISSION_OK;
@@ -431,14 +490,16 @@ oa_commission_status RecipeCalibrationSession::step(
                 return limits;
             }
             const double travel = directional_travel(
-                phase_start_q_, input.encoder.q_output_rad, recipe_.approach_direction);
+                envelope_start_q_,
+                input.encoder.q_output_rad,
+                recipe_.approach_direction);
             if (travel < -kDirectionTolerance ||
                 travel > recipe_.maximum_approach_travel_rad) {
                 const auto result = fail(OA_COMMISSION_ELIMIT, OA_ABORT_LIMIT);
                 next_action = action(OA_RECIPE_ACTION_ABORT_DISABLE, input);
                 return result;
             }
-            if (input.now_ns - phase_start_ns_ > recipe_.maximum_approach_time_ns) {
+            if (input.now_ns > phase_deadline_ns_) {
                 const auto result = fail(OA_COMMISSION_ELIMIT, OA_ABORT_TIMEOUT);
                 next_action = action(OA_RECIPE_ACTION_ABORT_DISABLE, input);
                 return result;
@@ -462,7 +523,14 @@ oa_commission_status RecipeCalibrationSession::step(
                 return limits;
             }
             const double travel = directional_travel(
-                phase_start_q_, input.encoder.q_output_rad, recipe_.approach_direction);
+                envelope_start_q_,
+                input.encoder.q_output_rad,
+                recipe_.approach_direction);
+            if (input.now_ns > phase_deadline_ns_) {
+                const auto result = fail(OA_COMMISSION_ELIMIT, OA_ABORT_TIMEOUT);
+                next_action = action(OA_RECIPE_ACTION_ABORT_DISABLE, input);
+                return result;
+            }
             if (travel > recipe_.maximum_approach_travel_rad ||
                 !contact_evidence(input, travel)) {
                 const auto result = fail(OA_COMMISSION_EFAULT, OA_ABORT_CONTACT);
@@ -480,6 +548,8 @@ oa_commission_status RecipeCalibrationSession::step(
             state_ = OA_RECIPE_RETREAT;
             phase_start_ns_ = input.now_ns;
             phase_start_q_ = input.encoder.q_output_rad;
+            phase_deadline_ns_ =
+                saturating_add(phase_start_ns_, recipe_.maximum_retreat_time_ns);
             next_action = action(OA_RECIPE_ACTION_RETREAT, input);
             return OA_COMMISSION_OK;
         }
@@ -492,13 +562,20 @@ oa_commission_status RecipeCalibrationSession::step(
             }
             const double travel = directional_travel(
                 phase_start_q_, input.encoder.q_output_rad, -recipe_.approach_direction);
+            const double global_travel = directional_travel(
+                envelope_start_q_,
+                input.encoder.q_output_rad,
+                recipe_.approach_direction);
             if (travel < -kDirectionTolerance ||
-                travel > recipe_.retreat_distance_rad + recipe_.repeatability_tolerance_rad) {
+                travel > recipe_.retreat_distance_rad +
+                             recipe_.repeatability_tolerance_rad ||
+                global_travel < -kDirectionTolerance ||
+                global_travel > recipe_.maximum_approach_travel_rad) {
                 const auto result = fail(OA_COMMISSION_ELIMIT, OA_ABORT_LIMIT);
                 next_action = action(OA_RECIPE_ACTION_ABORT_DISABLE, input);
                 return result;
             }
-            if (input.now_ns - phase_start_ns_ > recipe_.maximum_retreat_time_ns) {
+            if (input.now_ns > phase_deadline_ns_) {
                 const auto result = fail(OA_COMMISSION_ELIMIT, OA_ABORT_TIMEOUT);
                 next_action = action(OA_RECIPE_ACTION_ABORT_DISABLE, input);
                 return result;
@@ -508,7 +585,12 @@ oa_commission_status RecipeCalibrationSession::step(
                 state_ = OA_RECIPE_REAPPROACH;
                 phase_start_ns_ = input.now_ns;
                 phase_start_q_ = input.encoder.q_output_rad;
+                phase_deadline_ns_ =
+                    saturating_add(phase_start_ns_, recipe_.maximum_approach_time_ns);
                 last_energy_time_ns_ = input.encoder.sample_time_ns;
+                second_contact_active_ = false;
+                contact_samples_ = 0U;
+                contact_sum_q_ = 0.0;
                 next_action = action(OA_RECIPE_ACTION_REAPPROACH, input);
                 return OA_COMMISSION_OK;
             }
@@ -524,21 +606,47 @@ oa_commission_status RecipeCalibrationSession::step(
             }
             const double travel = directional_travel(
                 phase_start_q_, input.encoder.q_output_rad, recipe_.approach_direction);
-            if (travel < -kDirectionTolerance ||
-                travel > recipe_.maximum_approach_travel_rad) {
+            const double global_travel = directional_travel(
+                envelope_start_q_,
+                input.encoder.q_output_rad,
+                recipe_.approach_direction);
+            if (travel < -kDirectionTolerance || global_travel < -kDirectionTolerance ||
+                global_travel > recipe_.maximum_approach_travel_rad) {
                 const auto result = fail(OA_COMMISSION_ELIMIT, OA_ABORT_LIMIT);
                 next_action = action(OA_RECIPE_ACTION_ABORT_DISABLE, input);
                 return result;
             }
-            if (input.now_ns - phase_start_ns_ > recipe_.maximum_approach_time_ns) {
+            if (input.now_ns > phase_deadline_ns_) {
                 const auto result = fail(OA_COMMISSION_ELIMIT, OA_ABORT_TIMEOUT);
                 next_action = action(OA_RECIPE_ACTION_ABORT_DISABLE, input);
                 return result;
             }
-            if (contact_evidence(input, travel)) {
-                second_stop_q_ = input.encoder.q_output_rad;
+            if (second_contact_active_) {
+                if (!contact_evidence(input, travel)) {
+                    const auto result = fail(OA_COMMISSION_EFAULT, OA_ABORT_CONTACT);
+                    next_action = action(OA_RECIPE_ACTION_ABORT_DISABLE, input);
+                    return result;
+                }
+                ++contact_samples_;
+                contact_sum_q_ += input.encoder.q_output_rad;
+                if (input.encoder.sample_time_ns - dwell_start_ns_ <
+                        recipe_.contact_dwell_ns ||
+                    contact_samples_ < recipe_.minimum_contact_samples) {
+                    next_action = action(OA_RECIPE_ACTION_CONTACT_DWELL, input);
+                    return OA_COMMISSION_OK;
+                }
+                second_stop_q_ = contact_sum_q_ /
+                                 static_cast<double>(contact_samples_);
                 state_ = OA_RECIPE_REPEATABILITY;
                 next_action = action(OA_RECIPE_ACTION_HOLD_DISABLED, input);
+                return OA_COMMISSION_OK;
+            }
+            if (contact_evidence(input, travel)) {
+                second_contact_active_ = true;
+                dwell_start_ns_ = input.encoder.sample_time_ns;
+                contact_samples_ = 1U;
+                contact_sum_q_ = input.encoder.q_output_rad;
+                next_action = action(OA_RECIPE_ACTION_CONTACT_DWELL, input);
                 return OA_COMMISSION_OK;
             }
             next_action = action(OA_RECIPE_ACTION_REAPPROACH, input);
@@ -616,11 +724,19 @@ oa_commission_status RecipeCalibrationSession::commit(
     candidate.replacement_revision = replacement_revision;
     candidate.side = recipe_.side;
     candidate.joint = recipe_.joint;
+    candidate.evidence_kind = recipe_.simulation_only != 0U
+                                  ? OA_EVIDENCE_SIMULATION_ONLY
+                                  : OA_EVIDENCE_HARDWARE_QUALIFIED;
+    candidate.recipe_kind = recipe_.recipe_kind;
+    candidate.qualification_revision = recipe_.simulation_only != 0U
+                                               ? recipe_.simulation_evidence_revision
+                                               : recipe_.qualification_revision;
+    candidate.fixture_revision = recipe_.fixture_revision;
     candidate.a = candidate_a_;
     candidate.b_rad = candidate_b_;
     copy_text(candidate.motor_serial, recipe_.motor_serial);
     const char *evidence = recipe_.simulation_only != 0U
-                               ? recipe_.fixture_record
+                               ? recipe_.simulation_evidence_record
                                : recipe_.qualification_record;
     copy_text(candidate.evidence_record, evidence);
     patch = candidate;
