@@ -1,7 +1,7 @@
 # Simulator feedback coherence fix
 
-Date: 2026-07-29 (America/Los_Angeles)  
-Branch: `fix/sim-feedback-coherence`  
+Date: 2026-07-29 (America/Los_Angeles)
+Branch: `fix/sim-feedback-coherence`
 Disposition: **DONE**
 
 ## Result
@@ -98,3 +98,35 @@ combines a very long feedback timeout with a delay exceeding 64 control captures
 will receive fail-closed `OA_ECAN` rather than unbounded buffering. At the
 standard 10 ms cycle this bounds queued history to 640 ms; ordinary delays
 beyond the standard 50 ms feedback timeout fail freshness first.
+
+## Review-gate correction
+
+Independent review of commit `3e37a9e442c447067da67cc9fcaa9da57d201d46`
+found that explicit `OA_STOP_DISABLE` changed the internal enable state without
+retiring queued pre-stop generations. The same audit identified equivalent
+immediate-snapshot exposure in E-stop and event-overflow transitions, while
+reset-to-closed relied on a later verification to retire history.
+
+All authority-reducing transitions now use one coherent materialization rule.
+When a verified measured generation exists, the transition preserves its q,
+encodes zero velocity with the requested enabled-hold or disabled status, clears
+the delay ring, advances the feedback sequence, stamps the transition time, and
+only then publishes the transition event. Motor fault status remains
+authoritative over the enabled bit. An unverified closed controller retires
+history without making invalid state fresh or incrementing its sequence.
+
+Public-ABI regressions configure 20 ms paired delay and exercise explicit
+disable and controlled stops, disarm, E-stop, reset/close/reverify, producer
+watchdog expiry, missed-cycle timeout, command transport failure, delayed
+partial generation, motor fault, and event-queue overflow. They assert the
+immediate transition snapshot, the next two no-delivery snapshots, later
+post-stop feedback, event sequence provenance, measured-q preservation, disabled
+or enabled-hold policy, and retained motor-fault evidence.
+
+Fresh follow-up verification used `/tmp/openarmik-feedback-gate2-release`,
+`/tmp/openarmik-feedback-gate2-asan`, and
+`/tmp/openarmik-feedback-gate2-tsan` with the same CMake options documented
+above. Release, ASan/UBSan with leak/error halting, and TSan with error halting
+each passed 3/3 registered tests. Both ABI executables were also run directly
+from the fresh Release build and returned zero. Cppcheck and the staged
+base-to-HEAD whitespace check passed without diagnostics.

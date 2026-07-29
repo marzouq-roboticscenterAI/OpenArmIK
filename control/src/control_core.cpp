@@ -356,6 +356,10 @@ void ArmRuntime::clear_queue() noexcept {
     feedback_queue_count_ = 0U;
 }
 
+void ArmRuntime::retire_pending_feedback() noexcept {
+    clear_queue();
+}
+
 void ArmRuntime::force_state(const JointVector &q, const JointVector &dq,
                              const std::uint64_t now_ns) noexcept {
     clear_queue();
@@ -1111,8 +1115,14 @@ oa_control_status Controller::set_interlock(const bool estop_active,
         const auto failed_id = command_id_;
         executing_.reset();
         command_id_ = 0U;
-        for (auto &runtime : arm_) {
-            runtime.set_enabled(false);
+        if (lifecycle_ == OA_LIFECYCLE_CLOSED ||
+            lifecycle_ == OA_LIFECYCLE_VERIFYING) {
+            for (auto &runtime : arm_) {
+                runtime.set_enabled(false);
+                runtime.retire_pending_feedback();
+            }
+        } else {
+            materialize_stop(false);
         }
         lifecycle_ = OA_LIFECYCLE_ESTOP;
         outstanding_nonce_ = ++nonce_counter_;
@@ -1144,19 +1154,22 @@ oa_control_status Controller::stop(const std::uint32_t stop_kind) noexcept {
     const auto stopped_id = command_id_;
     if (executing_) {
         publish(OA_EVENT_ABORTED, OA_CONTROL_OK, stopped_id);
+        if (lifecycle_ == OA_LIFECYCLE_FAULT) {
+            return OA_CONTROL_EBUSY;
+        }
     }
     executing_.reset();
     command_id_ = 0U;
     if (stop_kind == OA_STOP_DISABLE) {
-        for (auto &runtime : arm_) {
-            runtime.set_enabled(false);
-        }
+        materialize_stop(false);
         lifecycle_ = OA_LIFECYCLE_DISARMED;
     } else {
+        materialize_stop(true);
         lifecycle_ = OA_LIFECYCLE_ARMED_IDLE;
     }
+    active_stop_kind_ = OA_STOP_DISABLE;
     publish(OA_EVENT_STOPPED, OA_CONTROL_OK, stopped_id);
-    return OA_CONTROL_OK;
+    return lifecycle_ == OA_LIFECYCLE_FAULT ? OA_CONTROL_EBUSY : OA_CONTROL_OK;
 }
 
 oa_control_status Controller::disarm(const std::uint64_t deadline_ns) noexcept {
@@ -1169,10 +1182,7 @@ oa_control_status Controller::disarm(const std::uint64_t deadline_ns) noexcept {
     }
     executing_.reset();
     command_id_ = 0U;
-    for (auto &runtime : arm_) {
-        runtime.set_enabled(false);
-        runtime.force_state(runtime.measured_q(), JointVector{}, now_ns_);
-    }
+    materialize_stop(false);
     lifecycle_ = OA_LIFECYCLE_DISARMED;
     publish(OA_EVENT_DISARMED, OA_CONTROL_OK, 0U);
     return OA_CONTROL_OK;
@@ -1189,6 +1199,7 @@ oa_control_status Controller::reset(const oa_reset_request &request) noexcept {
     for (auto &runtime : arm_) {
         runtime.set_injection(0U, 0U, 0U, 0U, 0U, 0U);
         runtime.set_enabled(false);
+        runtime.retire_pending_feedback();
     }
     ++verify_epoch_;
     outstanding_nonce_ = 0U;
@@ -1214,9 +1225,7 @@ void Controller::publish(const std::uint32_t kind, const oa_control_status cause
         --event_count_;
         executing_.reset();
         command_id_ = 0U;
-        for (auto &runtime : arm_) {
-            runtime.set_enabled(false);
-        }
+        materialize_stop(false);
         lifecycle_ = OA_LIFECYCLE_FAULT;
     }
     oa_event event{};
@@ -1233,10 +1242,15 @@ void Controller::publish(const std::uint32_t kind, const oa_control_status cause
     ++event_count_;
 }
 
-void Controller::materialize_fault_stop(const bool enabled_hold) noexcept {
+void Controller::materialize_stop(const bool enabled_hold) noexcept {
     for (auto &runtime : arm_) {
         if (options_.backend == OA_BACKEND_VIRTUAL) {
-            runtime.materialize_stop(enabled_hold, now_ns_);
+            if (runtime.feedback_sequence() != 0U) {
+                runtime.materialize_stop(enabled_hold, now_ns_);
+            } else {
+                runtime.set_enabled(false);
+                runtime.retire_pending_feedback();
+            }
         } else {
             runtime.set_enabled(false);
         }
@@ -1255,7 +1269,7 @@ void Controller::latch_fault(const oa_control_status cause,
                                  active_stop_kind_ == OA_STOP_CONTROLLED;
     executing_.reset();
     command_id_ = 0U;
-    materialize_fault_stop(controlled_stop);
+    materialize_stop(controlled_stop);
     active_stop_kind_ = OA_STOP_DISABLE;
     lifecycle_ = OA_LIFECYCLE_FAULT;
     outstanding_nonce_ = ++nonce_counter_;

@@ -76,6 +76,10 @@ complete, fresh, coherent, fault-free producer/cycle watchdog faults materialize
 a measured zero-velocity enabled hold for controlled-stop requests. Missing or
 skewed feedback, partial sends, and motor faults take priority and instead
 materialize a zero-velocity two-arm disable fallback.
+Explicit stops, disarm, E-stop, event-overflow faults, and watchdog or transport
+faults retire delayed history before atomically publishing their measured hold
+or disable generation. Reset-to-closed retires pending history without creating
+a measurement when verification has never completed.
 
 Build and test without Python:
 
