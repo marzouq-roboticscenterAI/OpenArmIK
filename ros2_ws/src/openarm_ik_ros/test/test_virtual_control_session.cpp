@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -37,18 +38,25 @@ struct Recorder
     return true;
   }
 
-  void terminal(const CommandResult & value)
+  bool terminal(const CommandResult & value)
   {
     std::lock_guard<std::mutex> lock(mutex);
     result = value;
     ++terminal_count;
     condition.notify_all();
+    return true;
   }
 
   bool wait_result(std::chrono::seconds timeout)
   {
     std::unique_lock<std::mutex> lock(mutex);
     return condition.wait_for(lock, timeout, [this]() {return result.has_value();});
+  }
+
+  std::size_t state_count()
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    return states.size();
   }
 };
 
@@ -107,7 +115,9 @@ TEST(VirtualControlSession, PublishesLaggingMeasuredStateAndCompletesOnFeedback)
   command.side = OA_LEFT;
   command.joint = 3U;
   command.target_rad = 0.2;
-  command.terminal = [&recorder](const CommandResult & value) {recorder.terminal(value);};
+  command.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
   ASSERT_TRUE(session.submit(std::move(command), reason));
   ASSERT_TRUE(recorder.wait_result(15s));
   ASSERT_EQ(recorder.result->outcome, CommandResult::Outcome::completed) <<
@@ -148,7 +158,9 @@ TEST(VirtualControlSession, PairedNamedTargetsReachMeasuredCompletion)
   command.owner = "paired";
   command.left_tcp_m = {0.20, 0.30, 0.85};
   command.right_tcp_m = {0.20, -0.30, 0.85};
-  command.terminal = [&recorder](const CommandResult & value) {recorder.terminal(value);};
+  command.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
   ASSERT_TRUE(session.submit(std::move(command), reason));
   ASSERT_TRUE(recorder.wait_result(40s));
   EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::completed) <<
@@ -171,7 +183,9 @@ TEST(VirtualControlSession, CancelDisableStopsAndRejectsLaterCommands)
   command.side = OA_RIGHT;
   command.joint = 0U;
   command.target_rad = 0.8;
-  command.terminal = [&recorder](const CommandResult & value) {recorder.terminal(value);};
+  command.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
   ASSERT_TRUE(session.submit(std::move(command), reason));
   std::this_thread::sleep_for(30ms);
   ASSERT_TRUE(session.cancel("cancel"));
@@ -207,7 +221,9 @@ TEST(VirtualControlSession, ReservedCancelStopsThenTerminatesAcceptedCommandExac
   command.side = OA_LEFT;
   command.joint = 0U;
   command.target_rad = 0.1;
-  command.terminal = [&recorder](const CommandResult & value) {recorder.terminal(value);};
+  command.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
   ASSERT_TRUE(session.submit(std::move(command), reason));
   ASSERT_TRUE(recorder.wait_result(2s));
   EXPECT_EQ(recorder.terminal_count, 1U);
@@ -264,7 +280,7 @@ TEST(VirtualControlSession, CompletionRetainsOwnershipThroughTerminalCallback)
       }
       std::unique_lock<std::mutex> lock(terminal_mutex);
       terminal_condition.wait(lock, [&]() {return release;});
-      recorder.terminal(value);
+      return recorder.terminal(value);
     };
   ASSERT_TRUE(session.submit(std::move(command), reason));
   bool callback_entered = false;
@@ -306,19 +322,207 @@ TEST(VirtualControlSession, ThrowingTerminalCallbackCannotTerminateWorker)
   command.side = OA_LEFT;
   command.joint = 3U;
   command.target_rad = 0.02;
-  command.terminal = [&](const CommandResult &) {
+  command.terminal = [&](const CommandResult &) -> bool {
       ++terminal_count;
       throw std::runtime_error("intentional terminal callback failure");
     };
   ASSERT_TRUE(session.submit(std::move(command), reason));
   ASSERT_TRUE(wait_health(session, [&](const auto & health) {
       return terminal_count.load() == 1U &&
-             health.adapter_state == openarm_ik_ros::AdapterState::idle;
+             health.adapter_state == openarm_ik_ros::AdapterState::fault;
     }, 10s));
+  const auto health = session.health();
+  EXPECT_EQ(health.last_cause, OA_CONTROL_EFAULT);
+  EXPECT_EQ(health.snapshot.lifecycle, OA_LIFECYCLE_DISARMED);
+  EXPECT_EQ(health.reason, "terminal_callback_failed");
+  EXPECT_TRUE(health.owner.empty());
+  const auto states_before = recorder.state_count();
+  std::this_thread::sleep_for(100ms);
+  EXPECT_EQ(recorder.state_count(), states_before);
+  EXPECT_FALSE(session.reserve("after-terminal-failure", reason));
+  EXPECT_EQ(reason, "adapter_fault");
   const auto begin = std::chrono::steady_clock::now();
   session.close();
   EXPECT_LT(std::chrono::steady_clock::now() - begin, 2s);
   EXPECT_EQ(terminal_count.load(), 1U);
+  EXPECT_EQ(session.health().adapter_state, openarm_ik_ros::AdapterState::fault);
+}
+
+TEST(VirtualControlSession, ThrowingFeedbackStopsPublicationAndReportsAuthoritativeState)
+{
+  Recorder recorder;
+  std::atomic<std::size_t> feedback_count{};
+  VirtualControlSession session(
+    [&recorder](const MeasuredState & value) {return recorder.state(value);}, []() {});
+  std::string reason;
+  ASSERT_TRUE(session.reserve("feedback-failure", reason));
+  SessionCommand command;
+  command.kind = SessionCommand::Kind::joint;
+  command.owner = "feedback-failure";
+  command.side = OA_LEFT;
+  command.joint = 3U;
+  command.target_rad = 0.2;
+  command.feedback = [&feedback_count](const openarm_ik_ros::CommandFeedback &) -> bool {
+      ++feedback_count;
+      throw std::runtime_error("intentional feedback callback failure");
+    };
+  command.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(command), reason));
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+      return health.adapter_state == openarm_ik_ros::AdapterState::fault;
+    }, 10s));
+  ASSERT_TRUE(recorder.wait_result(2s));
+  const auto health = session.health();
+  EXPECT_EQ(feedback_count.load(), 1U);
+  EXPECT_EQ(recorder.terminal_count, 1U);
+  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::aborted);
+  EXPECT_EQ(recorder.result->control_status, OA_CONTROL_EFAULT);
+  EXPECT_EQ(recorder.result->cause, OA_CONTROL_EFAULT);
+  EXPECT_EQ(recorder.result->event, OA_EVENT_FAULTED);
+  EXPECT_EQ(recorder.result->lifecycle, health.snapshot.lifecycle);
+  EXPECT_EQ(recorder.result->lifecycle, OA_LIFECYCLE_DISARMED);
+  EXPECT_EQ(health.last_cause, OA_CONTROL_EFAULT);
+  EXPECT_EQ(health.reason, "feedback_callback_failed");
+  EXPECT_TRUE(health.owner.empty());
+  const auto states_before = recorder.state_count();
+  std::this_thread::sleep_for(100ms);
+  EXPECT_EQ(recorder.state_count(), states_before);
+  EXPECT_FALSE(session.reserve("after-feedback-failure", reason));
+  EXPECT_EQ(reason, "adapter_fault");
+}
+
+TEST(VirtualControlSession, ThrowingStateCallbackStopsPublicationAndTerminatesActiveOnce)
+{
+  Recorder recorder;
+  std::atomic<bool> throw_state{};
+  std::atomic<std::size_t> callback_count{};
+  VirtualControlSession session(
+    [&recorder, &throw_state, &callback_count](const MeasuredState & value) {
+      ++callback_count;
+      if (throw_state.exchange(false)) {
+        throw std::runtime_error("intentional state callback failure");
+      }
+      return recorder.state(value);
+    }, []() {});
+  std::string reason;
+  ASSERT_TRUE(session.reserve("state-failure", reason));
+  SessionCommand command;
+  command.kind = SessionCommand::Kind::joint;
+  command.owner = "state-failure";
+  command.side = OA_RIGHT;
+  command.joint = 0U;
+  command.target_rad = 0.8;
+  command.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(command), reason));
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+      return health.adapter_state == openarm_ik_ros::AdapterState::executing;
+    }, 10s));
+  throw_state = true;
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+      return health.adapter_state == openarm_ik_ros::AdapterState::fault;
+    }, 5s));
+  ASSERT_TRUE(recorder.wait_result(2s));
+  const auto health = session.health();
+  EXPECT_EQ(recorder.terminal_count, 1U);
+  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::aborted);
+  EXPECT_EQ(recorder.result->control_status, OA_CONTROL_EFAULT);
+  EXPECT_EQ(recorder.result->cause, OA_CONTROL_EFAULT);
+  EXPECT_EQ(recorder.result->event, OA_EVENT_FAULTED);
+  EXPECT_EQ(recorder.result->lifecycle, OA_LIFECYCLE_DISARMED);
+  EXPECT_EQ(health.snapshot.lifecycle, OA_LIFECYCLE_DISARMED);
+  EXPECT_EQ(health.last_cause, OA_CONTROL_EFAULT);
+  EXPECT_EQ(health.reason, "state_callback_failed");
+  EXPECT_TRUE(health.owner.empty());
+  const auto callbacks_before = callback_count.load();
+  std::this_thread::sleep_for(100ms);
+  EXPECT_EQ(callback_count.load(), callbacks_before);
+  EXPECT_EQ(recorder.terminal_count, 1U);
+  EXPECT_FALSE(session.reserve("after-state-failure", reason));
+  EXPECT_EQ(reason, "adapter_fault");
+}
+
+TEST(VirtualControlSession, IdleCycleOverrunReportsAuthoritativeCoreFault)
+{
+  Recorder recorder;
+  std::atomic<std::size_t> callback_count{};
+  VirtualControlSession session(
+    [&recorder, &callback_count](const MeasuredState & value) {
+      if (++callback_count == 2U) {
+        std::this_thread::sleep_for(35ms);
+      }
+      return recorder.state(value);
+    }, []() {});
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+      return health.adapter_state == openarm_ik_ros::AdapterState::fault;
+    }, 5s));
+  const auto health = session.health();
+  EXPECT_EQ(health.snapshot.lifecycle, OA_LIFECYCLE_FAULT);
+  EXPECT_EQ(health.last_cause, OA_CONTROL_ETIMEOUT);
+  EXPECT_EQ(health.reason, "advance_failed");
+  const auto callbacks_before = callback_count.load();
+  std::this_thread::sleep_for(100ms);
+  EXPECT_EQ(callback_count.load(), callbacks_before);
+  std::string reason;
+  EXPECT_FALSE(session.reserve("after-idle-overrun", reason));
+  EXPECT_EQ(reason, "adapter_fault");
+}
+
+TEST(VirtualControlSession, NativeDeadlineFaultUsesAuthoritativeLifecycle)
+{
+  Recorder recorder;
+  std::atomic<bool> stall{};
+  VirtualControlSession session(
+    [&recorder, &stall](const MeasuredState & value) {
+      if (stall.exchange(false)) {
+        std::this_thread::sleep_for(35ms);
+      }
+      return recorder.state(value);
+    }, []() {});
+  std::string reason;
+  ASSERT_TRUE(session.reserve("deadline-fault", reason));
+  SessionCommand command;
+  command.kind = SessionCommand::Kind::joint;
+  command.owner = "deadline-fault";
+  command.side = OA_RIGHT;
+  command.joint = 0U;
+  command.target_rad = 0.8;
+  command.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(command), reason));
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+      return health.adapter_state == openarm_ik_ros::AdapterState::executing;
+    }, 10s));
+  stall = true;
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+      return health.adapter_state == openarm_ik_ros::AdapterState::fault;
+    }, 5s));
+  ASSERT_TRUE(recorder.wait_result(2s));
+  const auto health = session.health();
+  EXPECT_EQ(recorder.terminal_count, 1U);
+  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::aborted);
+  EXPECT_EQ(recorder.result->control_status, OA_CONTROL_ETIMEOUT);
+  EXPECT_EQ(recorder.result->cause, OA_CONTROL_ETIMEOUT);
+  EXPECT_EQ(recorder.result->lifecycle, health.snapshot.lifecycle);
+  EXPECT_EQ(recorder.result->lifecycle, OA_LIFECYCLE_FAULT);
+  EXPECT_EQ(recorder.result->event, OA_EVENT_FAULTED);
+  EXPECT_EQ(recorder.result->reason, "advance_failed");
+  EXPECT_GT(recorder.result->seed_feedback_seq[0], 0U);
+  EXPECT_GT(recorder.result->seed_feedback_seq[1], 0U);
+  EXPECT_GT(recorder.result->plan_duration_ns, 0U);
+  EXPECT_EQ(health.last_cause, OA_CONTROL_ETIMEOUT);
+  EXPECT_EQ(health.reason, "advance_failed");
+  EXPECT_TRUE(health.owner.empty());
+  const auto states_before = recorder.state_count();
+  std::this_thread::sleep_for(100ms);
+  EXPECT_EQ(recorder.state_count(), states_before);
+  EXPECT_EQ(recorder.terminal_count, 1U);
+  EXPECT_FALSE(session.reserve("after-deadline-fault", reason));
+  EXPECT_EQ(reason, "adapter_fault");
 }
 
 TEST(VirtualControlSession, ActiveShutdownStopsAndReportsMeasuredProvenanceOnce)
@@ -334,7 +538,9 @@ TEST(VirtualControlSession, ActiveShutdownStopsAndReportsMeasuredProvenanceOnce)
   command.side = OA_RIGHT;
   command.joint = 0U;
   command.target_rad = 0.8;
-  command.terminal = [&recorder](const CommandResult & value) {recorder.terminal(value);};
+  command.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
   ASSERT_TRUE(session.submit(std::move(command), reason));
   ASSERT_TRUE(wait_health(session, [](const auto & health) {
       return health.adapter_state == openarm_ik_ros::AdapterState::executing;

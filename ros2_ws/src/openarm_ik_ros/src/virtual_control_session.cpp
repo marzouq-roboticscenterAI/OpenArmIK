@@ -172,8 +172,10 @@ public:
         return;
       }
       closing_ = true;
-      health_.adapter_state = AdapterState::closing;
-      health_.reason = "shutdown";
+      if (health_.adapter_state != AdapterState::fault) {
+        health_.adapter_state = AdapterState::closing;
+        health_.reason = "shutdown";
+      }
       cv_.notify_all();
     }
     if (worker_.joinable()) {
@@ -238,6 +240,9 @@ private:
 
         {
           std::lock_guard<std::mutex> lock(mutex_);
+          if (health_.adapter_state == AdapterState::fault) {
+            break;
+          }
           if (health_.adapter_state == AdapterState::stopped_requires_restart) {
             continue;
           }
@@ -320,7 +325,7 @@ private:
       health_.verify_epoch = verify.verify_epoch;
       health_.reason = "ready";
     }
-    if (!invoke_state_callback(MeasuredState{snapshot_, controller_now_ns_})) {
+    if (invoke_state_callback(MeasuredState{snapshot_, controller_now_ns_}) != OA_CONTROL_OK) {
       throw std::runtime_error("initial measured state publication failed");
     }
   }
@@ -364,12 +369,15 @@ private:
       fault(OA_CONTROL_ESTALE, "invalid_measured_snapshot");
       return false;
     }
-    if (!invoke_state_callback(MeasuredState{snapshot_, controller_now_ns_})) {
-      fault(OA_CONTROL_ETIMEOUT, "publication_clock_invalid");
+    const auto callback_status = invoke_state_callback(
+      MeasuredState{snapshot_, controller_now_ns_});
+    if (callback_status != OA_CONTROL_OK) {
+      fault(
+        callback_status, callback_status == OA_CONTROL_ETIMEOUT ?
+        "state_callback_rejected" : "state_callback_failed");
       return false;
     }
-    publish_feedback();
-    return true;
+    return publish_feedback();
   }
 
   void process_pending()
@@ -397,17 +405,24 @@ private:
       result.lifecycle = snapshot_.lifecycle;
       result.event = OA_EVENT_STOPPED;
       result.reason = "canceled_reserved_disable_stop";
-      invoke_terminal_callback(*pending, result);
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (health_.owner == pending->owner) {
-        health_.owner.clear();
+      const bool terminal_ok = invoke_terminal_callback(*pending, result);
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (health_.owner == pending->owner) {
+          health_.owner.clear();
+        }
+        cancelled_reservation_owner_.clear();
+        terminalizing_owner_.clear();
+        health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
+        health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
+        if (terminal_ok) {
+          health_.reason = result.reason;
+          notify_health_unlocked();
+        }
       }
-      cancelled_reservation_owner_.clear();
-      terminalizing_owner_.clear();
-      health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
-      health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
-      health_.reason = result.reason;
-      notify_health_unlocked();
+      if (!terminal_ok) {
+        fault(OA_CONTROL_EFAULT, "terminal_callback_failed");
+      }
       return;
     }
 
@@ -531,18 +546,25 @@ private:
       std::lock_guard<std::mutex> lock(mutex_);
       terminalizing_owner_ = command.owner;
     }
-    invoke_terminal_callback(command, result);
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (health_.owner == command.owner) {
-      health_.owner.clear();
+    const bool terminal_ok = invoke_terminal_callback(command, result);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (health_.owner == command.owner) {
+        health_.owner.clear();
+      }
+      health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
+      health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
+      terminalizing_owner_.clear();
+      if (terminal_ok) {
+        health_.adapter_state = AdapterState::idle;
+        health_.reason = reason;
+        health_.last_cause = status;
+        notify_health_unlocked();
+      }
     }
-    health_.adapter_state = AdapterState::idle;
-    health_.reason = reason;
-    health_.last_cause = status;
-    health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
-    health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
-    terminalizing_owner_.clear();
-    notify_health_unlocked();
+    if (!terminal_ok) {
+      fault(OA_CONTROL_EFAULT, "terminal_callback_failed");
+    }
   }
 
   bool heartbeat(const std::uint64_t now_ns)
@@ -589,6 +611,9 @@ private:
       }
       if (event.kind == OA_EVENT_COMPLETED) {
         complete_active(event);
+        if (adapter_faulted()) {
+          return;
+        }
       } else if (event.kind == OA_EVENT_FAULTED || event.kind == OA_EVENT_ESTOP) {
         fault(event.cause, "controller_fault_event");
         return;
@@ -621,7 +646,7 @@ private:
       result.reason = "completed_measured_feedback";
       terminalizing_owner_ = command.owner;
     }
-    invoke_terminal_callback(command, result);
+    const bool terminal_ok = invoke_terminal_callback(command, result);
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!active_ || active_->command_id != event.command_id) {
@@ -633,22 +658,28 @@ private:
       if (health_.owner == command.owner) {
         health_.owner.clear();
       }
-      health_.adapter_state = AdapterState::idle;
       health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
       health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
-      health_.reason = "completed";
+      if (terminal_ok) {
+        health_.adapter_state = AdapterState::idle;
+        health_.reason = "completed";
+      }
     }
-    invoke_health_callback();
+    if (terminal_ok) {
+      invoke_health_callback();
+    } else {
+      fault(OA_CONTROL_EFAULT, "terminal_callback_failed");
+    }
   }
 
-  void publish_feedback()
+  bool publish_feedback()
   {
-    std::function<void(const CommandFeedback &)> callback;
+    std::function<bool(const CommandFeedback &)> callback;
     CommandFeedback feedback;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!active_ || !active_->command.feedback) {
-        return;
+        return true;
       }
       callback = active_->command.feedback;
       feedback.lifecycle = snapshot_.lifecycle;
@@ -672,10 +703,13 @@ private:
         std::clamp(1.0 - std::sqrt(remaining_squared / start_squared), 0.0, 1.0);
     }
     try {
-      callback(feedback);
+      if (callback(feedback)) {
+        return true;
+      }
     } catch (...) {
-      fault(OA_CONTROL_EFAULT, "feedback_callback_failed");
     }
+    fault(OA_CONTROL_EFAULT, "feedback_callback_failed");
+    return false;
   }
 
   void process_cancel()
@@ -714,6 +748,9 @@ private:
     {
       stop_status = oa_controller_stop(controller_, OA_STOP_DISABLE);
       drain_events();
+      if (adapter_faulted()) {
+        return;
+      }
     }
     if (!refresh_stopped_snapshot()) {
       stop_status = OA_CONTROL_EFAULT;
@@ -736,25 +773,32 @@ private:
       result.event = active_command ? OA_EVENT_ABORTED : OA_EVENT_STOPPED;
       result.reason = stop_status == OA_CONTROL_OK ?
         "canceled_disable_stop" : "cancel_disable_stop_failed";
-      invoke_terminal_callback(*command, result);
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (active_ && active_->command.owner == owner) {
-        active_.reset();
+      const bool terminal_ok = invoke_terminal_callback(*command, result);
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (active_ && active_->command.owner == owner) {
+          active_.reset();
+        }
+        if (pending_ && pending_->owner == owner) {
+          pending_.reset();
+        }
+        terminalizing_owner_.clear();
+        if (health_.owner == owner) {
+          health_.owner.clear();
+        }
+        health_.command_id = 0U;
+        health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
+        health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
+        if (terminal_ok) {
+          health_.adapter_state = AdapterState::stopped_requires_restart;
+          health_.last_cause = stop_status;
+          health_.reason = result.reason;
+          notify_health_unlocked();
+        }
       }
-      if (pending_ && pending_->owner == owner) {
-        pending_.reset();
+      if (!terminal_ok) {
+        fault(OA_CONTROL_EFAULT, "terminal_callback_failed");
       }
-      terminalizing_owner_.clear();
-      if (health_.owner == owner) {
-        health_.owner.clear();
-      }
-      health_.command_id = 0U;
-      health_.adapter_state = AdapterState::stopped_requires_restart;
-      health_.last_cause = stop_status;
-      health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
-      health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
-      health_.reason = result.reason;
-      notify_health_unlocked();
       return;
     }
 
@@ -770,16 +814,14 @@ private:
     }
   }
 
-  bool refresh_stopped_snapshot()
+  bool refresh_authoritative_snapshot()
   {
-    oa_snapshot stopped{};
-    init(stopped);
-    if (oa_controller_snapshot(controller_, &stopped) != OA_CONTROL_OK ||
-      stopped.lifecycle != OA_LIFECYCLE_DISARMED)
-    {
+    oa_snapshot authoritative{};
+    init(authoritative);
+    if (oa_controller_snapshot(controller_, &authoritative) != OA_CONTROL_OK) {
       return false;
     }
-    snapshot_ = stopped;
+    snapshot_ = authoritative;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       health_.snapshot = snapshot_;
@@ -788,12 +830,27 @@ private:
     return true;
   }
 
+  bool refresh_stopped_snapshot()
+  {
+    return refresh_authoritative_snapshot() && snapshot_.lifecycle == OA_LIFECYCLE_DISARMED;
+  }
+
+  bool adapter_faulted() const
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return health_.adapter_state == AdapterState::fault;
+  }
+
   void fault(const oa_control_status cause, const std::string & reason)
   {
-    const auto stop_status = oa_controller_stop(controller_, OA_STOP_DISABLE);
-    if (stop_status == OA_CONTROL_OK) {
-      (void)refresh_stopped_snapshot();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (health_.adapter_state == AdapterState::fault) {
+        return;
+      }
     }
+    (void)oa_controller_stop(controller_, OA_STOP_DISABLE);
+    (void)refresh_authoritative_snapshot();
     std::optional<Active> active;
     std::optional<SessionCommand> pending;
     {
@@ -831,10 +888,13 @@ private:
       result.event = OA_EVENT_FAULTED;
       result.cause = cause;
       result.reason = reason;
-      invoke_terminal_callback(*command, result);
+      const bool terminal_ok = invoke_terminal_callback(*command, result);
       std::lock_guard<std::mutex> lock(mutex_);
       health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
       health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
+      if (!terminal_ok) {
+        health_.reason = "terminal_callback_failed_after_fault";
+      }
     }
     std::lock_guard<std::mutex> lock(mutex_);
     health_.owner.clear();
@@ -868,11 +928,15 @@ private:
         stop_status = OA_CONTROL_EFAULT;
       }
     }
+    const SessionHealth terminal_health = health();
+    const bool controller_faulted = terminal_health.adapter_state == AdapterState::fault;
     SessionCommand * command = active ? &active->command : (pending ? &*pending : nullptr);
+    bool terminal_ok = true;
     if (command != nullptr) {
       CommandResult result;
       result.outcome = CommandResult::Outcome::aborted;
-      result.control_status = stop_status == OA_CONTROL_OK ? OA_CONTROL_ESTATE : stop_status;
+      result.control_status = controller_faulted ? terminal_health.last_cause :
+        (stop_status == OA_CONTROL_OK ? OA_CONTROL_ESTATE : stop_status);
       result.command_id = active ? active->command_id : 0U;
       if (active) {
         result.seed_feedback_seq[0] = active->report.seed_feedback_seq[0];
@@ -883,19 +947,34 @@ private:
       result.terminal_feedback_seq[0] = snapshot_.arm[0].feedback_seq;
       result.terminal_feedback_seq[1] = snapshot_.arm[1].feedback_seq;
       result.lifecycle = snapshot_.lifecycle;
-      result.event = OA_EVENT_ABORTED;
-      result.reason = stop_status == OA_CONTROL_OK ? "shutdown_disable_stop" :
-        "shutdown_disable_stop_failed";
-      invoke_terminal_callback(*command, result);
+      result.event = controller_faulted ? OA_EVENT_FAULTED : OA_EVENT_ABORTED;
+      result.cause = controller_faulted ? terminal_health.last_cause : OA_CONTROL_OK;
+      result.reason = controller_faulted ? terminal_health.reason :
+        (stop_status == OA_CONTROL_OK ? "shutdown_disable_stop" :
+        "shutdown_disable_stop_failed");
+      terminal_ok = invoke_terminal_callback(*command, result);
       std::lock_guard<std::mutex> lock(mutex_);
       health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
       health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
     }
-    std::lock_guard<std::mutex> lock(mutex_);
-    health_.owner.clear();
-    health_.command_id = 0U;
-    health_.last_cause = stop_status;
-    terminalizing_owner_.clear();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      health_.owner.clear();
+      health_.command_id = 0U;
+      terminalizing_owner_.clear();
+      if (terminal_ok && !controller_faulted) {
+        health_.last_cause = stop_status;
+      }
+    }
+    if (!terminal_ok) {
+      if (controller_faulted) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        health_.reason = "terminal_callback_failed_after_fault";
+        notify_health_unlocked();
+      } else {
+        fault(OA_CONTROL_EFAULT, "terminal_callback_failed");
+      }
+    }
   }
 
   void destroy_handles() noexcept
@@ -912,12 +991,15 @@ private:
     invoke_health_callback();
   }
 
-  bool invoke_state_callback(const MeasuredState & state) noexcept
+  oa_control_status invoke_state_callback(const MeasuredState & state) noexcept
   {
     try {
-      return state_callback_ && state_callback_(state);
+      if (!state_callback_) {
+        return OA_CONTROL_EFAULT;
+      }
+      return state_callback_(state) ? OA_CONTROL_OK : OA_CONTROL_ETIMEOUT;
     } catch (...) {
-      return false;
+      return OA_CONTROL_EFAULT;
     }
   }
 
@@ -931,14 +1013,13 @@ private:
     }
   }
 
-  static void invoke_terminal_callback(
+  static bool invoke_terminal_callback(
     const SessionCommand & command, const CommandResult & result) noexcept
   {
     try {
-      if (command.terminal) {
-        command.terminal(result);
-      }
+      return !command.terminal || command.terminal(result);
     } catch (...) {
+      return false;
     }
   }
 

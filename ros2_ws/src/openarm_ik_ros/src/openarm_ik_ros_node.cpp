@@ -283,18 +283,20 @@ private:
     command.target_rad = goal->target_rad;
     command.feedback = [this, goal_handle](const CommandFeedback & value) {
         if (!goal_publishable(goal_handle)) {
-          return;
+          return false;
         }
-        auto feedback = std::make_shared<MoveJoint::Feedback>();
-        feedback->lifecycle = value.lifecycle;
-        feedback->event = value.event;
-        feedback->command_id = value.command_id;
-        feedback->left_feedback_seq = value.feedback_seq[0];
-        feedback->right_feedback_seq = value.feedback_seq[1];
-        feedback->measured_progress = value.measured_progress;
         try {
+          auto feedback = std::make_shared<MoveJoint::Feedback>();
+          feedback->lifecycle = value.lifecycle;
+          feedback->event = value.event;
+          feedback->command_id = value.command_id;
+          feedback->left_feedback_seq = value.feedback_seq[0];
+          feedback->right_feedback_seq = value.feedback_seq[1];
+          feedback->measured_progress = value.measured_progress;
           goal_handle->publish_feedback(feedback);
+          return true;
         } catch (...) {
+          return false;
         }
       };
     const auto goal_id = goal_handle->get_goal_id();
@@ -307,7 +309,7 @@ private:
         result->plan_duration_ns = value.plan_duration_ns;
         result->terminal_feedback_seq = value.terminal_feedback_seq[side];
         record_terminal("move_joint", owner, request_stamp, value);
-        (void)finish_goal(goal_handle, result, value.outcome);
+        return finish_goal(goal_handle, result, value.outcome);
       };
     std::string reason;
     if (!session_->submit(std::move(command), reason)) {
@@ -384,18 +386,20 @@ private:
     command.right_tcp_m = right;
     command.feedback = [this, goal_handle](const CommandFeedback & value) {
         if (!goal_publishable(goal_handle)) {
-          return;
+          return false;
         }
-        auto feedback = std::make_shared<MovePairedTcp::Feedback>();
-        feedback->lifecycle = value.lifecycle;
-        feedback->event = value.event;
-        feedback->command_id = value.command_id;
-        feedback->left_feedback_seq = value.feedback_seq[0];
-        feedback->right_feedback_seq = value.feedback_seq[1];
-        feedback->measured_progress = value.measured_progress;
         try {
+          auto feedback = std::make_shared<MovePairedTcp::Feedback>();
+          feedback->lifecycle = value.lifecycle;
+          feedback->event = value.event;
+          feedback->command_id = value.command_id;
+          feedback->left_feedback_seq = value.feedback_seq[0];
+          feedback->right_feedback_seq = value.feedback_seq[1];
+          feedback->measured_progress = value.measured_progress;
           goal_handle->publish_feedback(feedback);
+          return true;
         } catch (...) {
+          return false;
         }
       };
     const auto goal_id = goal_handle->get_goal_id();
@@ -410,7 +414,7 @@ private:
         result->left_terminal_feedback_seq = value.terminal_feedback_seq[0];
         result->right_terminal_feedback_seq = value.terminal_feedback_seq[1];
         record_terminal("move_paired_tcp", owner, request_stamp, value);
-        (void)finish_goal(goal_handle, result, value.outcome);
+        return finish_goal(goal_handle, result, value.outcome);
       };
     if (!session_->submit(std::move(command), reason)) {
       abort_paired_before_submit(goal_handle, owner, reason);
@@ -518,6 +522,7 @@ private:
     command.right_tcp_m = right;
     command.terminal = [this, owner, request_stamp](const CommandResult & result) {
         record_terminal("deprecated_paired_xyz", owner, request_stamp, result);
+        return true;
       };
     if (!session_->submit(std::move(command), reason)) {
       session_->release(owner, reason);

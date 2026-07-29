@@ -66,8 +66,8 @@ struct SessionCommand
   double target_rad{};
   std::array<double, 3> left_tcp_m{};
   std::array<double, 3> right_tcp_m{};
-  std::function<void(const CommandFeedback &)> feedback;
-  std::function<void(const CommandResult &)> terminal;
+  std::function<bool(const CommandFeedback &)> feedback;
+  std::function<bool(const CommandResult &)> terminal;
 };
 
 struct SessionHealth

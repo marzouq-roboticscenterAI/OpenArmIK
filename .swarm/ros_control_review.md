@@ -1,12 +1,14 @@
-# Independent ROS/control review of `b3993ba`
+# Independent ROS/control re-review through `63f5617`
 
 Date: 2026-07-29 (America/Los_Angeles)
-Compared: `b3993ba85fe34ed1af971eec01bc3af4a94b0663` against `29657f7`
+Reviewed: merge `be628f9` plus fix `63f5617`, with `b3993ba` and the prior
+review used as the regression baseline
 Disposition: **FINDINGS**
 
-No GUI, CAN, external network, hardware, commissioning, or physical-control
-operation was performed. The implementation was not modified; this report is
-the only worktree write.
+No GUI, CAN, network service, hardware, commissioning, calibration, or physical
+control operation was performed. DDS traffic was confined to isolated ROS
+domains. The implementation was not modified; this report is the only worktree
+write.
 
 ## Critical
 
@@ -14,194 +16,132 @@ None.
 
 ## Important
 
-### I1. SIGINT during an active action aborts the node and loses the terminal result
+### I1. A callback fault continues publishing apparently live measured state, and a core fault reports a stale lifecycle
 
-`VirtualControlSession::shutdown_on_owner_thread()` disable-stops an active
-command and then invokes its terminal callback
-(`virtual_control_session.cpp:679-706`). The ROS callback calls
-`goal->abort(result)` without an exception boundary
-(`openarm_ik_ros_node.cpp:365-393`). During SIGINT, `rclcpp::spin()` has already
-returned and action teardown can remove the goal before the session is closed
-from the node destructor (`openarm_ik_ros_node.cpp:188-193,637-649`). The callback
-then throws through the session's `run() noexcept`, causing `std::terminate`
-rather than bounded graceful shutdown.
+`publish_feedback()` catches an exception from an action feedback callback and
+calls `fault()` (`virtual_control_session.cpp:644-678`), but it returns `void`.
+Consequently `publish_measured()` returns true (`361-372`) and the worker loop
+continues. The loop gates only `stopped_requires_restart`, not `fault`
+(`239-244`). `fault()` has already disable-stopped the controller and cleared
+the active command, but subsequent DISARMED virtual advances and measured-state
+callbacks continue. At the ROS boundary those callbacks publish new
+`JointState` messages, making a faulted adapter look live.
 
-Isolated-domain reproduction against the fresh install:
-
-1. Start `openarm_ik_ros_node` in domain 197.
-2. Start the compiled CLI goal
-   `move-joint openarm_left_joint4 1.5` and allow execution to begin.
-3. Send SIGINT to the node.
-
-Observed node exit was abnormal (`ros2run` reported process failure 250) with:
+This was reproduced against the exact fresh RelWithDebInfo build by submitting
+a production `VirtualControlSession` command whose feedback callback throws.
+The adapter reached `fault`, disable-stop produced lifecycle 2
+(`OA_LIFECYCLE_DISARMED`), and the aborted terminal callback ran exactly once,
+yet measured-state callback count increased from 2 to 22 over the following
+100 ms:
 
 ```text
-terminate called after throwing an instance of 'std::runtime_error'
-  what():  Asked to publish result for goal that does not exist
+adapter1=fault lifecycle1=2 reason1=feedback_callback_failed
+states_before=2 states_after=22 adapter2=fault lifecycle2=2 terminals=1
 ```
 
-The client received no terminal action result and exited 5 with `terminal
-result timeout`. The node stopped within about 1.14 s, and the controller
-disable-stop is attempted before the throwing callback, but the required clean,
-exactly-once terminalization and exception-safe destruction are not met.
-
-### I2. The documented clean build path cannot build this commit
-
-The new ROS target requires both `openarm_control` and
-`openarm_control_msgs` (`openarm_ik_ros/CMakeLists.txt:14-15`), but
-`scripts/build.sh` still builds/installs only `model` (`scripts/build.sh:10-15`)
-and its colcon selection omits `openarm_control_msgs`
-(`scripts/build.sh:23-29`). On a clean checkout it therefore has neither an
-installed `openarm_controlConfig.cmake` nor a built message package. The review's
-fresh colcon build succeeded only after separately building/installing model and
-control and explicitly selecting `openarm_control_msgs`; the advertised
-`./scripts/build.sh` workflow is not self-contained.
-
-### I3. Cancellation is not correct for the reserved/pending phases
-
-`cancel()` accepts any matching reserved owner (`virtual_control_session.cpp:
-125-133`), but `process_cancel()` calls `OA_STOP_DISABLE` only when `active_`
-exists (`593-617`). If cancellation wins while merely reserved, no command
-object exists, so no terminal callback is issued; nevertheless the adapter
-clears ownership and reports `stopped_requires_restart` (`618-642`) while the
-controller remains armed.
-
-A direct test of the production session performed `reserve("reserved")` then
-`cancel("reserved")`; both returned true, after 30 ms the adapter was
-`stopped_requires_restart`, but the snapshot lifecycle was 4
-(`OA_LIFECYCLE_ARMED_IDLE`), not disabled/disarmed. If the ROS accepted callback
-subsequently tries to submit, it instead aborts the goal as a reservation
-mismatch, despite cancellation having been accepted. This violates cancellation
-coverage for reserved/planning phases and makes the restart gate disagree with
-the underlying lifecycle.
-
-For an executing cancellation, stop does occur, but no post-stop snapshot is
-taken. Diagnostics continue to publish the pre-stop snapshot lifecycle via
-`openarm_ik_ros_node.cpp:546-594`, so they can report controller lifecycle
-`EXECUTING` while `executing=false` and the adapter says
-`stopped_requires_restart`.
-
-### I4. The deprecated PoseArray terminal acknowledgement can be attributed to a different request
-
-The compatibility topic has no action result, so its terminal diagnostic must
-retain the exact legacy request identity. Instead all ingress paths share the
-single `last_action_`, `last_owner_`, and `last_request_stamp_ns_` record
-(`openarm_ik_ros_node.cpp:514-533`). The legacy terminal callback updates only
-`last_committed_` and `last_reason_` (`453-458`). A concurrent rejected request
-can therefore replace the action/owner while leaving the legacy stamp, after
-which legacy completion sets `committed=true` on that mixed record.
-
-This was reproduced in isolated domain 232: a valid legacy paired command began
-as owner `legacy:1785361972535783345`; an invalid `MoveJoint` goal was then
-rejected. The terminal diagnostic reported:
+There is a second truthfulness failure in the same fault path. `fault()` only
+refreshes `snapshot_` when `oa_controller_stop()` succeeds (`791-796`). If
+`oa_controller_advance()` has already latched the native controller into
+`OA_LIFECYCLE_FAULT`, stop is rejected by the core, so adapter health and an
+active terminal result retain the last pre-fault snapshot (`828-833`). A 35 ms
+cycle overrun during an active command caused the native deadline fault and
+produced exactly one aborted terminal callback with this stale result:
 
 ```text
-last_action=move_joint
-last_goal_id=3f531388795f4fcc9caea21b4f3ed9ea
-request_stamp_ns=1785361972535783345
-committed=true
-reason=completed_measured_feedback
+adapter=fault health_lifecycle=5 cause=5 terminals=1
+result_lifecycle=5 result_event=6 result_reason=advance_failed
 ```
 
-Thus a legacy client can observe a successful-looking acknowledgement whose
-identity belongs partly to a rejected action goal. The compatibility shim is
-not safely correlated for its promised migration cycle.
+Lifecycle 5 is `OA_LIFECYCLE_EXECUTING`; the underlying controller had entered
+lifecycle 7 (`OA_LIFECYCLE_FAULT`). The same overrun before command submission
+reported stale lifecycle 4 (`OA_LIFECYCLE_ARMED_IDLE`). Thus adapter diagnostics
+and results can disagree with authoritative core state exactly at fault time.
+The worker must stop publication on every adapter fault, and the fault
+snapshot/result must be refreshed even when disable-stop is rejected because
+the core is already faulted.
 
-### I5. The completion arbiter is released before terminal result publication
+## Prior finding closure
 
-On `OA_EVENT_COMPLETED`, `complete_active()` clears `active_`, owner, and the
-reservation under the mutex (`virtual_control_session.cpp:526-540`) before it
-invokes the action terminal callback (`541-556`). A concurrent ROS goal can
-therefore reserve and begin planning before the prior goal's terminal result has
-been published. This contradicts the specified reject-new reservation spanning
-terminal result publication and creates a result/diagnostic race, even though
-the controller itself has already emitted completion.
+All eight prior findings are otherwise resolved by `63f5617`:
 
-## Minor
+- **I1, active SIGINT exception:** the exact installed node exited cleanly and
+  within two seconds at queued, started, settling, and completed phases. The
+  aggregate test found neither `terminate called` nor the old missing-goal
+  exception. Goal finalization and user callbacks are now exception-bounded.
+- **I2, incomplete build:** a clean archived checkout with only its pinned
+  upstream linked in a temporary source tree completed `scripts/build.sh
+  --tests`. It built/installed CAN, model, commission, transport, control,
+  `openarm_description`, `openarm_control_msgs`, and `openarm_ik_ros`; both the
+  generated actions and C++ node/CLI are in the fresh install.
+- **I3, reserved/executing cancellation:** the production session tests now
+  reproduce cancel-before-submit, cancel/release, and executing cancel.
+  Reserved cancel disable-stops to `OA_LIFECYCLE_DISARMED`, retains the owner
+  until the accepted command can receive one canceled terminal callback, and
+  rejects restart. Executing cancel likewise returns one canceled result with
+  a refreshed DISARMED snapshot.
+- **I4, legacy diagnostic correlation:** the fresh ROS contract test ran the
+  original legacy-command/concurrent-rejected-goal race. Its terminal record
+  remained atomically correlated as `deprecated_paired_xyz`, the exact legacy
+  owner and request stamp, `outcome=completed`, and matching seed/duration/
+  terminal sequences.
+- **I5, terminal ownership:** a blocking terminal callback test proved a new
+  reservation remains `busy` until the prior terminal callback returns, then
+  succeeds.
+- **M1, CLI cancel wait:** the compiled CLI now waits up to three seconds for
+  the cancel response and five seconds for the original result future before
+  shutting ROS down; ordinary completion/rejection paths passed in the ROS
+  contract test. A dedicated exact timeout reproduction is recorded below.
+- **M2, manifest duplication:** ROS joint names and limits are derived from the
+  public standard-manifest configuration accessor, and the session suite checks
+  canonical mapping and limit boundaries.
+- **M3, provenance:** actions/results and diagnostics now carry capability
+  bits, plan seed sequences, duration, terminal measured sequences, outcome,
+  cause, lifecycle, event, owner, and request identity. Shutdown/fault results
+  preserve the active plan provenance.
 
-### M1. CLI timeout does not ensure cancellation or stop
+The new Important finding above is outside those successful regression tests;
+there is no test for a throwing feedback callback or for adapter reporting
+after a native controller fault.
 
-On terminal timeout the compiled CLI calls `async_cancel_goal()` and immediately
-returns (`openarm_control_cli.cpp:83-88`); `main()` then shuts down ROS
-(`110-143`). It does not spin for the cancel response or terminal cancellation,
-so a goal can continue server-side after the CLI reports timeout. Discovery,
-rejection, cancellation, and ordinary completion exit codes are otherwise
-distinct and matching action-handle correlation is used.
+## Other verified properties
 
-### M2. Manifest identity and ROS acceptance tables have duplicate sources of truth
+- The fresh runtime graph has one measured-state authority and the duplicate
+  local adapter is rejected. The adapter publishes no TF, target-as-state, or
+  finger joints.
+- The simultaneous identity/provenance race is covered by the legacy/rejected
+  ROS test; reservation/terminal races are covered directly by the session
+  suite. Named-frame, invalid-name, missing-transform, and duplicate-authority
+  rejection paths passed.
+- No adapter or message target links CAN, transport, commission, Python runtime,
+  or physical-control libraries. Source and syscall checks found no CAN device,
+  SocketCAN, calibration, commissioning, persistence, or physical-backend ROS
+  endpoint. `physical_motion_authorized=false` remains explicit.
+- Current `main` is three non-overlapping documentation/portal-launcher commits
+  beyond the merge base `21ab251`; `git merge-tree` reports no conflicts with
+  this branch. Its portal launcher starts the same virtual-only launch and adds
+  no control-core semantic overlap.
 
-The production manifest fixes the current 2x7 names, sides, limits, motor
-families, affine sign/zero mapping, SI units, and virtual identities in
-`control/src/standard_manifest.cpp:18-82`. The current values match the model
-limits and canonical left/right names. However, ROS independently hard-codes
-the names and limits in `virtual_control_session.cpp:28-35,784-817` rather than
-querying or validating against the created manifest. The only new manifest test
-checks successful creation (`control/tests/test_control.cpp` near
-`test_manifest_validation`), not every name/side/index/limit/motor/sign/zero
-field. Current mapping is correct, but future manifest drift can silently make
-ROS validation target a different numeric side/joint contract.
+## Fresh test evidence
 
-### M3. Diagnostics omit part of the promised stable provenance
+- Unified clean build: succeeded from a temporary archive of exact `63f5617`.
+- Native tests in the unified build: 14/14 passed (CAN 1, model 4,
+  commission 2, transport 3, control/ABI/install consumer 4).
+- Authored exact-binary ROS aggregate: 9/9 passed, including the expanded
+  9-case session suite, no-CAN syscall isolation, generated URDF, invalid
+  expiry, full ROS contract, four-phase active SIGINT, and helper checks.
+- CLI terminal-timeout reproduction: a deliberately nonterminating isolated
+  action server accepted cancellation; after 45.25 s the exact installed CLI
+  waited for the cancel response and canceled result, printed the server's
+  terminal reason, and exited with the distinct canceled status 6.
+- ASan/UBSan with halt/leak checking: native control 3/3 and production session
+  9/9 passed.
+- TSan with halt-on-error: native control 3/3 and production session 9/9 passed.
+- Exact targeted fault reproductions deterministically exposed I1 above; no
+  sanitizer or race-detector report accompanied either logical failure.
+- `git diff --check be628f9..63f5617` is clean. The total feature diff still
+  contains the two previously noted trailing-space lines in the implementation
+  report `.swarm/ros_control_impl.md`; no executable source has a whitespace
+  error.
 
-Periodic diagnostics correctly remain WARN for healthy unchecked virtual
-execution and expose source, masks, sequences, timestamps, ages, skew,
-revisions, owner, event, and cause (`openarm_ik_ros_node.cpp:544-608`). They do
-not expose capability bits, plan seed sequences, plan duration, or terminal
-measured sequences. Fault/shutdown action results also omit the active plan's
-seed sequences (`virtual_control_session.cpp:645-706`). This weakens exact fault
-and invalidation provenance, though normal completed action results contain the
-seed and terminal sequences.
-
-## Verified clean properties
-
-- Launch contains exactly one adapter and one `robot_state_publisher`; runtime
-  graph inspection found one `/joint_states`, one `/tf`, and one `/tf_static`
-  publisher. The adapter has no TF broadcaster. A duplicate local adapter was
-  rejected by the UID/domain authority lock.
-- Every observed `JointState` contained exactly the 14 canonical arm names and
-  14 q/dq/tau values copied from coherent `oa_snapshot` feedback. No finger or
-  command-target state is published. Multiple decoded intermediate samples
-  precede measured q/dq dwell completion.
-- Named `left_tcp_m`/`right_tcp_m` action fields, a common stamped source frame,
-  transactional body-frame transformation, finite checks, joint-name/limit
-  checks, measured planning seeds, unchecked-collision result flags, action
-  UUIDs, command IDs, reject-new arbitration, heartbeat, steady controller
-  time, and `/use_sim_time=true` rejection are present.
-- Runtime arbitration race in domain 199 accepted exactly one of simultaneous
-  valid joint and paired goals; the loser was rejected and executing cancel
-  produced a canceled result. Invalid names and missing frames were rejected.
-- Healthy diagnostics are WARN, fault/closing diagnostics are ERROR, and
-  `collision_checked=false`, `physical_motion_authorized=false`, and
-  `state_source=oa_snapshot_encoder_feedback` are explicit.
-- No ROS backend/CAN/interface/calibration/commission/persistence endpoint is
-  present. Dependency/symbol inspection and the syscall test found no CAN,
-  transport, commission, Python runtime, or physical-control linkage in the node
-  or compiled CLI. DDS network sockets are the expected ROS transport.
-- The action interface package builds and exports generated Lyrical type
-  support. Python additions are limited to launch, tests, and generated
-  interface support; node and CLI are ELF C++ executables.
-
-## Test evidence
-
-- Fresh model native tests: 3/3 passed.
-- Fresh control native tests/ABI/install consumer: 4/4 passed.
-- Fresh Lyrical colcon build: `openarm_description`,
-  `openarm_control_msgs`, and `openarm_ik_ros` all built and installed.
-- Authored `openarm_ik_ros` tests: 8/8 passed, including the session suite,
-  no-CAN syscall check, generated URDF, expiry validation, runtime graph/action
-  contract, and bounded idle shutdown.
-- Full three-package colcon test aggregate was red only in the unchanged pinned
-  upstream `openarm_description` lint suite (flake8/pep257 and an xmllint
-  timeout); authored message/adapter tests passed.
-- ASan/UBSan: native control tests 3/3 and production session tests 4/4 passed
-  with leak/error halting enabled.
-- TSan: native control tests 3/3 and production session tests 4/4 passed with
-  halt-on-error enabled.
-- `git diff --check 29657f7 b3993ba` reports two trailing-space lines in the
-  implementation report only; no executable source whitespace error was found.
-
-Not claimed: exhaustive injected freeze/drop/skew/feedback-delay ROS fault
-matrix, million-cycle soak, randomized multi-threaded executor campaign, or GUI
-rendering. Simulator fault injection is intentionally absent from the ROS API;
-the underlying native control suite covers those controller mechanisms, but the
-adapter fault-to-action/diagnostic boundary is not exhaustively exercised.
+Not claimed: GUI rendering, physical/CAN behavior, exhaustive injected
+freeze/drop/skew matrices, or million-cycle soak.
