@@ -4,6 +4,24 @@
 
 **It is position-only IK: orientation is free. It performs no self, body, inter-arm, or environment collision checking. It is not motion authorization and has no CAN, ros2_control, MoveIt, or hardware backend.**
 
+The repository also contains:
+
+- [UPSTREAM_SOURCES.md](UPSTREAM_SOURCES.md): exact commits and licenses for all ten
+  repositories from Enactic's canonical OpenArm repository index. The complete
+  clones live under ignored `upstream/` and can be reproduced with
+  `scripts/fetch_upstreams.sh`.
+- [model/README.md](model/README.md): the dependency-free C11 FK, all-joint frame,
+  geometric-Jacobian, and bounded claw/TCP XYZ IK interface for both arms.
+- [can/README.md](can/README.md): the C11 DaMiao codec, commissioned-manifest
+  validator, fresh-disabled probe, fake transport, and read-only SocketCAN
+  interface discovery API.
+
+Automatic CAN discovery cannot establish physical joint identity, side, sign,
+zero, gearing, firmware, or a safe motor mapping. Consequently this revision
+does not configure or move physical arms. A physical backend must remain
+disarmed until those facts are commissioned and an independent E-stop and
+watchdog are installed.
+
 ## Run
 
 ```bash
