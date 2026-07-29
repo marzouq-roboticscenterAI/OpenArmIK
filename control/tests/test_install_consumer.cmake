@@ -15,6 +15,8 @@ execute_process(
             -B "${consumer_build}"
             -DCMAKE_BUILD_TYPE=Release
             "-DCMAKE_PREFIX_PATH=${install_prefix};${OA_MODEL_PREFIX}"
+            -Dopenarm_control_DIR=${install_prefix}/lib/cmake/openarm_control
+            -Dopenarm_model_DIR=${OA_MODEL_PREFIX}/lib/cmake/openarm_model
     RESULT_VARIABLE configure_result)
 if(NOT configure_result EQUAL 0)
     message(FATAL_ERROR "installed consumer configure failed: ${configure_result}")

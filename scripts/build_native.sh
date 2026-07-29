@@ -222,7 +222,24 @@ if ((run_tests)); then
     consumer_build="$build_root/installed_native_consumer"
     cmake -S "$root_dir/tests/installed_native_consumer" -B "$consumer_build" \
       -DCMAKE_BUILD_TYPE="$build_type" \
-      -DCMAKE_PREFIX_PATH="$install_prefix"
+      -DCMAKE_PREFIX_PATH="$install_prefix" \
+      -DOpenArmCan_DIR="$install_prefix/lib/cmake/OpenArmCan" \
+      -Dopenarm_model_DIR="$install_prefix/lib/cmake/openarm_model" \
+      -Dopenarm_commission_DIR="$install_prefix/lib/cmake/openarm_commission" \
+      -DOpenArmTransport_DIR="$install_prefix/lib/cmake/OpenArmTransport" \
+      -Dopenarm_control_DIR="$install_prefix/lib/cmake/openarm_control"
+    assert_cache_value "$consumer_build/CMakeCache.txt" \
+      CMAKE_PREFIX_PATH "$install_prefix"
+    assert_cache_value "$consumer_build/CMakeCache.txt" \
+      OpenArmCan_DIR "$install_prefix/lib/cmake/OpenArmCan"
+    assert_cache_value "$consumer_build/CMakeCache.txt" \
+      openarm_model_DIR "$install_prefix/lib/cmake/openarm_model"
+    assert_cache_value "$consumer_build/CMakeCache.txt" \
+      openarm_commission_DIR "$install_prefix/lib/cmake/openarm_commission"
+    assert_cache_value "$consumer_build/CMakeCache.txt" \
+      OpenArmTransport_DIR "$install_prefix/lib/cmake/OpenArmTransport"
+    assert_cache_value "$consumer_build/CMakeCache.txt" \
+      openarm_control_DIR "$install_prefix/lib/cmake/openarm_control"
     cmake --build "$consumer_build" --parallel
     "$consumer_build/openarm_installed_c11"
     "$consumer_build/openarm_installed_cxx17"
