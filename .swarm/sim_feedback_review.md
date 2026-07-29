@@ -1,174 +1,129 @@
-# Independent re-review: simulator feedback coherence
+# Independent third review: simulator feedback coherence
 
-Reviewed series `514e3a8b6ba21a687d18bd761d17c9412a50804c..1d2b9478b91449ccafdcb52fbea0b35f263e40fb`, including the follow-up
-`1d2b947` for the findings against `3e37a9e`.
+Reviewed series `514e3a8b6ba21a687d18bd761d17c9412a50804c..e79d613f70e94fb46a828e43baa9cbb560d5b871`.
 
-Disposition: **FINDINGS**
+Disposition: **CLEAN**
 
-## Finding
+## Convergence result
 
-### MEDIUM — event overflow during queued-command start faults the controller but `advance()` continues through a destroyed plan and returns success
+The prior findings do not persist.
 
-`Controller::advance()` publishes `OA_EVENT_STARTED` and then immediately uses
-`executing_` to obtain waypoint data (`control/src/control_core.cpp:903-939`). If
-the event ring is full, `publish()` resets `executing_`, clears `command_id_`,
-materializes a disabled stop, and changes the lifecycle to fault
-(`control/src/control_core.cpp:1220-1242`). `advance()` does not check that state
-change. It dereferences the now-disengaged `std::optional<MotionPlan>`, performs
-another simulator step after the fault transition, and returns `OA_OK`.
+- `OA_STOP_DISABLE` and every other authority-reducing transition now retire
+  delayed pre-transition history and publish coherent measured stop evidence.
+- The base-to-HEAD whitespace check passes.
+- The event-ring overflow/disengaged-optional defect is resolved. Publication
+  now returns a result, every controller call site terminates on overflow, and
+  the triggering public operation returns `OA_EBUSY` instead of continuing with
+  cleared execution state.
 
-A public-ABI ASan/UBSan oracle filled the 64-event ring with 21 immediate
-execute/controlled-stop cycles (three events each), queued a future-start joint
-command as the 64th event, and advanced to its start time with 20 ms feedback
-delay configured. The result was:
+The exact public-ABI reproduction that previously returned `OA_OK` after
+overflow at deferred `OA_EVENT_STARTED` now reports:
 
 ```text
-advance=0 lifecycle=7 before_seq=23 after_seq=24 status=0 t=10000000
-last_event_kind=6 cause=13 lifecycle=7 event_seq=24 command=22
+return=13 lifecycle=7 before_seq=23 after_seq=24 status=0 t=10000000 event_kind=6 cause=13 event_seq=24 command_match=1
 ```
 
-Thus the call reports `OA_OK` (`0`) while its snapshot and final event report
-`OA_LIFECYCLE_FAULT` (`7`) and `OA_EVENT_FAULTED` (`6`) with `OA_EBUSY` (`13`).
-The optional storage happened to retain readable bytes in this build, so the
-sanitizers did not diagnose the C++ lifetime violation; dereferencing a
-disengaged optional is nevertheless undefined behavior.
+`13` is `OA_EBUSY`, lifecycle `7` is `OA_LIFECYCLE_FAULT`, and event kind `6`
+is `OA_EVENT_FAULTED`. The transition advances each arm exactly once to a
+coherent disabled generation at the triggering time, and the event's sequence
+and command ID match the resulting snapshot and failed command. No trajectory
+step or optional access occurs after publication fails.
 
-Exact compile/run command:
+## Event-ring adversarial coverage
+
+Fresh public-ABI capacity tests filled the 64-entry ring exactly and forced
+overflow independently at:
+
+- immediate `STARTED`/future `QUEUED` execution publication, including unchanged
+  caller command output on failed execute;
+- deferred `STARTED` during `advance()`;
+- `SETTLING` (the progress-state event) and `COMPLETED`;
+- `ABORTED` and `STOPPED` for explicit disable and controlled stops;
+- watchdog/fault-event publication through heartbeat;
+- `ARMED`, `VERIFIED`, `DISARMED`, and `ESTOP`.
+
+Each path returned `OA_EBUSY`, exposed `OA_LIFECYCLE_FAULT`, retained a final
+`OA_EVENT_FAULTED` with `OA_EBUSY`, preserved the triggering command identity,
+and materialized a coherent disabled measured state. Reset/reverification after
+overflow did not reuse a cleared plan or delayed generation.
+
+The transition-only/value-delay/overflow executable returned:
 
 ```text
-c++ -std=c++17 -O1 -g -fsanitize=address,undefined \
-  -fno-omit-frame-pointer -Icontrol/include -Icontrol/src -Imodel/include \
-  -x c++ - -x none \
-  /tmp/openarmik-rereview-asan.VDPoWT/libopenarm_control.a \
-  /tmp/openarmik-rereview-asan.VDPoWT/openarm_model/libopenarm_model.a \
-  -pthread -fsanitize=address,undefined \
-  -o /tmp/openarmik-rereview-event-overflow
-ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
-UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-  /tmp/openarmik-rereview-event-overflow
+delay_transitions_event_overflow=PASS
 ```
 
-The checked-in event-overflow regression reaches overflow from E-stop, whose
-caller does not subsequently dereference `executing_`; it therefore does not
-cover this path. Make `publish()` report overflow and require every caller to
-terminate its operation immediately, or explicitly test lifecycle/plan validity
-after each publication that can fault.
+## Delay and transition audit
 
-## Resolution of prior findings
+The earlier simulator-feedback conclusions remain sound:
 
-The prior delayed-stop finding is resolved. All requested authority transitions
-now retire pre-transition feedback and publish one coherent measured hold or
-disable generation before their transition event. The earlier whitespace/report
-finding is also resolved; the complete base-to-HEAD range passes
-`git diff --check`.
+- Complete seven-frame feedback generations are encoded once at capture and
+  queued immutably. Values, source timestamp, member mask, and sequence become
+  public together only when due.
+- Partial delivery changes only the missing-member mask. It cannot leak six new
+  joint values under the prior timestamp or sequence, and controller handling
+  fails closed.
+- The fixed 64-generation rings are allocation-free in the servo path. Checked
+  ready-time arithmetic and capacity overflow fail closed without unbounded
+  memory or stale publication.
+- Delivered timestamps remain monotonic in capture order. Freshness is inclusive
+  at its boundary, cross-bus skew uses delivered source timestamps, and current
+  plant values cannot appear in an older sample.
+- Completion consumes decoded delayed q/dq/FK, requires three distinct paired
+  delivered-sequence intervals, and preserves exact historical quantization.
+  Equal 20 ms delay at 10 ms cadence delays measured completion by two cycles.
+- Explicit disable/controlled hold, disarm, E-stop, producer and cycle watchdogs,
+  bus/command failure, delayed partial feedback, motor faults, event overflow,
+  reset-to-closed, and destroy/close all retire pending history appropriately.
+  No queued enabled generation can publish after an authority-reducing state
+  transition.
+- Controlled watchdog holds use the last coherent measured q with zero velocity,
+  never the current trajectory command. Skew, partial, transport, and motor
+  faults override the hold request and materialize disabled evidence.
 
-The original public-ABI disable-stop oracle now produces:
-
-```text
-t=20000000 lifecycle=2 status=0 sample_t=20000000 seq=3
-t=30000000 lifecycle=2 status=0 sample_t=20000000 seq=3
-t=40000000 lifecycle=2 status=0 sample_t=20000000 seq=3
-t=50000000 lifecycle=2 status=0 sample_t=30000000 seq=4
-```
-
-The transition generation is immediately disabled at 20 ms, the two queued
-pre-stop generations never become public at 30 or 40 ms, and the first later
-publication at 50 ms is a post-stop disabled capture from 30 ms.
-
-Targeted public-ABI transition coverage passed for:
-
-- explicit disable and controlled enabled-hold stops;
-- disarm and E-stop;
-- producer watchdog and missed-cycle faults;
-- command/bus failure, delayed partial generation, and motor fault evidence;
-- event-overflow materialization on the tested E-stop path;
-- reset-to-closed followed by re-verification; and
-- close/destroy while a public event waiter is pinned.
-
-The close oracle returned the documented statuses without exposing any further
-state after destruction:
-
-```text
-close_waiter=3 stale_snapshot=1
-```
-
-Here `3` is `OA_ESTATE` for the already-pinned waiter and `1` is `OA_EINVAL` for
-a call begun using the destroyed handle.
-
-The transition-only and value-delay public oracle returned:
-
-```text
-public_value_delay_and_transitions=PASS
-```
-
-## Remaining semantic audit
-
-Apart from the event-publication control-flow finding above, the delayed
-feedback implementation remains sound:
-
-- Captures are immutable, already-quantized seven-frame generations. Values,
-  source timestamp, complete member mask, and sequence become public together.
-- Partial generations do not mutate any prior payload, timestamp, or sequence;
-  controller-level handling fails closed and preserves motor-fault evidence.
-- Ready-time addition and sequence publication are checked, the fixed 64-entry
-  ring bounds memory without servo-path allocation, and capacity overflow
-  materializes a disabled fault stop.
-- Source timestamps remain monotonic in capture order. Freshness is inclusive at
-  the configured boundary, cross-bus skew is based on delivered source times,
-  and no current plant value leaks into an old generation.
-- Completion consumes decoded delayed q/dq/FK and requires three distinct paired
-  sequence intervals. Equal 20 ms delay gives exact two-cycle historical
-  equivalence and completion delay at a 10 ms cadence.
-- Transition holds use last coherent measured q with zero measured velocity,
-  never the current trajectory command. Fault/transport paths cannot retain an
-  enabled hold unless the configured watchdog-controlled-stop gate is coherent,
-  fresh, and healthy.
-- The public C layout and symbol contract are unchanged. Both current-C11 and
-  frozen original-V1 consumers compile, link, and return zero.
-
-## Fresh verification evidence
+## Fresh build and runtime evidence
 
 Release:
 
 ```text
-cmake -S control -B /tmp/openarmik-rereview-release.zMsIok \
+cmake -S control -B /tmp/openarmik-third-release.txUzDh \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DOA_CONTROL_BUILD_TESTS=ON
-cmake --build /tmp/openarmik-rereview-release.zMsIok -j2
-ctest --test-dir /tmp/openarmik-rereview-release.zMsIok --output-on-failure
+cmake --build /tmp/openarmik-third-release.txUzDh -j2
+ctest --test-dir /tmp/openarmik-third-release.txUzDh --output-on-failure
 Result: 3/3 passed
 ```
 
 ASan/UBSan:
 
 ```text
-cmake -S control -B /tmp/openarmik-rereview-asan.VDPoWT \
+cmake -S control -B /tmp/openarmik-third-asan.rtjwC0 \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=ON \
   -DOA_CONTROL_BUILD_TESTS=ON -DOA_CONTROL_SANITIZERS=ON
-cmake --build /tmp/openarmik-rereview-asan.VDPoWT -j2
+cmake --build /tmp/openarmik-third-asan.rtjwC0 -j2
 ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-  ctest --test-dir /tmp/openarmik-rereview-asan.VDPoWT --output-on-failure
-Result: 3/3 passed
+  ctest --test-dir /tmp/openarmik-third-asan.rtjwC0 --output-on-failure
+Result: 3/3 passed, no sanitizer diagnostics
 ```
 
 ThreadSanitizer:
 
 ```text
-cmake -S control -B /tmp/openarmik-rereview-tsan.A4zXfW \
+cmake -S control -B /tmp/openarmik-third-tsan.9hYVZM \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=ON \
   -DOA_CONTROL_BUILD_TESTS=ON -DOA_CONTROL_TSAN=ON
-cmake --build /tmp/openarmik-rereview-tsan.A4zXfW -j2
+cmake --build /tmp/openarmik-third-tsan.9hYVZM -j2
 TSAN_OPTIONS=halt_on_error=1 \
-  ctest --test-dir /tmp/openarmik-rereview-tsan.A4zXfW --output-on-failure
-Result: 3/3 passed
+  ctest --test-dir /tmp/openarmik-third-tsan.9hYVZM --output-on-failure
+Result: 3/3 passed, no race diagnostics
 ```
 
 ABI and static checks:
 
 ```text
-/tmp/openarmik-rereview-release.zMsIok/openarm_control_c11_abi
+/tmp/openarmik-third-release.txUzDh/openarm_control_c11_abi
 c11_abi_exit=0
-/tmp/openarmik-rereview-release.zMsIok/openarm_control_v1_original_abi
+/tmp/openarmik-third-release.txUzDh/openarm_control_v1_original_abi
 v1_original_abi_exit=0
 
 cppcheck --enable=warning,performance,portability --error-exitcode=1 \
@@ -178,8 +133,11 @@ cppcheck --enable=warning,performance,portability --error-exitcode=1 \
 Result: no diagnostics
 
 git diff --check 514e3a8b6ba21a687d18bd761d17c9412a50804c \
-  1d2b9478b91449ccafdcb52fbea0b35f263e40fb
+  e79d613f70e94fb46a828e43baa9cbb560d5b871
 Result: passed
 ```
+
+The public header layout is unchanged by the follow-ups; both the current C11
+consumer and frozen original-V1 consumer compile, link, and pass.
 
 No GUI, CAN/network interface, or hardware path was launched or touched.
