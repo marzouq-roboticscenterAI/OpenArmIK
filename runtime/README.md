@@ -20,14 +20,20 @@ operations it actually exposes. `oa_runtime_get_model_identity` binds every
 coordinate to the exact side-specific model ID, model-data/source/flattened-URDF
 digests, named TCP frame and revision. Coordinate requests additionally carry a
 combined identity digest covering frame, units, orientation, collision policy,
-scene revision, and both arm/TCP artifacts.
+scene revision, and both arm/TCP artifacts. Joint requests bind the same model,
+side TCP, coordinate digest, collision policy, and scene contract as paired
+requests; plan reports expose the verified binding.
 
 The facade clock is initialized from and remains comparable to the host steady
 clock on every backend. The virtual controller uses a private exact-cadence
 counter with the same initial epoch; this prevents host scheduling jitter from
 violating the controller's hard cycle contract while facade expiry continues
-to advance during planning. Only one unexecuted plan may own that quiescence
-authority. A second plan returns `OA_RUNTIME_EBUSY`.
+to advance during planning. Feedback timestamps are captured in the facade
+domain when each sequence is produced. A planning pause therefore makes old
+feedback stale by real elapsed time, while resumed feedback receives a fresh
+facade timestamp. Controller events are drained into the same facade domain.
+Only one unexecuted plan may own that quiescence authority. A second plan
+returns `OA_RUNTIME_EBUSY`.
 
 The virtual inventory contains exactly two interfaces and fourteen motors.
 Physical query evidence never assigns a side or joint: it reports
@@ -41,7 +47,9 @@ under the process's operating-system credentials. The authority contains a
 caller-supplied, nonzero 256-bit HMAC key and bounded key ID; save/load accept
 only a single non-traversing file name relative to the already-open,
 non-symlink directory. Plain absolute-path load and preview remain available,
-but their returned summaries explicitly report `authenticated == 0`.
+but their returned summaries explicitly report `authenticated == 0`. An
+armable manifest loaded from a file must have passed authenticated load;
+plain-loaded files cannot create a virtual runtime.
 
 The bounded UTF-8 format is line-oriented and non-executable:
 
@@ -67,6 +75,11 @@ removal when no prior artifact existed) and a second directory sync before
 returning `OA_RUNTIME_EIO`. The distinct `OA_RUNTIME_EDURABILITY` result is
 reserved for the narrower case where that post-commit rollback cannot itself be
 confirmed, so target state and durability must then be treated as unknown.
+Directory transactions are serialized by the authority and an OS directory
+lock. Authenticated artifacts establish a monotonic directory-wide accepted
+revision/content floor, including across newly opened authorities; retained
+`.previous` files are recovery inputs only and public authenticated load rejects
+them as stale.
 
 Controller events expose the exact lower aggregate sequence separately. Since
 the lower event does not contain atomic per-arm sequences or a measurement

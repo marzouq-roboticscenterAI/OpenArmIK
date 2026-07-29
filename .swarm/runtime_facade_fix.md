@@ -2,6 +2,58 @@
 
 Review input: `.swarm/runtime_facade_review.md` against `0f0ea372bddc302ef78837c611ee9c25c9b82fad`.
 
+## Second re-review closure
+
+Review input: the updated `.swarm/runtime_facade_review.md` against
+`8d01458e238e1d5a5ee2934925893387f7e8a2dd`.
+
+1. **Controller/facade clock translation — fixed.** Each produced arm feedback
+   sequence is now paired with its production-time host-steady timestamp under
+   a controller synchronization mutex. Facade snapshots export only that
+   evidence and recompute freshness against real facade time. During a plan
+   pause the sequence/timestamp remain fixed and become stale after the 50 ms
+   timeout; the first resumed sequence receives a fresh, nondecreasing facade
+   timestamp. Calibration samples consume the same translated snapshot.
+   Controller events are drained into a fixed-capacity facade queue at
+   generation cadence and translated before the private controller clock can
+   diverge. Tests hold a plan for 70 ms, prove zero freshness and real age,
+   release it, and prove prompt fresh/non-backward feedback; event timestamps,
+   live wall cadence, plan expiry, and past-deadline rejection are also checked.
+2. **Error-path mutex reentrancy — fixed.** Manual and recipe create failures
+   clear the calibration lease, release the runtime mutex, and only then record
+   the lower commission error. The broader audit moved ABI-valid semantic
+   validation behind runtime pinning and records runtime facility/lower-zero
+   detail; session-state semantic failures do likewise. Timed asynchronous
+   invalid manual and recipe creates must return within 500 ms with exact
+   commission facility/lower codes, and the full TSan/deadlock-stack run passes.
+3. **Persistence transaction/floor — fixed.** Each authority serializes its
+   transaction and also takes an OS directory lock, so independent authority
+   handles coordinate. Before authenticated load or save, authenticated regular
+   artifacts are scanned under that lock to recover the highest accepted
+   directory revision/content floor. Per-name accepted state rejects rollback
+   and equivocation; directory-wide same-revision content conflicts fail closed.
+   Concurrent conflicting revision-2 saves now produce exactly one success and
+   one `ESTALE`. Public `.previous` load is always stale, copied old artifacts
+   remain stale after reopening the authority, and plain-loaded artifacts cannot
+   arm a virtual runtime. Existing file/directory fsync, atomic rename,
+   authenticated reload, rollback, retained-prior, and `EDURABILITY` behavior is
+   preserved.
+4. **Individual-joint identity binding — fixed.** `oa_runtime_joint_move` now
+   requires exact model and side-TCP revisions, coordinate-identity digest,
+   collision policy, and scene revision before acquiring plan authority. A
+   copied request is rejected across reject-all and unchecked runtimes even
+   when feedback sequences coincide. Plan reports expose model, per-side TCP,
+   digest, collision policy, and scene verification evidence.
+5. **Last-error consistency — fixed.** Invalid interlock booleans and invalid
+   heartbeat/disarm/now clock IDs pin a valid runtime first and record
+   `OA_RUNTIME_FACILITY_RUNTIME`, `OA_RUNTIME_EINVAL`, and lower code zero.
+
+Second re-review verification: fresh Release, ASan+UBSan+leak, and TSan builds
+all pass 2/2 tests; cppcheck passes; fresh installed all-six-header strict C11
+and C++17 consumers build/link/run; declaration/export parity is 46/46; the
+installed archive has no test hooks; and its only CAN builder dependency is
+`oa_can_make_register_query_typed` on the query-classifying transport path.
+
 ## Finding disposition
 
 1. **Truthful capabilities and coordinate identity — fixed.** Standalone FK,

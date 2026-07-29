@@ -405,6 +405,11 @@ typedef struct oa_runtime_joint_move {
     double jerk_scale;
     double position_tolerance_rad;
     double velocity_tolerance_rad_s;
+    uint64_t required_model_revision;
+    uint64_t required_tcp_revision;
+    uint64_t collision_scene_revision;
+    oa_runtime_collision_policy required_collision_policy;
+    char required_coordinate_identity_sha256[OA_RUNTIME_DIGEST_CAPACITY];
 } oa_runtime_joint_move;
 
 typedef struct oa_runtime_paired_tcp_move {
@@ -443,6 +448,7 @@ typedef struct oa_runtime_plan_report {
     uint64_t duration_ns;
     uint64_t manifest_revision;
     uint64_t model_revision;
+    uint64_t tcp_revision[OA_RUNTIME_ARMS];
     uint64_t collision_scene_revision;
     oa_runtime_collision_policy collision_policy;
     char coordinate_identity_sha256[OA_RUNTIME_DIGEST_CAPACITY];

@@ -87,6 +87,7 @@ struct ManifestData {
     bool authenticated{};
     std::string authentication_key_id;
     std::string authentication_tag;
+    bool loaded_from_file{};
 };
 
 struct InventoryData {
@@ -97,6 +98,7 @@ struct InventoryData {
 
 struct RuntimeData {
     std::mutex mutex;
+    std::mutex controller_mutex;
     std::condition_variable wake;
     oa_runtime_options options{};
     std::shared_ptr<ManifestData> manifest;
@@ -105,6 +107,19 @@ struct RuntimeData {
     std::thread worker;
     std::atomic<std::uint64_t> timeline_ns{0U};
     std::atomic<std::uint64_t> controller_timeline_ns{0U};
+    struct FeedbackClockEvidence {
+        std::uint64_t feedback_seq{};
+        std::uint64_t controller_monotonic_ns{};
+        std::uint64_t runtime_monotonic_ns{};
+    };
+    struct EventEvidence {
+        oa_event source{};
+        std::uint64_t runtime_monotonic_ns{};
+    };
+    std::array<FeedbackClockEvidence, OA_RUNTIME_ARMS> feedback_clock{};
+    std::array<EventEvidence, 64U> events{};
+    std::size_t event_head{};
+    std::size_t event_count{};
     bool closing{};
     bool estop_active{};
     bool deadman_active{};
@@ -149,9 +164,17 @@ struct CalibrationData {
 };
 
 struct PersistenceAuthorityData {
+    std::mutex mutex;
     int directory_fd{-1};
     std::array<std::uint8_t, OA_RUNTIME_PERSISTENCE_KEY_BYTES> authentication_key{};
     std::string authentication_key_id;
+    std::uint64_t accepted_revision_floor{};
+    std::string accepted_revision_digest;
+    struct AcceptedArtifact {
+        std::uint64_t revision{};
+        std::string content_digest;
+    };
+    std::unordered_map<std::string, AcceptedArtifact> accepted_artifacts;
     ~PersistenceAuthorityData();
 };
 
@@ -223,6 +246,9 @@ std::string coordinate_identity_for(const ManifestData &manifest,
 
 oa_runtime_capability capabilities_for(oa_runtime_backend backend);
 oa_runtime_status fill_snapshot(const oa_snapshot &source, oa_runtime_snapshot &target);
+oa_runtime_status capture_runtime_snapshot(
+    const std::shared_ptr<RuntimeData> &runtime, oa_snapshot &source,
+    oa_runtime_snapshot &target);
 
 #ifdef OA_RUNTIME_ENABLE_TEST_HOOKS
 void allocation_checkpoint();

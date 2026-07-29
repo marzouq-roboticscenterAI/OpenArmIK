@@ -181,9 +181,12 @@ extern "C" oa_runtime_status oa_runtime_test_transport_raii_probe(void) {
 extern "C" oa_runtime_status oa_runtime_list_interfaces(
     const oa_runtime *runtime, oa_runtime_interface *interfaces,
     std::size_t capacity, std::size_t *out_count) {
-    if (out_count == nullptr || (capacity != 0U && interfaces == nullptr)) return OA_RUNTIME_EINVAL;
     const auto pinned = openarm::runtime::runtimes.pin(runtime);
     if (!pinned) return OA_RUNTIME_EINVAL;
+    if (out_count == nullptr || (capacity != 0U && interfaces == nullptr)) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_EINVAL, OA_RUNTIME_FACILITY_RUNTIME);
+    }
     std::vector<oa_runtime_interface> found;
     try {
         if (pinned->options.backend == OA_RUNTIME_BACKEND_VIRTUAL) {
@@ -192,10 +195,14 @@ extern "C" oa_runtime_status oa_runtime_list_interfaces(
             found = openarm::runtime::physical_interfaces();
         }
     } catch (...) {
-        return OA_RUNTIME_ENOMEM;
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_ENOMEM, OA_RUNTIME_FACILITY_RUNTIME);
     }
     *out_count = found.size();
-    if (capacity < found.size()) return OA_RUNTIME_EINVAL;
+    if (capacity < found.size()) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_EINVAL, OA_RUNTIME_FACILITY_RUNTIME);
+    }
     for (std::size_t i = 0U; i < found.size(); ++i) {
         if (!openarm::runtime::output_valid(&interfaces[i])) return OA_RUNTIME_EABI;
     }
@@ -206,10 +213,13 @@ extern "C" oa_runtime_status oa_runtime_list_interfaces(
 extern "C" oa_runtime_status oa_runtime_inventory_query(
     oa_runtime *runtime, const oa_runtime_inventory_query_options *options,
     oa_runtime_inventory **out_inventory) {
-    if (out_inventory == nullptr) return OA_RUNTIME_EINVAL;
-    *out_inventory = nullptr;
     const auto owner = openarm::runtime::runtimes.pin(runtime);
     if (!owner) return OA_RUNTIME_EINVAL;
+    if (out_inventory == nullptr) {
+        return openarm::runtime::record_error(
+            owner, OA_RUNTIME_EINVAL, OA_RUNTIME_FACILITY_RUNTIME);
+    }
+    *out_inventory = nullptr;
     try {
         std::shared_ptr<openarm::runtime::InventoryData> result;
         if (owner->options.backend == OA_RUNTIME_BACKEND_VIRTUAL) {
@@ -378,7 +388,10 @@ extern "C" oa_runtime_status oa_runtime_inventory_query(
                 owner, OA_RUNTIME_EUNSUPPORTED, OA_RUNTIME_FACILITY_RUNTIME);
         }
         oa_runtime_inventory *const handle = openarm::runtime::inventories.insert(result);
-        if (handle == nullptr) return OA_RUNTIME_ENOMEM;
+        if (handle == nullptr) {
+            return openarm::runtime::record_error(
+                owner, OA_RUNTIME_ENOMEM, OA_RUNTIME_FACILITY_RUNTIME);
+        }
         {
             std::lock_guard<std::mutex> lock(owner->mutex);
             owner->inventory_revision = result->summary.inventory_revision;
@@ -448,7 +461,11 @@ extern "C" oa_runtime_status oa_runtime_configuration_preview_physical(
 extern "C" oa_runtime_status oa_runtime_configuration_apply_physical(
     oa_runtime *runtime, const oa_runtime_manifest *manifest) {
     const auto owner = openarm::runtime::runtimes.pin(runtime);
-    if (!owner || !openarm::runtime::manifests.pin(manifest)) return OA_RUNTIME_EINVAL;
+    if (!owner) return OA_RUNTIME_EINVAL;
+    if (!openarm::runtime::manifests.pin(manifest)) {
+        return openarm::runtime::record_error(
+            owner, OA_RUNTIME_EINVAL, OA_RUNTIME_FACILITY_RUNTIME);
+    }
     return openarm::runtime::record_error(
         owner, OA_RUNTIME_EUNSUPPORTED, OA_RUNTIME_FACILITY_RUNTIME);
 }

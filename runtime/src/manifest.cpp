@@ -413,6 +413,11 @@ std::shared_ptr<ManifestData> apply_patch(const ManifestData &base,
         return {};
     }
     auto result = std::make_shared<ManifestData>(base);
+    result->integrity_kind = OA_RUNTIME_INTEGRITY_UNKEYED_SHA256;
+    result->authenticated = false;
+    result->authentication_key_id.clear();
+    result->authentication_tag.clear();
+    result->loaded_from_file = false;
     oa_motor_config &motor = result->config.arm[patch.side].motor[patch.joint];
     motor.q_scale = patch.a;
     motor.q_offset_rad = patch.b_rad;

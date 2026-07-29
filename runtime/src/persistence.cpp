@@ -6,9 +6,11 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <string>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -52,6 +54,8 @@ bool safe_file_name(const char *value) {
     if (value == nullptr) return false;
     const std::size_t size = strnlen(value, 201U);
     return size > 0U && size <= 180U && std::strchr(value, '/') == nullptr &&
+           std::strncmp(value, ".openarm-runtime-", 17U) != 0 &&
+           std::strncmp(value, ".openarm-prior-", 15U) != 0 &&
            std::strcmp(value, ".") != 0 && std::strcmp(value, "..") != 0 &&
            std::all_of(value, value + size, [](const char c) {
                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -180,6 +184,7 @@ oa_runtime_status authenticate_text(const PersistenceAuthorityData &authority,
         return OA_RUNTIME_EPERMISSION;
     }
     manifest->authenticated = true;
+    manifest->loaded_from_file = true;
     return OA_RUNTIME_OK;
 }
 
@@ -197,6 +202,60 @@ oa_runtime_status load_authenticated_at(const PersistenceAuthorityData &authorit
     }
 }
 
+class DirectoryTransaction {
+public:
+    explicit DirectoryTransaction(const int fd) : fd_(fd), locked_(flock(fd_, LOCK_EX) == 0) {}
+    ~DirectoryTransaction() {
+        if (locked_) (void)flock(fd_, LOCK_UN);
+    }
+    bool locked() const { return locked_; }
+
+private:
+    int fd_;
+    bool locked_;
+};
+
+oa_runtime_status refresh_revision_floor(PersistenceAuthorityData &authority) {
+    const int scan_fd = dup(authority.directory_fd);
+    if (scan_fd < 0) return OA_RUNTIME_EIO;
+    DIR *const directory = fdopendir(scan_fd);
+    if (directory == nullptr) {
+        close(scan_fd);
+        return OA_RUNTIME_EIO;
+    }
+    std::uint64_t maximum_revision = authority.accepted_revision_floor;
+    std::string maximum_digest = authority.accepted_revision_digest;
+    int read_error = 0;
+    for (;;) {
+        errno = 0;
+        const dirent *const entry = readdir(directory);
+        if (entry == nullptr) {
+            read_error = errno;
+            break;
+        }
+        if (!safe_file_name(entry->d_name)) continue;
+        std::shared_ptr<ManifestData> candidate;
+        if (load_authenticated_at(authority, entry->d_name, candidate) != OA_RUNTIME_OK) {
+            continue;
+        }
+        const std::uint64_t revision = candidate->config.manifest_revision;
+        if (revision > maximum_revision) {
+            maximum_revision = revision;
+            maximum_digest = candidate->content_digest;
+        } else if (revision == maximum_revision && !maximum_digest.empty() &&
+                   candidate->content_digest != maximum_digest) {
+            closedir(directory);
+            return OA_RUNTIME_ESTALE;
+        } else if (revision == maximum_revision && maximum_digest.empty()) {
+            maximum_digest = candidate->content_digest;
+        }
+    }
+    if (closedir(directory) != 0 || read_error != 0) return OA_RUNTIME_EIO;
+    authority.accepted_revision_floor = maximum_revision;
+    authority.accepted_revision_digest = std::move(maximum_digest);
+    return OA_RUNTIME_OK;
+}
+
 bool target_is_regular_or_absent(int directory_fd, const char *name, bool &exists) {
     struct stat status{};
     if (fstatat(directory_fd, name, &status, AT_SYMLINK_NOFOLLOW) == 0) {
@@ -205,6 +264,41 @@ bool target_is_regular_or_absent(int directory_fd, const char *name, bool &exist
     }
     exists = false;
     return errno == ENOENT;
+}
+
+oa_runtime_status accept_revision(PersistenceAuthorityData &authority,
+                                  const ManifestData &manifest,
+                                  const char *name,
+                                  const bool advance) {
+    const std::uint64_t revision = manifest.config.manifest_revision;
+    if (revision < authority.accepted_revision_floor) return OA_RUNTIME_ESTALE;
+    if (revision == authority.accepted_revision_floor &&
+        !authority.accepted_revision_digest.empty() &&
+        manifest.content_digest != authority.accepted_revision_digest) {
+        return OA_RUNTIME_ESTALE;
+    }
+    const auto found = authority.accepted_artifacts.find(name);
+    if (found != authority.accepted_artifacts.end()) {
+        if (revision < found->second.revision) return OA_RUNTIME_ESTALE;
+        if (revision == found->second.revision &&
+            manifest.content_digest != found->second.content_digest) {
+            return OA_RUNTIME_ESTALE;
+        }
+    }
+    if (advance) {
+        if (revision > authority.accepted_revision_floor ||
+            authority.accepted_revision_digest.empty()) {
+            authority.accepted_revision_floor = revision;
+            authority.accepted_revision_digest = manifest.content_digest;
+        }
+        PersistenceAuthorityData::AcceptedArtifact &accepted =
+            authority.accepted_artifacts[name];
+        if (revision >= accepted.revision) {
+            accepted.revision = revision;
+            accepted.content_digest = manifest.content_digest;
+        }
+    }
+    return OA_RUNTIME_OK;
 }
 
 } // namespace
@@ -229,6 +323,7 @@ extern "C" oa_runtime_status oa_runtime_manifest_load(
         status = openarm::runtime::parse_manifest(text, manifest);
         if (status != OA_RUNTIME_OK) return status;
         manifest->authenticated = false;
+        manifest->loaded_from_file = true;
         oa_runtime_manifest *const handle = openarm::runtime::manifests.insert(manifest);
         if (handle == nullptr) return OA_RUNTIME_ENOMEM;
         *out_manifest = handle;
@@ -321,9 +416,24 @@ extern "C" oa_runtime_status oa_runtime_manifest_load_authenticated(
     const auto pinned = openarm::runtime::persistence_authorities.pin(authority);
     if (!pinned || !openarm::runtime::safe_file_name(file_name)) return OA_RUNTIME_EINVAL;
     try {
+        std::lock_guard<std::mutex> authority_lock(pinned->mutex);
+        openarm::runtime::DirectoryTransaction transaction(pinned->directory_fd);
+        if (!transaction.locked()) return OA_RUNTIME_EIO;
+        oa_runtime_status status =
+            openarm::runtime::refresh_revision_floor(*pinned);
+        if (status != OA_RUNTIME_OK) return status;
         std::shared_ptr<openarm::runtime::ManifestData> manifest;
-        const oa_runtime_status status =
-            openarm::runtime::load_authenticated_at(*pinned, file_name, manifest);
+        status = openarm::runtime::load_authenticated_at(*pinned, file_name, manifest);
+        if (status != OA_RUNTIME_OK) return status;
+        const std::size_t name_size = std::strlen(file_name);
+        static constexpr char previous_suffix[] = ".previous";
+        if (name_size >= sizeof(previous_suffix) - 1U &&
+            std::strcmp(file_name + name_size - (sizeof(previous_suffix) - 1U),
+                        previous_suffix) == 0) {
+            return OA_RUNTIME_ESTALE;
+        }
+        status = openarm::runtime::accept_revision(
+            *pinned, *manifest, file_name, true);
         if (status != OA_RUNTIME_OK) return status;
         oa_runtime_manifest *const handle = openarm::runtime::manifests.insert(manifest);
         if (handle == nullptr) return OA_RUNTIME_ENOMEM;
@@ -347,6 +457,13 @@ extern "C" oa_runtime_status oa_runtime_manifest_save(
         return OA_RUNTIME_EINVAL;
     }
     try {
+        std::lock_guard<std::mutex> authority_lock(authority_data->mutex);
+        openarm::runtime::DirectoryTransaction transaction(
+            authority_data->directory_fd);
+        if (!transaction.locked()) return OA_RUNTIME_EIO;
+        oa_runtime_status floor_status =
+            openarm::runtime::refresh_revision_floor(*authority_data);
+        if (floor_status != OA_RUNTIME_OK) return floor_status;
         bool target_exists = false;
         if (!openarm::runtime::target_is_regular_or_absent(
                 authority_data->directory_fd, file_name, target_exists)) {
@@ -366,6 +483,10 @@ extern "C" oa_runtime_status oa_runtime_manifest_save(
         const std::string contents = signed_content + "hmac-sha256|" +
             copy.authentication_key_id + '|' + copy.authentication_tag + '\n';
 
+        floor_status = openarm::runtime::accept_revision(
+            *authority_data, copy, file_name, false);
+        if (floor_status != OA_RUNTIME_OK) return floor_status;
+
         if (target_exists) {
             std::shared_ptr<openarm::runtime::ManifestData> previous;
             const oa_runtime_status existing_status =
@@ -378,6 +499,8 @@ extern "C" oa_runtime_status oa_runtime_manifest_save(
             }
             if (previous->config.manifest_revision == copy.config.manifest_revision &&
                 previous->content_digest == copy.content_digest) {
+                (void)openarm::runtime::accept_revision(
+                    *authority_data, copy, file_name, true);
                 return OA_RUNTIME_OK;
             }
         }
@@ -438,6 +561,8 @@ extern "C" oa_runtime_status oa_runtime_manifest_save(
                 : unlinkat(authority_data->directory_fd, file_name, 0) == 0;
             if (!rolled_back ||
                 openarm::runtime::persistence_fsync(authority_data->directory_fd) != 0) {
+                (void)openarm::runtime::accept_revision(
+                    *authority_data, copy, file_name, true);
                 return OA_RUNTIME_EDURABILITY;
             }
             return verification == OA_RUNTIME_OK ? OA_RUNTIME_EIO : verification;
@@ -451,8 +576,12 @@ extern "C" oa_runtime_status oa_runtime_manifest_save(
                 openarm::runtime::persistence_fsync(authority_data->directory_fd) == 0) {
                 return OA_RUNTIME_EIO;
             }
+            (void)openarm::runtime::accept_revision(
+                *authority_data, copy, file_name, true);
             return OA_RUNTIME_EDURABILITY;
         }
+        (void)openarm::runtime::accept_revision(
+            *authority_data, copy, file_name, true);
         return OA_RUNTIME_OK;
     } catch (const std::bad_alloc &) {
         return OA_RUNTIME_ENOMEM;
