@@ -61,6 +61,7 @@ endfunction()
 
 add_library(openarm_control STATIC ${OPENARM_CONTROL_SOURCES})
 add_library(openarm_control::openarm_control ALIAS openarm_control)
+add_library(OpenArm::Control ALIAS openarm_control)
 openarm_configure_control_target(openarm_control)
 set_target_properties(openarm_control PROPERTIES EXPORT_NAME openarm_control)
 
@@ -215,6 +216,8 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
         OPENARM_CONTROL_ENABLE_TEST_HOOKS=1)
     openarm_configure_control_target(openarm_control_test)
     add_executable(openarm_control_tests tests/test_control.cpp)
+    target_include_directories(openarm_control_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(openarm_control_tests PRIVATE
         openarm_control_test Threads::Threads)
     target_compile_options(openarm_control_tests PRIVATE
@@ -242,10 +245,16 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
     add_test(NAME openarm_control_v1_original_abi COMMAND openarm_control_v1_original_abi)
 
     if(NOT OA_CONTROL_SANITIZERS AND NOT OA_CONTROL_TSAN)
+        get_filename_component(OPENARM_CONTROL_MODEL_CMAKE_ROOT
+            "${openarm_model_DIR}" DIRECTORY)
+        get_filename_component(OPENARM_CONTROL_MODEL_LIB_ROOT
+            "${OPENARM_CONTROL_MODEL_CMAKE_ROOT}" DIRECTORY)
+        get_filename_component(OPENARM_CONTROL_MODEL_PREFIX
+            "${OPENARM_CONTROL_MODEL_LIB_ROOT}" DIRECTORY)
         add_test(NAME openarm_public_headers_install_consumer
             COMMAND "${CMAKE_COMMAND}"
                 -DOA_CONTROL_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}
-                -DOA_MODEL_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/openarm_model
+                -DOA_MODEL_PREFIX=${OPENARM_CONTROL_MODEL_PREFIX}
                 -DOA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_install_consumer.cmake")
     endif()

@@ -2,14 +2,6 @@ set(install_prefix "${OA_CONTROL_BUILD_DIR}/public-header-install")
 set(consumer_build "${OA_CONTROL_BUILD_DIR}/public-header-install-consumer")
 
 execute_process(
-    COMMAND "${CMAKE_COMMAND}" --install "${OA_MODEL_BUILD_DIR}"
-            --prefix "${install_prefix}"
-    RESULT_VARIABLE model_install_result)
-if(NOT model_install_result EQUAL 0)
-    message(FATAL_ERROR "model install failed: ${model_install_result}")
-endif()
-
-execute_process(
     COMMAND "${CMAKE_COMMAND}" --install "${OA_CONTROL_BUILD_DIR}"
             --prefix "${install_prefix}"
     RESULT_VARIABLE control_install_result)
@@ -22,7 +14,7 @@ execute_process(
             -S "${OA_SOURCE_DIR}/tests/install_consumer"
             -B "${consumer_build}"
             -DCMAKE_BUILD_TYPE=Release
-            -DCMAKE_PREFIX_PATH=${install_prefix}
+            "-DCMAKE_PREFIX_PATH=${install_prefix};${OA_MODEL_PREFIX}"
     RESULT_VARIABLE configure_result)
 if(NOT configure_result EQUAL 0)
     message(FATAL_ERROR "installed consumer configure failed: ${configure_result}")

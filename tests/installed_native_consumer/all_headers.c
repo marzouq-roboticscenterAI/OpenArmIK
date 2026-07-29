@@ -14,6 +14,8 @@ int main(void) {
     oa_manifest *manifest = NULL;
     oa_model_status model_status = OA_MODEL_OK;
     oa_control_status control_status = OA_CONTROL_OK;
+    frame.struct_size = (uint32_t)sizeof(frame);
+    frame.abi_version = OA_CAN_ABI_VERSION;
     if (oa_can_make_disable(1U, &frame) != OA_CAN_OK ||
         model_status != OA_MODEL_OK || control_status != OA_CONTROL_OK ||
         oa_model_left_v10_bimanual() == NULL ||
