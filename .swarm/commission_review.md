@@ -1,66 +1,62 @@
-# Independent re-review: commissioning/calibration (`125ce14`)
+# Final independent review: commissioning/calibration (`f4a3215`)
 
-Verdict: **CHANGES REQUIRED — one Important finding remains**
+Verdict: **CLEAN**
 
-## Remaining finding
+The final active-only monotonic-token registry corrects the remaining handle
+lifetime issue without reopening any original functional or ABI finding.
 
-### Important — stale-handle protection retains every session allocation until process exit
+## Handle registry verification
 
-The registry prevents ABA by never erasing an entry and never deleting its
-opaque wrapper on destroy. `retire()` only resets the implementation and marks
-the entry inactive (`commission/src/c_api.cpp:72-82,275-284,425-434`); both the
-wrapper and `unordered_map` tombstone are released only by the registry's static
-destructor (`c_api.cpp:42-52`). Consequently every create/destroy cycle grows
-resident process state permanently.
+- Active sessions alone occupy the registry. Destroy erases the entry and frees
+  its owned session under the same mutex used by operations.
+- Tokens increase monotonically and are independent of allocator addresses, so
+  address reuse cannot create ABA. Destroyed, arbitrary, double-destroyed, and
+  cross-type tokens miss the active map without dereference.
+- Concurrent use/destroy is serialized. The adversarial four-reader/two-destroy
+  test observed only `OA_COMMISSION_OK` before removal and
+  `OA_COMMISSION_EINVAL` afterward, with no sanitizer finding.
+- The maximum token is never issued. Forced counter exhaustion returns
+  `OA_COMMISSION_ENOMEM`, leaves the output handle null, and leaves zero active
+  registry entries; the counter cannot wrap to zero or reuse a token.
+- The optimized 500,000 create/destroy regression kept the active count at zero,
+  left the first token stale, issued a distinct final token, and completed with
+  approximately 3,932 KiB maximum RSS for the full test executable. This is
+  bounded baseline allocator/process memory rather than per-session retention
+  (the rejected tombstone implementation used approximately 39,980 KiB).
 
-An independent optimized stress repro that created and destroyed 500,000 manual
-sessions completed with approximately 39,980 KiB maximum RSS. The same repro
-under ASan reached approximately 295 MiB. LeakSanitizer reports no end-of-process
-leak because the static destructor eventually frees the tombstones, but a
-long-running process can be driven to unbounded memory growth before exit.
+## Original findings re-verified
 
-The ABA requirement is satisfied, but through permanent quarantine rather than
-a reclaimable generation/token design. This leaves the C handle-lifetime fix
-unsuitable for an unbounded-lifetime library process.
-
-## Original findings re-reviewed
-
-All seven original findings are otherwise corrected:
-
-- Exact four- and eight-byte short records now return `OA_COMMISSION_EABI`
-  before later fields are read. The original exact 8-byte ASan recipe-create
-  repro exits with `OA_COMMISSION_EABI` and no sanitizer finding; short recipe
-  step and output cases also pass.
-- Manual stale, enabled, faulted, or malformed samples latch
-  `OA_MANUAL_ABORTED`, clear evidence, and permanently exclude commit. Stability
-  movement/spread correctly restarts rather than combines a dwell.
-- First approach, contact dwell, retreat, reapproach, and second dwell share the
-  original qualified envelope; both motion deadlines are enforced in the state
-  machine. The original `0.250 rad` retry and late-dwell repros now abort.
-- Both contacts require consecutive sample count and dwell evidence before
-  repeatability.
-- Temperature is checked before WAIT can emit APPROACH, and every active motion
-  state requires enabled feedback plus E-stop/deadman interlocks.
+- Exact four- and eight-byte C records are rejected with
+  `OA_COMMISSION_EABI` before later fields are read. The original standalone
+  8-byte ASan repro returns `OA_COMMISSION_EABI` with no sanitizer finding.
+- C outputs preserve surrounding canaries; invalid/stale/cross-type handles,
+  allocation failure, and injected C++ exceptions are contained.
+- Manual stale, enabled, faulted, or malformed samples latch abort, clear
+  accumulated evidence, and permanently exclude review/commit. Stable dwell,
+  one-reference known-sign math, and two-reference sign/scale math remain sound.
+- The hard-stop session enforces the original qualified envelope through first
+  approach/dwell, retreat, reapproach, and second dwell; phase deadlines,
+  freshness, E-stop/deadman, enabled state, speed, torque, temperature, contact
+  energy, travel, two-contact dwell, and repeatability all fail closed.
 - Arm recipes reject simulation mode and require qualification/fixture revisions
-  plus the complete other-joint posture; bindings are rechecked on every active
-  step. Simulation-only gripper patches carry a distinct evidence kind, record,
-  and revision.
-- Arbitrary, stale, double-destroyed, and cross-type handles are rejected without
-  dereference; use/destroy are serialized. The remaining issue is the unbounded
-  tombstone retention described above.
+  plus all-other-joint posture on every active step. Simulation-only gripper
+  patches retain distinct evidence kind, record, and revision.
+- Every state-machine failure or explicit abort excludes commit and leaves the
+  caller patch unchanged.
+- No FE zero, save/flash/register write, motor frame, SocketCAN/netlink,
+  transport, shell, Python, ROS, or hardware-command surface exists in
+  `commission/`.
 
-## Verification evidence
+## Fresh evidence
 
-- Fresh GCC 15 Debug build with `-Wall -Wextra -Wpedantic -Werror`, ASan, and
-  UBSan: passed.
-- `ctest --output-on-failure`: 2/2 passed, including the strict C11 consumer,
-  canaries, exact short records, injected allocation/exception failures, all
-  original adversarial state-machine cases, posture/revision mismatches, and
-  stale/cross-type handles.
-- Exact original standalone short-record ASan repro: no sanitizer issue; returned
-  `OA_COMMISSION_EABI`.
-- Independent optimized handle stress repro: 500,000 create/destroy cycles,
-  approximately 39,980 KiB maximum RSS.
-- No FE/save/flash/register-write/transport surface was introduced.
+- GCC 15 Debug, `-Wall -Wextra -Wpedantic -Werror`, ASan, UBSan, leak detection:
+  passed.
+- Debug sanitizer `ctest --output-on-failure`: 2/2 passed.
+- Optimized Release `ctest --output-on-failure`: 2/2 passed.
+- Direct optimized full test executable, including 500,000 registry cycles and
+  concurrency/exhaustion tests: passed; approximately 3,932 KiB maximum RSS.
+- Exact standalone short-record ASan repro: returned `OA_COMMISSION_EABI` with
+  no sanitizer finding.
+- `git diff 125ce14..f4a3215 --check`: clean.
 
 No source edits were made; this report is the only review update.
