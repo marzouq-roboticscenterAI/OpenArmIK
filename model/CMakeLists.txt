@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(openarm_model LANGUAGES C)
 
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
@@ -14,7 +17,9 @@ set(OA_XACRO_PYTHONPATH "" CACHE STRING "PYTHONPATH required by xacro")
 set(OA_XACRO_AMENT_PREFIX "" CACHE STRING "Base AMENT_PREFIX_PATH required by xacro")
 
 add_library(openarm_model STATIC src/openarm_model.c)
-target_include_directories(openarm_model PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_include_directories(openarm_model PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(openarm_model PUBLIC c_std_11)
 set_target_properties(openarm_model PROPERTIES C_EXTENSIONS OFF)
 target_compile_options(openarm_model PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -23,6 +28,30 @@ if(OA_MODEL_SANITIZERS)
   target_compile_options(openarm_model PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_link_options(openarm_model INTERFACE -fsanitize=address,undefined)
 endif()
+
+install(TARGETS openarm_model EXPORT openarm_modelTargets
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES generated/openarm_v10_bimanual.urdf LICENSE.txt NOTICE
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/openarm_model)
+install(EXPORT openarm_modelTargets
+  FILE openarm_modelTargets.cmake
+  NAMESPACE openarm_model::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/openarm_model)
+configure_package_config_file(
+  cmake/openarm_modelConfig.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/openarm_modelConfig.cmake
+  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/openarm_model)
+write_basic_package_version_file(
+  ${CMAKE_CURRENT_BINARY_DIR}/openarm_modelConfigVersion.cmake
+  VERSION 1.0.0
+  COMPATIBILITY SameMajorVersion)
+install(FILES
+  ${CMAKE_CURRENT_BINARY_DIR}/openarm_modelConfig.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/openarm_modelConfigVersion.cmake
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/openarm_model)
 if(OA_MODEL_COVERAGE)
   target_compile_options(openarm_model PRIVATE --coverage -O0)
   target_link_options(openarm_model INTERFACE --coverage)

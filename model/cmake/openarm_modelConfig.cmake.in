@@ -1,0 +1,6 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/openarm_modelTargets.cmake")
+set(openarm_model_GENERATED_URDF
+  "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/openarm_model/openarm_v10_bimanual.urdf")
+check_required_components(openarm_model)
