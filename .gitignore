@@ -1,5 +1,6 @@
 # Canonical upstream repositories are downloaded locally and recorded by commit.
 upstream/
+.deps/
 
 # CMake and ROS 2 build products.
 build/

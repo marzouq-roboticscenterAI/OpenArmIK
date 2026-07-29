@@ -24,7 +24,7 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
 - [x] Missing referenced skill support files documented; using equivalent local contracts.
 - [x] Initial ROS and hardware inventory complete.
 - [x] Authoritative research independently cross-verified.
-- [ ] Sources downloaded and pinned.
+- [x] Sources downloaded and pinned.
 - [ ] URDF built and verified in RViz.
 - [ ] Dual-arm simulated control verified.
 - [ ] C API implemented and reviewed.
@@ -39,6 +39,9 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
 - 2026-07-28: Pin v1.0 description release 1.0.4 (`5db5232d4bbf7396222437a568c625176bac1139`) for reproducibility; current docs/source paths supersede archived v1 documentation paths.
 - 2026-07-28: Use `openarm_{left|right}_hand_tcp` as the default claw/tool target. The canonical model has no frame literally named `claw`.
 - 2026-07-28: Physical discovery remains read-only and disarmed. It cannot infer joint assignment, polarity, zero, or duplicate IDs; those require a commissioning manifest.
+- 2026-07-28: All ten repositories listed by the canonical OpenArm hub were fully cloned under `upstream/`, detached at the coherent audited current commits, with licenses and repository state recorded in `UPSTREAM_SOURCES.md`.
+- 2026-07-28: Current v1.0 xacro generation produces and `check_urdf` validates a bimanual tree. The generated wrist-to-hand transform is 0.1025 m and hand-to-TCP is 0.0835 m (0.1860 m total); the checked-in upstream `example/v1.urdf` is stale and must not be used as kinematic truth.
+- 2026-07-28: Independent first-pass reviews rejected both implementation branches. CAN required stale/enable/ABI/netlink fixes; model required deterministic Jacobian construction, hard-bound feasibility, generator provenance, task-priority and strict-C11 fixes. Neither initial branch was integrated.
 
 ## Open items
 
