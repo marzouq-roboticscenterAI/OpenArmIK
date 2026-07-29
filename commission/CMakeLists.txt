@@ -24,7 +24,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(openarm_commission PRIVATE
         -Wall -Wextra -Wpedantic -Werror)
     if(OA_COMMISSION_ENABLE_SANITIZERS)
-        target_compile_options(openarm_commission PRIVATE
+        target_compile_options(openarm_commission PUBLIC
             -fno-omit-frame-pointer -fsanitize=address,undefined)
         target_link_options(openarm_commission PUBLIC
             -fno-omit-frame-pointer -fsanitize=address,undefined)
@@ -32,8 +32,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 if(BUILD_TESTING)
+    find_package(Threads REQUIRED)
     add_executable(openarm_commission_tests tests/test_commission.cpp)
-    target_link_libraries(openarm_commission_tests PRIVATE OpenArm::Commission)
+    target_link_libraries(openarm_commission_tests PRIVATE
+        OpenArm::Commission Threads::Threads)
     target_include_directories(openarm_commission_tests PRIVATE src)
     target_compile_features(openarm_commission_tests PRIVATE cxx_std_17)
     set_target_properties(openarm_commission_tests PROPERTIES CXX_EXTENSIONS OFF)

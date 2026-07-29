@@ -1,13 +1,18 @@
 #include "openarm_commission.h"
 #include "test_hooks.hpp"
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include <unistd.h>
 
 namespace {
 
@@ -768,6 +773,125 @@ void test_abi_validation() {
     CHECK(oa_commission_recipe_abort(nullptr) == OA_COMMISSION_EINVAL);
 }
 
+std::uint64_t resident_kib() {
+    std::ifstream status("/proc/self/statm");
+    std::uint64_t virtual_pages = 0U;
+    std::uint64_t resident_pages = 0U;
+    status >> virtual_pages >> resident_pages;
+    (void)virtual_pages;
+    const long page_size = ::sysconf(_SC_PAGESIZE);
+    if (!status || page_size <= 0L) {
+        return 0U;
+    }
+    return resident_pages * static_cast<std::uint64_t>(page_size) / 1024U;
+}
+
+void test_bounded_handle_registry_stress() {
+    const auto options = manual_options(1U, 1);
+    CHECK(openarm::commission::test::active_handle_count() == 0U);
+    for (std::uint32_t index = 0U; index < 1024U; ++index) {
+        oa_commission_manual_session *session = nullptr;
+        CHECK(oa_commission_manual_create(&options, &session) == OA_COMMISSION_OK);
+        oa_commission_manual_destroy(session);
+    }
+    const std::uint64_t before_kib = resident_kib();
+    CHECK(before_kib > 0U);
+    oa_commission_manual_session *first_token = nullptr;
+    oa_commission_manual_session *last_token = nullptr;
+    for (std::uint32_t index = 0U; index < 500000U; ++index) {
+        oa_commission_manual_session *session = nullptr;
+        CHECK(oa_commission_manual_create(&options, &session) == OA_COMMISSION_OK);
+        if (index == 0U) {
+            first_token = session;
+        }
+        last_token = session;
+        oa_commission_manual_destroy(session);
+        if (index % 10000U == 0U) {
+            CHECK(openarm::commission::test::active_handle_count() == 0U);
+        }
+    }
+    const std::uint64_t after_kib = resident_kib();
+    CHECK(after_kib > 0U);
+    CHECK(first_token != nullptr);
+    CHECK(last_token != nullptr);
+    CHECK(first_token != last_token);
+    CHECK(oa_commission_manual_abort(first_token) == OA_COMMISSION_EINVAL);
+    CHECK(openarm::commission::test::active_handle_count() == 0U);
+#if !defined(__SANITIZE_ADDRESS__)
+    CHECK(after_kib <= before_kib + UINT64_C(16384));
+#endif
+}
+
+void test_concurrent_stale_and_destroy() {
+    const auto options = manual_options(1U, 1);
+    oa_commission_manual_session *session = nullptr;
+    CHECK(oa_commission_manual_create(&options, &session) == OA_COMMISSION_OK);
+    std::atomic<bool> start{false};
+    std::atomic<bool> destroyed{false};
+    std::atomic<std::uint32_t> ok_count{0U};
+    std::atomic<std::uint32_t> stale_count{0U};
+    std::atomic<std::uint32_t> bad_count{0U};
+    std::vector<std::thread> readers;
+    for (std::uint32_t thread_index = 0U; thread_index < 4U; ++thread_index) {
+        readers.emplace_back([&]() {
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            const auto read_once = [&]() {
+                auto report = output_record<oa_commission_manual_report>();
+                const auto status = oa_commission_manual_get_report(session, &report);
+                if (status == OA_COMMISSION_OK) {
+                    ++ok_count;
+                } else if (status == OA_COMMISSION_EINVAL) {
+                    ++stale_count;
+                } else {
+                    ++bad_count;
+                }
+            };
+            for (std::uint32_t index = 0U; index < 5000U; ++index) {
+                read_once();
+            }
+            while (!destroyed.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (std::uint32_t index = 0U; index < 5000U; ++index) {
+                read_once();
+            }
+        });
+    }
+    start.store(true, std::memory_order_release);
+    while (ok_count.load(std::memory_order_acquire) == 0U) {
+        std::this_thread::yield();
+    }
+    std::thread first_destroy(
+        [&]() { oa_commission_manual_destroy(session); });
+    std::thread second_destroy(
+        [&]() { oa_commission_manual_destroy(session); });
+    first_destroy.join();
+    second_destroy.join();
+    destroyed.store(true, std::memory_order_release);
+    for (auto &reader : readers) {
+        reader.join();
+    }
+    CHECK(ok_count > 0U);
+    CHECK(stale_count > 0U);
+    CHECK(bad_count == 0U);
+    CHECK(oa_commission_manual_abort(session) == OA_COMMISSION_EINVAL);
+    CHECK(openarm::commission::test::active_handle_count() == 0U);
+}
+
+void test_handle_token_exhaustion_fails_closed() {
+    const auto options = manual_options(1U, 1);
+    CHECK(openarm::commission::test::active_handle_count() == 0U);
+    openarm::commission::test::exhaust_handle_tokens();
+    oa_commission_manual_session *session =
+        reinterpret_cast<oa_commission_manual_session *>(
+            static_cast<std::uintptr_t>(UINT32_C(0x1234)));
+    CHECK(oa_commission_manual_create(&options, &session) == OA_COMMISSION_ENOMEM);
+    CHECK(session == nullptr);
+    CHECK(openarm::commission::test::active_handle_count() == 0U);
+}
+
 }  // namespace
 
 int main() {
@@ -786,6 +910,9 @@ int main() {
     test_recipe_evidence_and_posture_binding();
     test_short_records_handles_canaries_and_exceptions();
     test_abi_validation();
+    test_bounded_handle_registry_stress();
+    test_concurrent_stale_and_destroy();
+    test_handle_token_exhaustion_fails_closed();
     if (failures != 0) {
         std::cerr << failures << " test assertion(s) failed\n";
         return 1;

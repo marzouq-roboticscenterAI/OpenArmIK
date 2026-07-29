@@ -36,10 +36,12 @@ All Critical and Important findings from the independent review were corrected.
    and revision, cannot claim hardware qualification, and produce a patch marked
    `OA_EVIDENCE_SIMULATION_ONLY`. Physical patches preserve their admitting
    qualification and fixture revisions.
-7. A synchronized typed live-handle registry rejects arbitrary, stale,
-   double-destroyed, and cross-type handles without dereferencing them and
-   serializes use against destroy. Output success/failure canaries, short output
-   records, and deterministic allocation/exception containment hooks were added.
+7. A synchronized, active-only registry maps monotonically issued,
+   non-dereferenced token handles to sessions. Destroy erases and frees the
+   session; tokens are never reused, counter exhaustion fails closed, and
+   arbitrary, stale, double-destroyed, and cross-type values are rejected.
+   Output success/failure canaries, short output records, and deterministic
+   allocation/exception containment hooks were added.
 
 The product still has no CAN/SocketCAN transport, frame/payload type, register
 write, motor enable, `FE` zero, save, flash, netlink, shell, sudo, Python, or ROS

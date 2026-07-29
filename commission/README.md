@@ -31,10 +31,12 @@ simulation evidence. It still passes the same sample, interlock, ceiling,
 two-contact-dwell, repeatability, review, and commit gates. Simulation never
 qualifies hardware.
 
-Public records are size/version checked before later fields are read. Live
-handles are tracked by type so stale, arbitrary, double-destroyed, and cross-type
-handles are rejected without dereference; operations and destruction are
-serialized against each other.
+Public records are size/version checked before later fields are read. Opaque
+handles are monotonically issued, non-dereferenced integer tokens held only while
+active. Destroy erases and frees the session, while stale, arbitrary,
+double-destroyed, and cross-type tokens remain rejected because tokens are never
+reused. Operations and destruction are serialized; token-counter exhaustion
+fails closed.
 
 Build and test independently from the repository root:
 

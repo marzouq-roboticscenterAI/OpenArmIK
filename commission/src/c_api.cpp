@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -14,18 +15,6 @@ using openarm::commission::ManualCalibrationSession;
 using openarm::commission::RecipeCalibrationSession;
 using openarm::commission::valid_header;
 using openarm::commission::valid_text;
-
-struct oa_commission_manual_session {
-    explicit oa_commission_manual_session(const oa_commission_manual_options &options)
-        : implementation(std::make_unique<ManualCalibrationSession>(options)) {}
-    std::unique_ptr<ManualCalibrationSession> implementation;
-};
-
-struct oa_commission_recipe_session {
-    explicit oa_commission_recipe_session(const oa_commission_recipe &recipe)
-        : implementation(std::make_unique<RecipeCalibrationSession>(recipe)) {}
-    std::unique_ptr<RecipeCalibrationSession> implementation;
-};
 
 namespace {
 
@@ -39,62 +28,96 @@ std::atomic<bool> throw_exception{false};
 
 class HandleRegistry final {
 public:
-    ~HandleRegistry() {
-        for (const auto &handle : handles_) {
-            if (handle.second.kind == HandleKind::Manual) {
-                delete static_cast<oa_commission_manual_session *>(
-                    const_cast<void *>(handle.first));
-            } else {
-                delete static_cast<oa_commission_recipe_session *>(
-                    const_cast<void *>(handle.first));
-            }
-        }
+    bool add_manual(std::unique_ptr<ManualCalibrationSession> session,
+                    std::uintptr_t &token) {
+        return add(HandleKind::Manual, std::move(session), nullptr, token);
     }
 
-    void add(const void *handle, HandleKind kind) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        handles_.emplace(handle, Entry{kind, true});
+    bool add_recipe(std::unique_ptr<RecipeCalibrationSession> session,
+                    std::uintptr_t &token) {
+        return add(HandleKind::Recipe, nullptr, std::move(session), token);
     }
 
     template <typename Callable>
-    oa_commission_status use(const void *handle,
-                             HandleKind kind,
-                             Callable &&callable) {
+    oa_commission_status use_manual(std::uintptr_t token, Callable &&callable) {
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto found = handles_.find(handle);
-        if (found == handles_.end() || found->second.kind != kind ||
-            !found->second.active) {
+        const auto found = handles_.find(token);
+        if (found == handles_.end() || found->second.kind != HandleKind::Manual ||
+            found->second.manual == nullptr) {
             return OA_COMMISSION_EINVAL;
         }
-        return callable();
+        return callable(*found->second.manual);
     }
 
-    template <typename Cleanup>
-    bool retire(void *handle, HandleKind kind, Cleanup &&cleanup) {
+    template <typename Callable>
+    oa_commission_status use_recipe(std::uintptr_t token, Callable &&callable) {
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto found = handles_.find(handle);
-        if (found == handles_.end() || found->second.kind != kind ||
-            !found->second.active) {
+        const auto found = handles_.find(token);
+        if (found == handles_.end() || found->second.kind != HandleKind::Recipe ||
+            found->second.recipe == nullptr) {
+            return OA_COMMISSION_EINVAL;
+        }
+        return callable(*found->second.recipe);
+    }
+
+    bool remove(std::uintptr_t token, HandleKind kind) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = handles_.find(token);
+        if (found == handles_.end() || found->second.kind != kind) {
             return false;
         }
-        cleanup();
-        found->second.active = false;
+        handles_.erase(found);
         return true;
+    }
+
+    [[nodiscard]] std::size_t active_count() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return handles_.size();
+    }
+
+    void exhaust_tokens_for_test() noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        next_token_ = std::numeric_limits<std::uintptr_t>::max();
     }
 
 private:
     struct Entry {
         HandleKind kind;
-        bool active;
+        std::unique_ptr<ManualCalibrationSession> manual;
+        std::unique_ptr<RecipeCalibrationSession> recipe;
     };
 
-    std::mutex mutex_;
-    std::unordered_map<const void *, Entry> handles_;
+    bool add(HandleKind kind,
+             std::unique_ptr<ManualCalibrationSession> manual,
+             std::unique_ptr<RecipeCalibrationSession> recipe,
+             std::uintptr_t &token) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (next_token_ == std::numeric_limits<std::uintptr_t>::max()) {
+            return false;
+        }
+        const std::uintptr_t candidate = next_token_;
+        const auto inserted = handles_.emplace(
+            candidate, Entry{kind, std::move(manual), std::move(recipe)});
+        if (!inserted.second) {
+            return false;
+        }
+        ++next_token_;
+        token = candidate;
+        return true;
+    }
+
+    mutable std::mutex mutex_;
+    std::unordered_map<std::uintptr_t, Entry> handles_;
+    std::uintptr_t next_token_{1U};
 };
 
 HandleRegistry &registry() {
     static HandleRegistry instance;
     return instance;
+}
+
+std::uintptr_t handle_token(const void *handle) noexcept {
+    return reinterpret_cast<std::uintptr_t>(handle);
 }
 
 bool finite(double value) noexcept {
@@ -245,6 +268,14 @@ void throw_next_exception() noexcept {
     throw_exception = true;
 }
 
+std::size_t active_handle_count() noexcept {
+    return registry().active_count();
+}
+
+void exhaust_handle_tokens() noexcept {
+    registry().exhaust_tokens_for_test();
+}
+
 }  // namespace openarm::commission::test
 
 extern "C" oa_commission_status oa_commission_manual_create(
@@ -265,9 +296,12 @@ extern "C" oa_commission_status oa_commission_manual_create(
         if (fail_allocation.exchange(false)) {
             throw std::bad_alloc();
         }
-        auto session = std::make_unique<oa_commission_manual_session>(*options);
-        registry().add(session.get(), HandleKind::Manual);
-        *out_session = session.release();
+        auto implementation = std::make_unique<ManualCalibrationSession>(*options);
+        std::uintptr_t token = 0U;
+        if (!registry().add_manual(std::move(implementation), token)) {
+            return OA_COMMISSION_ENOMEM;
+        }
+        *out_session = reinterpret_cast<oa_commission_manual_session *>(token);
         return OA_COMMISSION_OK;
     });
 }
@@ -277,9 +311,7 @@ extern "C" void oa_commission_manual_destroy(oa_commission_manual_session *sessi
         return;
     }
     try {
-        (void)registry().retire(session, HandleKind::Manual, [&]() {
-            session->implementation.reset();
-        });
+        (void)registry().remove(handle_token(session), HandleKind::Manual);
     } catch (...) {
     }
 }
@@ -302,10 +334,9 @@ extern "C" oa_commission_status oa_commission_manual_sample(
         return output_status;
     }
     return guard([&]() {
-        return registry().use(session, HandleKind::Manual, [&]() {
-            const auto result =
-                session->implementation->sample(reference_index, now_ns, *sample);
-            const auto report = session->implementation->report();
+        return registry().use_manual(handle_token(session), [&](auto &implementation) {
+            const auto result = implementation.sample(reference_index, now_ns, *sample);
+            const auto report = implementation.report();
             *out_report = report;
             return result;
         });
@@ -323,9 +354,9 @@ extern "C" oa_commission_status oa_commission_manual_begin_review(
         return output_status;
     }
     return guard([&]() {
-        return registry().use(session, HandleKind::Manual, [&]() {
-            const auto result = session->implementation->begin_review();
-            const auto report = session->implementation->report();
+        return registry().use_manual(handle_token(session), [&](auto &implementation) {
+            const auto result = implementation.begin_review();
+            const auto report = implementation.report();
             *out_report = report;
             return result;
         });
@@ -345,9 +376,9 @@ extern "C" oa_commission_status oa_commission_manual_commit(
         return output_status;
     }
     return guard([&]() {
-        return registry().use(session, HandleKind::Manual, [&]() {
+        return registry().use_manual(handle_token(session), [&](auto &implementation) {
             oa_commission_mapping_patch candidate{};
-            const auto result = session->implementation->commit(
+            const auto result = implementation.commit(
                 replacement_revision, evidence_record, candidate);
             if (result == OA_COMMISSION_OK) {
                 *out_patch = candidate;
@@ -363,8 +394,8 @@ extern "C" oa_commission_status oa_commission_manual_abort(
         return OA_COMMISSION_EINVAL;
     }
     return guard([&]() {
-        return registry().use(session, HandleKind::Manual, [&]() {
-            return session->implementation->abort();
+        return registry().use_manual(handle_token(session), [&](auto &implementation) {
+            return implementation.abort();
         });
     });
 }
@@ -380,8 +411,8 @@ extern "C" oa_commission_status oa_commission_manual_get_report(
         return output_status;
     }
     return guard([&]() {
-        return registry().use(session, HandleKind::Manual, [&]() {
-            const auto report = session->implementation->report();
+        return registry().use_manual(handle_token(session), [&](auto &implementation) {
+            const auto report = implementation.report();
             *out_report = report;
             return OA_COMMISSION_OK;
         });
@@ -415,9 +446,12 @@ extern "C" oa_commission_status oa_commission_recipe_create(
         if (fail_allocation.exchange(false)) {
             throw std::bad_alloc();
         }
-        auto session = std::make_unique<oa_commission_recipe_session>(*recipe);
-        registry().add(session.get(), HandleKind::Recipe);
-        *out_session = session.release();
+        auto implementation = std::make_unique<RecipeCalibrationSession>(*recipe);
+        std::uintptr_t token = 0U;
+        if (!registry().add_recipe(std::move(implementation), token)) {
+            return OA_COMMISSION_ENOMEM;
+        }
+        *out_session = reinterpret_cast<oa_commission_recipe_session *>(token);
         return OA_COMMISSION_OK;
     });
 }
@@ -427,9 +461,7 @@ extern "C" void oa_commission_recipe_destroy(oa_commission_recipe_session *sessi
         return;
     }
     try {
-        (void)registry().retire(session, HandleKind::Recipe, [&]() {
-            session->implementation.reset();
-        });
+        (void)registry().remove(handle_token(session), HandleKind::Recipe);
     } catch (...) {
     }
 }
@@ -459,10 +491,10 @@ extern "C" oa_commission_status oa_commission_recipe_step(
         return report_status;
     }
     return guard([&]() {
-        return registry().use(session, HandleKind::Recipe, [&]() {
+        return registry().use_recipe(handle_token(session), [&](auto &implementation) {
             oa_commission_next_action action{};
-            const auto result = session->implementation->step(*input, action);
-            const auto report = session->implementation->report();
+            const auto result = implementation.step(*input, action);
+            const auto report = implementation.report();
             *out_action = action;
             *out_report = report;
             return result;
@@ -482,10 +514,9 @@ extern "C" oa_commission_status oa_commission_recipe_commit(
         return output_status;
     }
     return guard([&]() {
-        return registry().use(session, HandleKind::Recipe, [&]() {
+        return registry().use_recipe(handle_token(session), [&](auto &implementation) {
             oa_commission_mapping_patch candidate{};
-            const auto result =
-                session->implementation->commit(replacement_revision, candidate);
+            const auto result = implementation.commit(replacement_revision, candidate);
             if (result == OA_COMMISSION_OK) {
                 *out_patch = candidate;
             }
@@ -500,8 +531,8 @@ extern "C" oa_commission_status oa_commission_recipe_abort(
         return OA_COMMISSION_EINVAL;
     }
     return guard([&]() {
-        return registry().use(session, HandleKind::Recipe, [&]() {
-            return session->implementation->abort();
+        return registry().use_recipe(handle_token(session), [&](auto &implementation) {
+            return implementation.abort();
         });
     });
 }
@@ -517,8 +548,8 @@ extern "C" oa_commission_status oa_commission_recipe_get_report(
         return output_status;
     }
     return guard([&]() {
-        return registry().use(session, HandleKind::Recipe, [&]() {
-            const auto report = session->implementation->report();
+        return registry().use_recipe(handle_token(session), [&](auto &implementation) {
+            const auto report = implementation.report();
             *out_report = report;
             return OA_COMMISSION_OK;
         });
