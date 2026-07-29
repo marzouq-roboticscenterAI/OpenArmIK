@@ -17,3 +17,26 @@ Visualization Manager:
     Fixed Frame: world
     Frame Rate: 30
   Name: root
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 1.600000023841858
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0.6499999761581421
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.3499999940395355
+      Target Frame: world
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 5.5
+    Saved: ~

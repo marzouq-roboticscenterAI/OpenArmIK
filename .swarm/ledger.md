@@ -31,6 +31,8 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
 - [x] C CAN and kinematics/IK APIs implemented and independently reviewed.
 - [x] Strict, sanitizer, deterministic-generator, ROS, and coverage suites green.
 - [x] Final fresh independent whole-branch audits clean.
+- [x] RViz live-resize renderer workaround, centered camera, single-instance guard, and graceful Ctrl+C/window-close lifecycle verified.
+- [ ] Encoder-closed-loop physical C ABI/C++ controller requested on 2026-07-29; protocol research and design review are in progress.
 
 ## Decisions and evidence
 
@@ -66,6 +68,19 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
 - 2026-07-28: Two fresh independent final passes reported CLEAN for the
   hardware-free scope. See `final_audit.md` and `final_verification.md` for exact
   commands, results, coverage, and limitations.
+- 2026-07-29: GNOME Wayland/Qt selected DPR=2 and hardware GLX flickered while
+  resizing. Process-local DPR=1 prevented persistent post-resize failure, and the
+  user confirmed Mesa software rendering was better during live resize. Native
+  Qt Wayland could not initialize Ogre's required GLX parent window.
+- 2026-07-29: The launcher now defaults to software OpenGL on Wayland, rejects a
+  second instance, centers the bimanual model, separates RViz from the ROS signal
+  group, and closes RViz through the window manager before stopping ROS. Three
+  Ctrl-C checks exited in under one second with both ROS nodes clean; window-close
+  cleanup also passed. Independent lifecycle review, fresh sweep, and verification
+  are CLEAN; ROS remains 10/10 and model/CAN strict and sanitizer suites pass.
+- 2026-07-29: A fresh paired virtual request reached left/right hand TCP targets
+  `(0.20, 0.30, 0.85)` / `(0.20, -0.30, 0.85)` with approximately
+  `6.06e-8 m` residual per side under the stable renderer.
 
 ## Open items
 
@@ -76,3 +91,6 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   ROS defaults during physical commissioning; the codec does not silently choose.
 - The upstream v1 ROS hardware stack targeted Humble. Its sources are pinned here,
   but it is not represented as a validated Lyrical physical-control backend.
+- The user has now requested a compiled, modular physical controller. Until it is
+  implemented and hardware acceptance is performed, the prior physical-motion
+  boundary remains in force.

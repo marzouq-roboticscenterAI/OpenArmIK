@@ -30,6 +30,14 @@ watchdog are installed.
 ./scripts/launch_rviz.sh
 ```
 
+On this Wayland hybrid-GPU laptop the launcher uses Mesa software OpenGL with
+the XWayland/GLX backend required by this RViz/Ogre build. Hardware GLX remains
+available with `OPENARM_RVIZ_RENDERER=nvidia` or `integrated`, but it flickers
+during live window resize on this host. The launcher also disables HiDPI render
+target scaling for RViz only, closes the RViz window before stopping ROS so
+`Ctrl+C` shuts down cleanly, and holds a single-instance lock to prevent
+duplicate joint-state/TF publishers.
+
 The launch starts only `robot_state_publisher`, the virtual adapter, and RViz. `robot_state_publisher` is the only TF authority. The pinned `openarm_description` package supplies mesh URI resolution; the installed robot description is copied from [model/generated/openarm_v10_bimanual.urdf](model/generated/openarm_v10_bimanual.urdf).
 
 In another sourced terminal, send one atomic paired request:
