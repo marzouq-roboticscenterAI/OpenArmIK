@@ -1,79 +1,58 @@
-# Final independent review of `b1668b2`
+# Final stop-policy review of `27cfa72`
 
-Verdict: **CHANGES REQUIRED — one Medium finding remains.** The final corrective
-commit closes both prior High C-ABI findings, allocation transactionality,
-cycle-deadline/positive-dwell behavior, and all earlier controller-core findings.
-Release, ASan/UBSan, and TSan suites pass 3/3. The only remaining issue is an
-incomplete controlled-stop reaction for non-timeout faults.
+Verdict: **CHANGES REQUIRED — one Medium eligibility edge remains.** The commit
+correctly adds encoder-visible, two-arm controlled holds for coherent producer/
+command/cycle watchdog stops and disable fallback for ordinary stale-feedback,
+CAN/partial/skew, and motor-fault paths. Release, ASan/UBSan, and TSan pass 3/3.
 
-## Medium — controlled stop does not stop on producer, CAN, or motor faults
+## Medium — timeout is declared controllable without checking feedback coherence or motor health
 
-`latch_fault()` recognizes `OA_STOP_CONTROLLED`, retains enabled state, and
-clears measured velocity only when the cause is exactly `OA_ETIMEOUT`
-(`control/src/control_core.cpp:1157-1173`). For the other execution fault paths:
+The missed-cycle gate updates `now_ns_` and calls
+`latch_fault(OA_ETIMEOUT, true)` unconditionally before checking `fresh()` or
+`healthy()` (`control/src/control_core.cpp:805-825`). Command expiry likewise
+passes unconditional availability before the later health check (`:829-842`).
+`latch_fault` therefore retains enabled hold whenever the request selected
+`OA_STOP_CONTROLLED` (`:1166-1182`).
 
-- producer/watchdog expiry calls `latch_fault(OA_ESTALE)` (`:821-824`);
-- partial command send or cross-bus skew calls `latch_fault(OA_ECAN)`
-  (`:875-892`);
-- injected/motor status faults call `latch_fault(OA_EFAULT)` (`:830-833,895-898`).
+Two unsafe combinations remain:
 
-With a controlled-stop request, those paths only leave the simulator internally
-enabled. They do not issue a zero-velocity hold/deceleration state, and they do
-not fall back to disable. The controller then enters `FAULT`, where `advance()`
-cannot progress a deceleration. The last measured `dq` may consequently remain
-nonzero indefinitely. This is not a controlled stop and is less safe than a
-documented disable fallback when the bus/fault cause makes controlled motion
-unavailable.
+- With the configured 10 ms cycle and 50 ms feedback timeout, an initial
+  `advance(60 ms)` is both a missed cycle and stale feedback. It is classified as
+  controllable timeout, holds the last stale q enabled, and synthesizes a new
+  complete feedback generation instead of taking the required disable fallback.
+- If a motor fault is injected before an advance that also misses its cycle or
+  crosses command expiry, timeout wins before `healthy()` is evaluated. The
+  fault status is preserved, but the controller still selects enabled hold rather
+  than motor-fault disable fallback.
 
-The new stop-policy test covers only a missed-cycle `OA_ETIMEOUT`
-(`control/tests/test_control.cpp:969-999`), so it does not expose this distinction.
+Expected fix/test: compute controlled-stop availability from a coherent, fresh,
+fault-free pre-stop snapshot (or prioritize feedback/motor-integrity faults over
+timeout). Add controlled-request tests for a cycle gap beyond feedback timeout
+and for simultaneous motor-fault-plus-timeout; both arms must show disabled,
+quantized-zero dq while the event and fault status preserve the original cause.
 
-Expected fix/test: define cause-aware stop behavior. When communication remains
-healthy, generate and verify a bounded controlled stop/hold before latching the
-terminal state; when CAN or motor faults make that impossible, explicitly fall
-back to two-arm disable. Test `OA_STOP_CONTROLLED` separately for producer stale,
-command expiry, missed cycle, partial send/skew, and motor-fault causes, asserting
-measured zero velocity or disabled status as appropriate.
+## Verified closed behavior
 
-## Closed findings verified
-
-- **Frozen 8bc V1 ABI:** current paired layout preserves the original collision
-  revision offset, all three extended inputs accept their original prefix sizes,
-  and missing tails receive explicit defaults
-  (`control/include/openarm_control.h:176-190,291-299`;
-  `control/src/c_api.cpp:29-42,261-303,403-425,505-516`). A consumer compiled only
-  against the frozen original header successfully creates, verifies, arms,
-  paired-plans, injects a legacy fault, and destroys against the current library.
-- **All handle types:** manifest, controller, and plan handles are typed registry
-  tokens and caller addresses are never dereferenced
-  (`control/src/c_api.cpp:58-193`). Arbitrary, cross-type, stale, concurrent-use/
-  destroy, and post-destroy probes return defined errors under ASan/UBSan/TSan.
-- **Token memory/ABA/exhaustion:** registries retain only active slots; one global
-  monotonic 16-byte-stride token source prevents cross-type and stale ABA; integer
-  exhaustion throws `bad_alloc` and is contained as `OA_ENOMEM` (`:78-98`).
-  Repeated 4,096-controller and 4,096-plan create/destroy stress returns active
-  counts to zero without material RSS growth.
-- **Allocation transactionality:** controller publication has no throwing step
-  after insertion, checks collision, and deterministic failures at all three
-  pre-publication boundaries leave output and active registry untouched
-  (`:153-165,285-302`). Manifest/plan publication likewise performs no throwing
-  operation after successful registry insertion.
-- **Cycle/dwell:** armed cycle gaps greater than `cycle_ns` latch timeout; equal
-  timestamps do no work; completion requires three positive cycle intervals in
-  measured q/dq/FK tolerance (`control/src/control_core.cpp:795-822,904-927`).
-- **Original six Highs:** independent plant/decoded encoder truth, fault-free
-  arming, controller/epoch-bound plans with start recheck, serialized lifetime,
-  coherent generation/skew/paired stop, and waypoint/predecessor-seeded IK path
-  gates remain intact. Mapping/no-double-gearing, physical hard gates, collision
-  reject-all default, reset/reverify, heartbeat, events, and PMAX intersection
-  also remain intact.
+- Coherent producer expiry, command expiry, and ordinary missed cycle materialize
+  zero-dq feedback on both arms; controlled requests retain enabled hold and
+  disable requests report disabled.
+- Missing feedback, partial send, cross-bus skew, and motor status faults normally
+  force two-arm disable with quantized-zero dq. Motor fault status/fault mask and
+  event cause remain visible.
+- `materialize_stop` preserves measured q and fault status while emitting decoded
+  feedback (`control/src/control_core.cpp:324-332,1166-1182`).
+- All earlier findings remain closed: frozen old-V1 compatibility/defaults;
+  typed arbitrary/cross/stale/destroy-overlap handle safety; active-only monotonic
+  token storage; allocation transactionality; positive dwell/cycle deadline;
+  encoder-independent simulation; arming gates; plan ownership/start drift;
+  coherent feedback/skew/paired stop; waypoint IK; mapping/no double gearing;
+  collision and physical hard gates; lifecycle, heartbeat, reset, and events.
 
 ## Fresh verification
 
 - Release/Werror CTest: **3/3 passed**.
 - ASan/UBSan CTest: **3/3 passed**.
 - TSan CTest: **3/3 passed**.
-- Included focused coverage: old 8bc V1 header consumer; arbitrary/cross/stale
-  manifest/controller/plan handles; destroy overlap; allocation failure; active
-  registry/RSS stress; missed cycle; equal-time dwell; timeout controlled versus
-  disable; and all prior safety regressions.
+- Cause-specific suite covers producer expiry, command expiry, missed cycle,
+  missing feedback, partial send, skew, and motor faults for encoder-visible
+  two-arm results; the two combined eligibility cases above are not covered.

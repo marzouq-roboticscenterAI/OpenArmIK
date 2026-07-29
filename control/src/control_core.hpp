@@ -181,6 +181,7 @@ private:
     void materialize_fault_stop(bool enabled_hold) noexcept;
     void latch_fault(oa_status cause,
                      bool controlled_stop_available = false) noexcept;
+    [[nodiscard]] oa_status feedback_integrity() const noexcept;
     [[nodiscard]] bool fresh() const noexcept;
     [[nodiscard]] bool healthy() const noexcept;
     [[nodiscard]] bool disabled() const noexcept;

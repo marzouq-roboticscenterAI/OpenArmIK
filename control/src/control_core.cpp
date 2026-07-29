@@ -818,11 +818,21 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
         lifecycle_ != OA_LIFECYCLE_DISARMED) {
         return lifecycle_ == OA_LIFECYCLE_FAULT ? OA_EFAULT : OA_ESTATE;
     }
-    if ((lifecycle_ == OA_LIFECYCLE_ARMED_IDLE ||
-         lifecycle_ == OA_LIFECYCLE_EXECUTING) &&
-        now_ns_ - previous_ns > options_.cycle_ns) {
-        latch_fault(OA_ETIMEOUT, true);
-        return OA_ETIMEOUT;
+    if (lifecycle_ == OA_LIFECYCLE_ARMED_IDLE ||
+        lifecycle_ == OA_LIFECYCLE_EXECUTING) {
+        if (!healthy()) {
+            latch_fault(OA_EFAULT);
+            return OA_EFAULT;
+        }
+        const oa_status integrity = feedback_integrity();
+        if (integrity != OA_OK) {
+            latch_fault(integrity);
+            return integrity;
+        }
+        if (now_ns_ - previous_ns > options_.cycle_ns) {
+            latch_fault(OA_ETIMEOUT, true);
+            return OA_ETIMEOUT;
+        }
     }
 
     std::array<JointVector, 2> q_reference{arm_[0].measured_q(), arm_[1].measured_q()};
@@ -1181,6 +1191,7 @@ void Controller::latch_fault(const oa_status cause,
     const bool controlled_stop = controlled_stop_available &&
                                  options_.backend == OA_BACKEND_VIRTUAL &&
                                  executing_.has_value() &&
+                                 fresh() && healthy() &&
                                  active_stop_kind_ == OA_STOP_CONTROLLED;
     executing_.reset();
     command_id_ = 0U;
@@ -1191,15 +1202,19 @@ void Controller::latch_fault(const oa_status cause,
     publish(OA_EVENT_FAULTED, cause, failed_id);
 }
 
-bool Controller::fresh() const noexcept {
+oa_status Controller::feedback_integrity() const noexcept {
     if (!arm_[0].complete_fresh(now_ns_, options_.feedback_timeout_ns) ||
         !arm_[1].complete_fresh(now_ns_, options_.feedback_timeout_ns)) {
-        return false;
+        return OA_ESTALE;
     }
     const std::uint64_t left = arm_[0].generation_timestamp();
     const std::uint64_t right = arm_[1].generation_timestamp();
     const std::uint64_t skew = left > right ? left - right : right - left;
-    return skew <= options_.max_cross_bus_skew_ns;
+    return skew <= options_.max_cross_bus_skew_ns ? OA_OK : OA_ECAN;
+}
+
+bool Controller::fresh() const noexcept {
+    return feedback_integrity() == OA_OK;
 }
 
 bool Controller::healthy() const noexcept {

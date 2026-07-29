@@ -52,10 +52,11 @@ While armed, `advance` must be called at the configured positive cycle. Missed
 cycles latch timeout, equal timestamps generate neither feedback nor dwell, and
 completion requires three full cycle intervals of measured in-tolerance state.
 The execution request's controlled and disable stop policies produce distinct
-simulator stop states while physical execution remains hard-gated. Healthy
-producer/cycle watchdog faults materialize a measured zero-velocity enabled hold
-for controlled-stop requests. Missing/skewed feedback, partial sends, and motor
-faults instead materialize a zero-velocity two-arm disable fallback.
+simulator stop states while physical execution remains hard-gated. Only
+complete, fresh, coherent, fault-free producer/cycle watchdog faults materialize
+a measured zero-velocity enabled hold for controlled-stop requests. Missing or
+skewed feedback, partial sends, and motor faults take priority and instead
+materialize a zero-velocity two-arm disable fallback.
 
 Build and test without Python:
 

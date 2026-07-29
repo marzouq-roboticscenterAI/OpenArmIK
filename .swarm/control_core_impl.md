@@ -135,4 +135,7 @@ hold for controlled producer/cycle watchdog stops. Untrusted missing/skewed
 feedback, partial sends, and motor faults deterministically fall back to an
 encoder-visible zero-velocity two-arm disable. Cause-specific tests cover
 producer expiry, command expiry, missed cycles, stale feedback, partial sends,
-skew, and motor fault status.
+skew, and motor fault status. Controlled-hold eligibility is rechecked against
+a complete, fresh, coherent, fault-free pre-stop snapshot; combined stale-plus-
+missed-cycle and motor-fault-plus-missed-cycle tests prove integrity faults take
+priority and preserve the disabled fallback.

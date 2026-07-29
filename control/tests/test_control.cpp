@@ -1126,6 +1126,35 @@ void test_cycle_deadline_dwell_and_stop_policy() {
         Fixture fixture;
         oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
         const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_ESTALE);
+        check_materialized_fault_stop(fixture, false);
+        oa_motion_plan_destroy(plan);
+    }
+    {
+        Fixture fixture;
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = OA_RIGHT;
+        fault.fault_mask = 1U << 3U;
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_EFAULT);
+        check_materialized_fault_stop(fixture, false, 1, 3);
+        oa_motion_plan_destroy(plan);
+    }
+    {
+        Fixture fixture;
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
         const auto command = execute(fixture, plan, report, 2000000000U);
         std::uint64_t now = 0U;
         bool measured_goal = false;
