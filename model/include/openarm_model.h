@@ -13,7 +13,8 @@
 extern "C" {
 #endif
 
-#define OA_MODEL_ABI_VERSION 1u
+#define OA_MODEL_ABI_VERSION 2u
+#define OA_IK_DIAGNOSTICS_VERSION 2u
 #define OA_DOF 7u
 
 /* Rigid transform from the named parent frame to child frame, row-major 4x4.
@@ -97,8 +98,15 @@ oa_status oa_model_limits(const oa_model *model, size_t index, double *lower, do
 
 oa_status oa_fk(const oa_model *model, const double q[OA_DOF], oa_fk_result *out);
 oa_status oa_geometric_jacobian(const oa_model *model, const double q[OA_DOF], oa_jacobian *out);
+/* ABI-v1 compatibility symbol. It always returns OA_EINVAL and never writes
+ * through out. This preserves safety for callers with the old 248-byte result. */
 oa_status oa_ik_position(const oa_model *model, const double target_body_m[3],
-                         const oa_ik_options *options, oa_ik_diagnostics *out);
+                         const oa_ik_options *options, void *out);
+
+/* output_version and output_size are validated before the first output write. */
+oa_status oa_ik_position_v2(const oa_model *model, const double target_body_m[3],
+                            const oa_ik_options *options, uint32_t output_version,
+                            uint32_t output_size, oa_ik_diagnostics *out);
 
 #ifdef __cplusplus
 }

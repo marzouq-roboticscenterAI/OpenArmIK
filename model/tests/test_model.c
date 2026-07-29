@@ -31,6 +31,12 @@ static void options_default(oa_ik_options *options, const double seed[OA_DOF]) {
     }
 }
 
+static oa_status solve(const oa_model *model, const double target[3], const oa_ik_options *options,
+                       oa_ik_diagnostics *diagnostics) {
+    return oa_ik_position_v2(model, target, options, OA_IK_DIAGNOSTICS_VERSION,
+                             OA_IK_DIAGNOSTICS_SIZE, diagnostics);
+}
+
 static void pose_position(const oa_model *model, const double q[OA_DOF], double target[3]) {
     oa_fk_result fk;
     CHECK(oa_fk(model, q, &fk) == OA_OK);
@@ -103,7 +109,7 @@ static void test_status_and_determinism(const oa_model *model) {
 
     pose_position(model, seed, target);
     options_default(&options, seed);
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_OK);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_OK);
     CHECK(diagnostics.status == OA_OK);
     CHECK(diagnostics.position_error_m <= options.position_tolerance_m);
     CHECK(diagnostics.min_singular_value >= 0.0);
@@ -111,31 +117,43 @@ static void test_status_and_determinism(const oa_model *model) {
 
     target[0] = 10.0; target[1] = 10.0; target[2] = 10.0;
     options.max_iterations = 7;
-    status = oa_ik_position(model, target, &options, &first);
+    status = solve(model, target, &options, &first);
     CHECK(status != OA_OK);
     for (i = 0; i < 20; ++i) {
-        CHECK(oa_ik_position(model, target, &options, &repeated) == status);
+        CHECK(solve(model, target, &options, &repeated) == status);
         CHECK(memcmp(&first, &repeated, sizeof(first)) == 0);
     }
 
     options_default(&options, seed); target[0] = NAN;
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_ENONFINITE);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_ENONFINITE);
     CHECK(diagnostics.status == OA_ENONFINITE); check_diagnostics(&diagnostics);
     target[0] = DBL_MAX;
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_EINVAL);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_EINVAL);
     CHECK(diagnostics.status == OA_EINVAL); check_diagnostics(&diagnostics);
     target[0] = 0.0; options.max_iterations = 0;
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_EINVAL);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_EINVAL);
     CHECK(diagnostics.status == OA_EINVAL); check_diagnostics(&diagnostics);
     options_default(&options, seed); options.posture_weight[0] = DBL_MIN;
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_EINVAL);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_EINVAL);
     check_diagnostics(&diagnostics);
     options_default(&options, seed); oa_model_limits(model, 3, &lower, &upper); options.limit_margin_rad = upper - lower;
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_EBOUNDS);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_EBOUNDS);
     CHECK(diagnostics.status == OA_EBOUNDS); check_diagnostics(&diagnostics);
-    CHECK(oa_ik_position(NULL, target, &options, &diagnostics) == OA_EINVAL);
-    CHECK(oa_ik_position(model, target, NULL, &diagnostics) == OA_EINVAL);
-    CHECK(oa_ik_position(model, target, &options, NULL) == OA_EINVAL);
+    CHECK(solve(NULL, target, &options, &diagnostics) == OA_EINVAL);
+    CHECK(solve(model, target, NULL, &diagnostics) == OA_EINVAL);
+    CHECK(solve(model, target, &options, NULL) == OA_EINVAL);
+
+    {
+        unsigned char guarded[sizeof(oa_ik_diagnostics) + 16];
+        unsigned char expected[sizeof(guarded)];
+        memset(guarded, 0xa5, sizeof(guarded)); memcpy(expected, guarded, sizeof(guarded));
+        CHECK(oa_ik_position_v2(model, target, &options, 1, OA_IK_DIAGNOSTICS_SIZE,
+                                (oa_ik_diagnostics *)guarded) == OA_EINVAL);
+        CHECK(memcmp(guarded, expected, sizeof(guarded)) == 0);
+        CHECK(oa_ik_position_v2(model, target, &options, OA_IK_DIAGNOSTICS_VERSION, 248,
+                                (oa_ik_diagnostics *)guarded) == OA_EINVAL);
+        CHECK(memcmp(guarded, expected, sizeof(guarded)) == 0);
+    }
 }
 
 static void test_randomized_bounds(const oa_model *model) {
@@ -153,7 +171,7 @@ static void test_randomized_bounds(const oa_model *model) {
         options_default(&options, seed);
         options.limit_margin_rad = 1e-7;
         options.max_iterations = 12;
-        (void)oa_ik_position(model, target, &options, &diagnostics);
+        (void)solve(model, target, &options, &diagnostics);
         check_diagnostics(&diagnostics);
         for (i = 0; i < OA_DOF; ++i) {
             oa_model_limits(model, i, &lower, &upper);
@@ -177,29 +195,29 @@ static void test_every_status(void) {
 
     pose_position(model, zero, target);
     options_default(&options, zero);
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_OK);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_OK);
     target[0] = NAN;
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_ENONFINITE);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_ENONFINITE);
     target[0] = 0.0; options.max_iterations = 0;
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_EINVAL);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_EINVAL);
     options_default(&options, zero); options.limit_margin_rad = 2.0;
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_EBOUNDS);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_EBOUNDS);
 
     pose_position(model, zero, target); target[0] += 0.01;
     options_default(&options, zero); options.damping_min = 0.0; options.damping_max = 0.0;
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_ESINGULAR);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_ESINGULAR);
     options_default(&options, zero); options.max_iterations = 1;
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_EBUDGET);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_EBUDGET);
 
     target[0] = -0.52984821796417236; target[1] = 0.96169185638427734; target[2] = 1.7217741012573242;
     options_default(&options, no_convergence_seed); options.position_tolerance_m = 1e-10; options.max_iterations = 100;
     for (i = 0; i < OA_DOF; ++i) options.posture[i] = no_convergence_posture[i];
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_ENOCONVERGENCE);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_ENOCONVERGENCE);
 
     target[0] = -0.64545190334320068; target[1] = -0.33169794082641602; target[2] = 1.9664829969406128;
     options_default(&options, bounds_seed); options.position_tolerance_m = 1e-10; options.max_iterations = 100;
     for (i = 0; i < OA_DOF; ++i) options.posture[i] = bounds_posture[i];
-    CHECK(oa_ik_position(model, target, &options, &diagnostics) == OA_ESTAGNATED_AT_BOUNDS);
+    CHECK(solve(model, target, &options, &diagnostics) == OA_ESTAGNATED_AT_BOUNDS);
 }
 
 static void test_review_bounds_regression(void) {
@@ -211,7 +229,7 @@ static void test_review_bounds_regression(void) {
     double lower, upper;
     size_t i;
     options_default(&options, seed);
-    (void)oa_ik_position(model, target, &options, &diagnostics);
+    (void)solve(model, target, &options, &diagnostics);
     for (i = 0; i < OA_DOF; ++i) {
         oa_model_limits(model, i, &lower, &upper);
         CHECK(diagnostics.q[i] >= lower);

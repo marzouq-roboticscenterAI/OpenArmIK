@@ -284,7 +284,16 @@ static int feasible(const oa_model *model, const oa_ik_options *options, const d
 }
 
 oa_status oa_ik_position(const oa_model *model, const double target[3], const oa_ik_options *options,
-                         oa_ik_diagnostics *out) {
+                         void *out) {
+    (void)model;
+    (void)target;
+    (void)options;
+    (void)out;
+    return OA_EINVAL;
+}
+
+oa_status oa_ik_position_v2(const oa_model *model, const double target[3], const oa_ik_options *options,
+                            uint32_t output_version, uint32_t output_size, oa_ik_diagnostics *out) {
     double q[OA_DOF] = {0.0}, error[3], tip[3], jacobian[3][OA_DOF], step[OA_DOF], candidate[OA_DOF];
     double old_error, candidate_error, sigma = 0.0, alpha, maximum_step, available, ratio, lower, upper;
     oa_fk_result fk;
@@ -294,8 +303,9 @@ oa_status oa_ik_position(const oa_model *model, const double target[3], const oa
     size_t row, i;
     int accepted;
 
+    if (!out || output_version != OA_IK_DIAGNOSTICS_VERSION || output_size < OA_IK_DIAGNOSTICS_SIZE) return OA_EINVAL;
     diagnostics_init(out, OA_EINVAL);
-    if (!out || !model || !target || !options) return diagnostics_fail(out, OA_EINVAL);
+    if (!model || !target || !options) return diagnostics_fail(out, OA_EINVAL);
     if (options->abi_version != OA_MODEL_ABI_VERSION || options->struct_size < OA_IK_OPTIONS_REQUIRED_SIZE) return diagnostics_fail(out, OA_EINVAL);
     if (!finite_n(target, 3) || !finite_n(options->seed, OA_DOF) || !finite_n(options->posture, OA_DOF)
         || !finite_n(options->posture_weight, OA_DOF) || !isfinite(options->position_tolerance_m)

@@ -2,8 +2,8 @@
 /* Derived from Enactic openarm_description under Apache-2.0. */
 static const struct oa_model oa_left = {
     "openarm-v1.0-bimanual-left-body-to-hand_tcp",
-    "enactic/openarm_description@6c7b720f1ba48e8bafa3a3dc752c45f397b42221; assets/robot/openarm_v1.0/urdf/openarm_v10.urdf.xacro; bimanual=true; parallel_link hand_tcp",
-    "e5ffeabedccde947000152ee2bdd387e02e7d4e1506f0221e443662bc5541683", "dd4b5d5fa0c050b78922bc95850ea65bb15721cb259030cccf106a953f171c55", "3f48ffec1598bebca34f90419521d5e320787746b66bf54937c3faeb7c6cb5fc",
+    "enactic/openarm_description@6c7b720f1ba48e8bafa3a3dc752c45f397b42221; assets/robot/openarm_v1.0/urdf/openarm_v10.urdf.xacro; bimanual=true; xacro=2.1.1; xacro_sha256=a22ff2294dd9ee54cd3c89801b62e4edd05220d560d8177d27d5b6c35c862b24; generator=3.0.0; generator_sha256=d6f773fbef6d4f5388e0ed1838935719e86019a43e281d73394ccf4b85f689ed",
+    "9844be1eff37a801b4c48372bc35d8e96c4b872bb9d45c77a9787c4b50774354", "dd4b5d5fa0c050b78922bc95850ea65bb15721cb259030cccf106a953f171c55", "3f48ffec1598bebca34f90419521d5e320787746b66bf54937c3faeb7c6cb5fc",
     {
         "openarm_left_joint1",
         "openarm_left_joint2",
@@ -36,8 +36,8 @@ static const struct oa_model oa_left = {
 };
 static const struct oa_model oa_right = {
     "openarm-v1.0-bimanual-right-body-to-hand_tcp",
-    "enactic/openarm_description@6c7b720f1ba48e8bafa3a3dc752c45f397b42221; assets/robot/openarm_v1.0/urdf/openarm_v10.urdf.xacro; bimanual=true; parallel_link hand_tcp",
-    "e5ffeabedccde947000152ee2bdd387e02e7d4e1506f0221e443662bc5541683", "dd4b5d5fa0c050b78922bc95850ea65bb15721cb259030cccf106a953f171c55", "3f48ffec1598bebca34f90419521d5e320787746b66bf54937c3faeb7c6cb5fc",
+    "enactic/openarm_description@6c7b720f1ba48e8bafa3a3dc752c45f397b42221; assets/robot/openarm_v1.0/urdf/openarm_v10.urdf.xacro; bimanual=true; xacro=2.1.1; xacro_sha256=a22ff2294dd9ee54cd3c89801b62e4edd05220d560d8177d27d5b6c35c862b24; generator=3.0.0; generator_sha256=d6f773fbef6d4f5388e0ed1838935719e86019a43e281d73394ccf4b85f689ed",
+    "9844be1eff37a801b4c48372bc35d8e96c4b872bb9d45c77a9787c4b50774354", "dd4b5d5fa0c050b78922bc95850ea65bb15721cb259030cccf106a953f171c55", "3f48ffec1598bebca34f90419521d5e320787746b66bf54937c3faeb7c6cb5fc",
     {
         "openarm_right_joint1",
         "openarm_right_joint2",
