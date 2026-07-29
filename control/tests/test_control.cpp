@@ -406,6 +406,33 @@ void reset_and_reverify(Fixture &fixture) {
 }
 
 void test_manifest_validation() {
+    oa_manifest_config standard_config{};
+    init(standard_config);
+    CHECK(oa_manifest_get_openarm_v10_virtual_config(&standard_config) == OA_CONTROL_OK);
+    CHECK(standard_config.manifest_revision == 41U);
+    CHECK(standard_config.model_revision == 7U);
+    const auto expected = valid_config();
+    for (std::size_t side = 0U; side < 2U; ++side) {
+        CHECK(std::string(standard_config.arm[side].bus_name) ==
+              "virtual_arm_" + std::to_string(side));
+        for (std::size_t joint = 0U; joint < 7U; ++joint) {
+            const auto &actual_motor = standard_config.arm[side].motor[joint];
+            const auto &expected_motor = expected.arm[side].motor[joint];
+            CHECK(actual_motor.motor_type == expected_motor.motor_type);
+            CHECK(actual_motor.joint_index == joint);
+            CHECK(actual_motor.lower_rad == expected_motor.lower_rad);
+            CHECK(actual_motor.upper_rad == expected_motor.upper_rad);
+            CHECK(actual_motor.q_scale == expected_motor.q_scale);
+            CHECK(actual_motor.q_offset_rad == expected_motor.q_offset_rad);
+            CHECK(std::string(actual_motor.joint_name) ==
+                  "openarm_" + std::string(side == 0U ? "left" : "right") +
+                      "_joint" + std::to_string(joint + 1U));
+        }
+    }
+    standard_config.abi_version = 99U;
+    CHECK(oa_manifest_get_openarm_v10_virtual_config(&standard_config) == OA_CONTROL_EABI);
+    CHECK(oa_manifest_get_openarm_v10_virtual_config(nullptr) == OA_CONTROL_EINVAL);
+
     oa_manifest *standard = nullptr;
     CHECK(oa_manifest_create_openarm_v10_virtual(&standard) == OA_CONTROL_OK);
     CHECK(standard != nullptr);

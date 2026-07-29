@@ -47,6 +47,7 @@ struct CommandResult
   oa_control_status control_status{OA_CONTROL_ESTATE};
   std::uint64_t command_id{};
   std::uint64_t seed_feedback_seq[2]{};
+  std::uint64_t plan_duration_ns{};
   std::uint64_t terminal_feedback_seq[2]{};
   std::uint32_t lifecycle{};
   std::uint32_t event{};
@@ -78,6 +79,9 @@ struct SessionHealth
   std::uint32_t last_event{};
   oa_control_status last_cause{OA_CONTROL_OK};
   std::uint64_t verify_epoch{};
+  std::uint64_t plan_seed_feedback_seq[2]{};
+  std::uint64_t plan_duration_ns{};
+  std::uint64_t terminal_feedback_seq[2]{};
   std::string owner;
   std::string reason;
 };

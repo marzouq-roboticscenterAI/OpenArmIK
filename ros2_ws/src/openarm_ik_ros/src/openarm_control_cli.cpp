@@ -83,9 +83,19 @@ int run_goal(
   if (rclcpp::spin_until_future_complete(node, result_future, 45s) !=
     rclcpp::FutureReturnCode::SUCCESS)
   {
-    client->async_cancel_goal(handle);
-    std::cerr << "terminal result timeout\n";
-    return 5;
+    auto cancel_future = client->async_cancel_goal(handle);
+    if (rclcpp::spin_until_future_complete(node, cancel_future, 3s) !=
+      rclcpp::FutureReturnCode::SUCCESS)
+    {
+      std::cerr << "terminal result timeout; cancel response timeout\n";
+      return 5;
+    }
+    if (rclcpp::spin_until_future_complete(node, result_future, 5s) !=
+      rclcpp::FutureReturnCode::SUCCESS)
+    {
+      std::cerr << "terminal result timeout; cancellation terminal unconfirmed\n";
+      return 5;
+    }
   }
   const auto wrapped = result_future.get();
   if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED ||

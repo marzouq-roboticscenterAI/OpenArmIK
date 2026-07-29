@@ -7,6 +7,7 @@ import time
 
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray
+from geometry_msgs.msg import Pose, PoseArray
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 
@@ -65,6 +66,7 @@ def main():
             level = int.from_bytes(level)
         assert level == 1, (level, report)
         assert report["backend"] == "virtual"
+        assert report["capability_bits"] == "7"
         assert report["collision_checked"] == "false"
         assert report["state_source"] == "oa_snapshot_encoder_feedback"
         assert report["physical_motion_authorized"] == "false"
@@ -105,6 +107,64 @@ def main():
         )
         assert invalid_frame.returncode == 7
         assert "transform_unavailable" in invalid_frame.stderr
+
+        legacy = PoseArray()
+        legacy.header.stamp = node.get_clock().now().to_msg()
+        legacy.header.frame_id = "openarm_body_link0"
+        left = Pose()
+        left.position.x = 0.20
+        left.position.y = 0.30
+        left.position.z = 0.85
+        right = Pose()
+        right.position.x = 0.20
+        right.position.y = -0.30
+        right.position.z = 0.85
+        legacy.poses = [left, right]
+        legacy_stamp_ns = (
+            legacy.header.stamp.sec * 1_000_000_000 + legacy.header.stamp.nanosec
+        )
+        legacy_owner = f"legacy:{legacy_stamp_ns}"
+        legacy_publisher = node.create_publisher(PoseArray, "/openarm_ik/paired_xyz", qos)
+        wait_for(node, lambda: legacy_publisher.get_subscription_count() == 1)
+        legacy_publisher.publish(legacy)
+        wait_for(
+            node,
+            lambda: diagnostics
+            and fields(diagnostics[-1]).get("active_owner") == legacy_owner
+            and fields(diagnostics[-1]).get("executing") == "true",
+        )
+        rejected_during_legacy = subprocess.run(
+            ["ros2", "run", "openarm_ik_ros", "openarm_control_cli", "move-joint",
+             "openarm_left_joint4", "0.1"],
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=5.0,
+            check=False,
+        )
+        assert rejected_during_legacy.returncode == 4
+        wait_for(
+            node,
+            lambda: diagnostics
+            and fields(diagnostics[-1]).get("last_action") == "deprecated_paired_xyz"
+            and fields(diagnostics[-1]).get("last_goal_id") == legacy_owner
+            and fields(diagnostics[-1]).get("committed") == "true"
+            and fields(diagnostics[-1]).get("active_owner") == ""
+            and fields(diagnostics[-1]).get("adapter_state") == "idle",
+            timeout=35.0,
+        )
+        legacy_report = fields(diagnostics[-1])
+        assert legacy_report["request_stamp_ns"] == str(legacy_stamp_ns)
+        assert legacy_report["outcome"] == "completed"
+        assert int(legacy_report["result_left_plan_seed_feedback_seq"]) > 0
+        assert int(legacy_report["result_right_plan_seed_feedback_seq"]) > 0
+        assert int(legacy_report["result_plan_duration_ns"]) > 0
+        assert int(legacy_report["result_left_terminal_feedback_seq"]) >= int(
+            legacy_report["result_left_plan_seed_feedback_seq"]
+        )
+        assert int(legacy_report["result_right_terminal_feedback_seq"]) >= int(
+            legacy_report["result_right_plan_seed_feedback_seq"]
+        )
 
         before_sequence = int(report["left_feedback_seq"])
         command = subprocess.run(

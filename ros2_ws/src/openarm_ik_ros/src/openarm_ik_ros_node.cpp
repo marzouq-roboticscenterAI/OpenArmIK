@@ -37,6 +37,12 @@
 
 namespace
 {
+constexpr std::uint64_t kCapabilityMeasuredVirtualExecution = 1ULL << 0U;
+constexpr std::uint64_t kCapabilityJointAction = 1ULL << 1U;
+constexpr std::uint64_t kCapabilityPairedTcpAction = 1ULL << 2U;
+constexpr std::uint64_t kCapabilityBits = kCapabilityMeasuredVirtualExecution |
+  kCapabilityJointAction | kCapabilityPairedTcpAction;
+
 using MoveJoint = openarm_control_msgs::action::MoveJoint;
 using MovePairedTcp = openarm_control_msgs::action::MovePairedTcp;
 using JointGoalHandle = rclcpp_action::ServerGoalHandle<MoveJoint>;
@@ -78,6 +84,25 @@ public:
 
 private:
   int descriptor_{-1};
+};
+
+struct DiagnosticRecord
+{
+  std::string action{"startup"};
+  std::string owner;
+  std::string reason{"ready"};
+  std::string outcome{"none"};
+  std::int64_t request_stamp_ns{};
+  bool committed{};
+  std::uint32_t control_status{OA_CONTROL_OK};
+  std::uint64_t command_id{};
+  std::uint64_t seed_feedback_seq[2]{};
+  std::uint64_t plan_duration_ns{};
+  std::uint64_t terminal_feedback_seq[2]{};
+  std::uint32_t lifecycle{};
+  std::uint32_t event{};
+  std::uint32_t cause{};
+  bool collision_checked{};
 };
 
 std::string uuid_string(const rclcpp_action::GoalUUID & uuid)
@@ -256,7 +281,10 @@ private:
     command.side = side;
     command.joint = joint;
     command.target_rad = goal->target_rad;
-    command.feedback = [goal_handle](const CommandFeedback & value) {
+    command.feedback = [this, goal_handle](const CommandFeedback & value) {
+        if (!goal_publishable(goal_handle)) {
+          return;
+        }
         auto feedback = std::make_shared<MoveJoint::Feedback>();
         feedback->lifecycle = value.lifecycle;
         feedback->event = value.event;
@@ -264,20 +292,22 @@ private:
         feedback->left_feedback_seq = value.feedback_seq[0];
         feedback->right_feedback_seq = value.feedback_seq[1];
         feedback->measured_progress = value.measured_progress;
-        goal_handle->publish_feedback(feedback);
+        try {
+          goal_handle->publish_feedback(feedback);
+        } catch (...) {
+        }
       };
-    command.terminal = [this, goal_handle](const CommandResult & value) {
+    const auto goal_id = goal_handle->get_goal_id();
+    const auto request_stamp = rclcpp::Time(goal->stamp).nanoseconds();
+    command.terminal = [this, goal_handle, goal_id, owner, request_stamp, side](
+      const CommandResult & value) {
         auto result = std::make_shared<MoveJoint::Result>();
-        fill_common_result(*result, value, goal_handle->get_goal_id());
-        const auto goal = goal_handle->get_goal();
-        oa_side side{};
-        std::uint32_t joint{};
-        (void)VirtualControlSession::map_joint(goal->joint_name, side, joint);
+        fill_common_result(*result, value, goal_id);
         result->seed_feedback_seq = value.seed_feedback_seq[side];
+        result->plan_duration_ns = value.plan_duration_ns;
         result->terminal_feedback_seq = value.terminal_feedback_seq[side];
-        finish_goal(goal_handle, result, value.outcome);
-        record_terminal(value);
-        diagnostic_dirty_.store(true);
+        record_terminal("move_joint", owner, request_stamp, value);
+        (void)finish_goal(goal_handle, result, value.outcome);
       };
     std::string reason;
     if (!session_->submit(std::move(command), reason)) {
@@ -352,7 +382,10 @@ private:
     command.owner = owner;
     command.left_tcp_m = left;
     command.right_tcp_m = right;
-    command.feedback = [goal_handle](const CommandFeedback & value) {
+    command.feedback = [this, goal_handle](const CommandFeedback & value) {
+        if (!goal_publishable(goal_handle)) {
+          return;
+        }
         auto feedback = std::make_shared<MovePairedTcp::Feedback>();
         feedback->lifecycle = value.lifecycle;
         feedback->event = value.event;
@@ -360,18 +393,24 @@ private:
         feedback->left_feedback_seq = value.feedback_seq[0];
         feedback->right_feedback_seq = value.feedback_seq[1];
         feedback->measured_progress = value.measured_progress;
-        goal_handle->publish_feedback(feedback);
+        try {
+          goal_handle->publish_feedback(feedback);
+        } catch (...) {
+        }
       };
-    command.terminal = [this, goal_handle](const CommandResult & value) {
+    const auto goal_id = goal_handle->get_goal_id();
+    const auto request_stamp = rclcpp::Time(goal->header.stamp).nanoseconds();
+    command.terminal = [this, goal_handle, goal_id, owner, request_stamp](
+      const CommandResult & value) {
         auto result = std::make_shared<MovePairedTcp::Result>();
-        fill_common_result(*result, value, goal_handle->get_goal_id());
+        fill_common_result(*result, value, goal_id);
         result->left_seed_feedback_seq = value.seed_feedback_seq[0];
         result->right_seed_feedback_seq = value.seed_feedback_seq[1];
+        result->plan_duration_ns = value.plan_duration_ns;
         result->left_terminal_feedback_seq = value.terminal_feedback_seq[0];
         result->right_terminal_feedback_seq = value.terminal_feedback_seq[1];
-        finish_goal(goal_handle, result, value.outcome);
-        record_terminal(value);
-        diagnostic_dirty_.store(true);
+        record_terminal("move_paired_tcp", owner, request_stamp, value);
+        (void)finish_goal(goal_handle, result, value.outcome);
       };
     if (!session_->submit(std::move(command), reason)) {
       abort_paired_before_submit(goal_handle, owner, reason);
@@ -379,16 +418,35 @@ private:
   }
 
   template<typename GoalHandle, typename Result>
-  static void finish_goal(
+  bool finish_goal(
     const std::shared_ptr<GoalHandle> & goal, const std::shared_ptr<Result> & result,
-    const CommandResult::Outcome outcome)
+    const CommandResult::Outcome outcome) noexcept
   {
-    if (outcome == CommandResult::Outcome::completed) {
-      goal->succeed(result);
-    } else if (outcome == CommandResult::Outcome::canceled) {
-      goal->canceled(result);
-    } else {
-      goal->abort(result);
+    try {
+      if (!goal_publishable(goal)) {
+        return false;
+      }
+      if (outcome == CommandResult::Outcome::completed) {
+        goal->succeed(result);
+      } else if (outcome == CommandResult::Outcome::canceled) {
+        goal->canceled(result);
+      } else {
+        goal->abort(result);
+      }
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
+
+  template<typename GoalHandle>
+  bool goal_publishable(const std::shared_ptr<GoalHandle> & goal) noexcept
+  {
+    try {
+      const auto context = get_node_base_interface()->get_context();
+      return context && context->is_valid() && goal && goal->is_active();
+    } catch (...) {
+      return false;
     }
   }
 
@@ -402,8 +460,11 @@ private:
     internal.outcome = CommandResult::Outcome::rejected;
     internal.control_status = OA_CONTROL_EINVAL;
     internal.reason = reason;
-    fill_common_result(*result, internal, goal->get_goal_id());
-    goal->abort(result);
+    const auto goal_id = goal->get_goal_id();
+    fill_common_result(*result, internal, goal_id);
+    record_terminal(
+      "move_joint", owner, rclcpp::Time(goal->get_goal()->stamp).nanoseconds(), internal);
+    (void)finish_goal(goal, result, internal.outcome);
   }
 
   void abort_paired_before_submit(
@@ -416,8 +477,12 @@ private:
     internal.outcome = CommandResult::Outcome::rejected;
     internal.control_status = OA_CONTROL_EINVAL;
     internal.reason = reason;
-    fill_common_result(*result, internal, goal->get_goal_id());
-    goal->abort(result);
+    const auto goal_id = goal->get_goal_id();
+    fill_common_result(*result, internal, goal_id);
+    record_terminal(
+      "move_paired_tcp", owner,
+      rclcpp::Time(goal->get_goal()->header.stamp).nanoseconds(), internal);
+    (void)finish_goal(goal, result, internal.outcome);
   }
 
   void on_legacy(const geometry_msgs::msg::PoseArray::SharedPtr message)
@@ -444,17 +509,15 @@ private:
       record_rejection("deprecated_paired_xyz", owner, reason);
       return;
     }
-    record_request("deprecated_paired_xyz", owner, rclcpp::Time(message->header.stamp).nanoseconds());
+    const auto request_stamp = rclcpp::Time(message->header.stamp).nanoseconds();
+    record_request("deprecated_paired_xyz", owner, request_stamp);
     SessionCommand command;
     command.kind = SessionCommand::Kind::paired_tcp;
     command.owner = owner;
     command.left_tcp_m = left;
     command.right_tcp_m = right;
-    command.terminal = [this](const CommandResult & result) {
-        std::lock_guard<std::mutex> lock(diagnostic_mutex_);
-        last_committed_ = result.outcome == CommandResult::Outcome::completed;
-        last_reason_ = result.reason;
-        diagnostic_dirty_.store(true);
+    command.terminal = [this, owner, request_stamp](const CommandResult & result) {
+        record_terminal("deprecated_paired_xyz", owner, request_stamp, result);
       };
     if (!session_->submit(std::move(command), reason)) {
       session_->release(owner, reason);
@@ -513,31 +576,57 @@ private:
 
   void record_request(const std::string & action, const std::string & owner, std::int64_t stamp)
   {
+    DiagnosticRecord next;
+    next.action = action;
+    next.owner = owner;
+    next.request_stamp_ns = stamp;
+    next.reason = "accepted";
+    next.outcome = "pending";
     std::lock_guard<std::mutex> lock(diagnostic_mutex_);
-    last_action_ = action;
-    last_owner_ = owner;
-    last_request_stamp_ns_ = stamp;
-    last_reason_ = "accepted";
-    last_committed_ = false;
+    diagnostic_record_ = std::move(next);
     diagnostic_dirty_.store(true);
   }
 
   void record_rejection(
     const std::string & action, const std::string & owner, const std::string & reason)
   {
+    DiagnosticRecord next;
+    next.action = action;
+    next.owner = owner;
+    next.reason = reason;
+    next.outcome = "rejected";
+    next.control_status = OA_CONTROL_ESTATE;
     std::lock_guard<std::mutex> lock(diagnostic_mutex_);
-    last_action_ = action;
-    last_owner_ = owner;
-    last_reason_ = reason;
-    last_committed_ = false;
+    diagnostic_record_ = std::move(next);
     diagnostic_dirty_.store(true);
   }
 
-  void record_terminal(const CommandResult & result)
+  void record_terminal(
+    const std::string & action, const std::string & owner, const std::int64_t stamp,
+    const CommandResult & result)
   {
+    DiagnosticRecord next;
+    next.action = action;
+    next.owner = owner;
+    next.request_stamp_ns = stamp;
+    next.reason = result.reason;
+    next.committed = result.outcome == CommandResult::Outcome::completed;
+    next.outcome = result.outcome == CommandResult::Outcome::completed ? "completed" :
+      (result.outcome == CommandResult::Outcome::canceled ? "canceled" :
+      (result.outcome == CommandResult::Outcome::rejected ? "rejected" : "aborted"));
+    next.control_status = result.control_status;
+    next.command_id = result.command_id;
+    next.seed_feedback_seq[0] = result.seed_feedback_seq[0];
+    next.seed_feedback_seq[1] = result.seed_feedback_seq[1];
+    next.plan_duration_ns = result.plan_duration_ns;
+    next.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
+    next.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
+    next.lifecycle = result.lifecycle;
+    next.event = result.event;
+    next.cause = result.cause;
+    next.collision_checked = result.collision_checked;
     std::lock_guard<std::mutex> lock(diagnostic_mutex_);
-    last_committed_ = result.outcome == CommandResult::Outcome::completed;
-    last_reason_ = result.reason;
+    diagnostic_record_ = std::move(next);
     diagnostic_dirty_.store(true);
   }
 
@@ -562,6 +651,7 @@ private:
       health.snapshot.arm[1].t_ns - health.snapshot.arm[0].t_ns;
     status.values = {
       field("backend", "virtual"),
+      field("capability_bits", std::to_string(kCapabilityBits)),
       field("virtual_execution_enabled", "true"),
       field("physical_motion_authorized", "false"),
       field("collision_policy", "virtual_unchecked"),
@@ -573,6 +663,13 @@ private:
       field("executing", boolean(health.command_id != 0U)),
       field("active_owner", health.owner),
       field("command_id", std::to_string(health.command_id)),
+      field("left_plan_seed_feedback_seq",
+        std::to_string(health.plan_seed_feedback_seq[0])),
+      field("right_plan_seed_feedback_seq",
+        std::to_string(health.plan_seed_feedback_seq[1])),
+      field("plan_duration_ns", std::to_string(health.plan_duration_ns)),
+      field("left_terminal_feedback_seq", std::to_string(health.terminal_feedback_seq[0])),
+      field("right_terminal_feedback_seq", std::to_string(health.terminal_feedback_seq[1])),
       field("last_event", std::to_string(health.last_event)),
       field("last_cause", std::to_string(health.last_cause)),
       field("manifest_revision", std::to_string(health.snapshot.manifest_revision)),
@@ -594,11 +691,30 @@ private:
       field("pair_skew_ns", std::to_string(skew))};
     {
       std::lock_guard<std::mutex> lock(diagnostic_mutex_);
-      status.values.push_back(field("last_action", last_action_));
-      status.values.push_back(field("last_goal_id", last_owner_));
-      status.values.push_back(field("request_stamp_ns", std::to_string(last_request_stamp_ns_)));
-      status.values.push_back(field("committed", boolean(last_committed_)));
-      status.values.push_back(field("reason", last_reason_));
+      const auto & record = diagnostic_record_;
+      status.values.push_back(field("last_action", record.action));
+      status.values.push_back(field("last_goal_id", record.owner));
+      status.values.push_back(field("request_stamp_ns", std::to_string(record.request_stamp_ns)));
+      status.values.push_back(field("committed", boolean(record.committed)));
+      status.values.push_back(field("reason", record.reason));
+      status.values.push_back(field("outcome", record.outcome));
+      status.values.push_back(field("result_control_status", std::to_string(record.control_status)));
+      status.values.push_back(field("result_command_id", std::to_string(record.command_id)));
+      status.values.push_back(field(
+        "result_left_plan_seed_feedback_seq", std::to_string(record.seed_feedback_seq[0])));
+      status.values.push_back(field(
+        "result_right_plan_seed_feedback_seq", std::to_string(record.seed_feedback_seq[1])));
+      status.values.push_back(field(
+        "result_plan_duration_ns", std::to_string(record.plan_duration_ns)));
+      status.values.push_back(field(
+        "result_left_terminal_feedback_seq", std::to_string(record.terminal_feedback_seq[0])));
+      status.values.push_back(field(
+        "result_right_terminal_feedback_seq", std::to_string(record.terminal_feedback_seq[1])));
+      status.values.push_back(field("result_lifecycle", std::to_string(record.lifecycle)));
+      status.values.push_back(field("result_event", std::to_string(record.event)));
+      status.values.push_back(field("result_cause", std::to_string(record.cause)));
+      status.values.push_back(field(
+        "result_collision_checked", boolean(record.collision_checked)));
       status.values.push_back(field("legacy_topic_deprecated", "true"));
       status.values.push_back(field("legacy_mapping", "pose[0]=left,pose[1]=right"));
     }
@@ -622,11 +738,7 @@ private:
   std::atomic<bool> diagnostic_dirty_{false};
   std::uint32_t diagnostic_ticks_{};
   std::mutex diagnostic_mutex_;
-  std::string last_action_{"startup"};
-  std::string last_owner_;
-  std::string last_reason_{"ready"};
-  std::int64_t last_request_stamp_ns_{};
-  bool last_committed_{};
+  DiagnosticRecord diagnostic_record_;
   std::mutex clock_mutex_;
   std::int64_t last_ros_now_ns_{};
   std::uint64_t last_controller_now_ns_{};

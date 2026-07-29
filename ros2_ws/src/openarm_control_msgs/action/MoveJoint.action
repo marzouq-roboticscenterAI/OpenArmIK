@@ -11,6 +11,7 @@ uint32 control_status
 unique_identifier_msgs/UUID goal_id
 uint64 command_id
 uint64 seed_feedback_seq
+uint64 plan_duration_ns
 uint64 terminal_feedback_seq
 uint32 lifecycle
 uint32 event

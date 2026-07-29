@@ -85,6 +85,26 @@ oa_manifest_config standard_config() noexcept {
 }
 
 extern "C" oa_control_status oa_manifest_create_openarm_v10_virtual(oa_manifest **out) {
-    const auto config = standard_config();
+    if (out == nullptr) {
+        return OA_CONTROL_EINVAL;
+    }
+    oa_manifest_config config{};
+    init(config);
+    const oa_control_status status = oa_manifest_get_openarm_v10_virtual_config(&config);
+    if (status != OA_CONTROL_OK) {
+        return status;
+    }
     return oa_manifest_create(&config, out);
+}
+
+extern "C" oa_control_status oa_manifest_get_openarm_v10_virtual_config(
+    oa_manifest_config *out) {
+    if (out == nullptr || out->abi_version != OA_CONTROL_ABI_V1 ||
+        out->struct_size < sizeof(*out)) {
+        return out != nullptr && out->abi_version != OA_CONTROL_ABI_V1
+                   ? OA_CONTROL_EABI
+                   : OA_CONTROL_EINVAL;
+    }
+    *out = standard_config();
+    return OA_CONTROL_OK;
 }

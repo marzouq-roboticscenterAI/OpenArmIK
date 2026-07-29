@@ -100,7 +100,10 @@ if(BUILD_TESTING)
   add_test(
     NAME test_ros_contract
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_ros_contract.py)
-  set_tests_properties(test_ros_contract test_no_can_linkage test_invalid_expiry_parameter
+  add_test(
+    NAME test_active_sigint
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_active_sigint.py)
+  set_tests_properties(test_ros_contract test_active_sigint test_no_can_linkage test_invalid_expiry_parameter
     PROPERTIES RUN_SERIAL TRUE)
   add_test(NAME test_close_rviz_window_help COMMAND close_rviz_window --help)
   add_test(NAME test_close_rviz_window_invalid_pid COMMAND close_rviz_window 0)

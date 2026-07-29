@@ -11,7 +11,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build.sh [OPTIONS]
 
-Cleanly build and install every native component, then build the two ROS
+Cleanly build and install every native component, then build the three ROS
 packages. The default output root remains ros2_ws for launch compatibility.
 
 Options:
@@ -146,7 +146,7 @@ fi
 
 colcon --log-base "$ros_log" build \
   --base-paths "$description_dir" "$root_dir/ros2_ws/src" \
-  --packages-select openarm_description openarm_ik_ros \
+  --packages-select openarm_description openarm_control_msgs openarm_ik_ros \
   --build-base "$ros_build" \
   --install-base "$install_prefix" \
   --event-handlers console_direct+ \
@@ -161,8 +161,8 @@ if ((run_tests)); then
   ros_test_listing=$(ctest --test-dir "$ros_build/openarm_ik_ros" -N)
   printf '%s\n' "$ros_test_listing"
   registered_ros_tests=$(awk '/Total Tests:/ {print $3}' <<<"$ros_test_listing")
-  if [[ "$registered_ros_tests" != 8 ]]; then
-    printf 'Expected 8 openarm_ik_ros tests, found %s\n' \
+  if [[ "$registered_ros_tests" != 9 ]]; then
+    printf 'Expected 9 openarm_ik_ros tests, found %s\n' \
       "${registered_ros_tests:-none}" >&2
     exit 1
   fi

@@ -25,21 +25,25 @@ constexpr std::uint64_t kExecutionMarginNs = 5000000000ULL;
 constexpr std::uint64_t kHeartbeatAheadNs = 100000000ULL;
 constexpr std::uint64_t kMaximumDurationNs = 30000000000ULL;
 
-constexpr std::array<double, 7> kLeftLower{
-  -3.490659, -3.3161253267948965, -1.570796, 0.0, -1.570796, -0.785398, -1.570796};
-constexpr std::array<double, 7> kLeftUpper{
-  1.396263, 0.17453267320510335, 1.570796, 2.443461, 1.570796, 0.785398, 1.570796};
-constexpr std::array<double, 7> kRightLower{
-  -1.396263, -0.17453267320510335, -1.570796, 0.0, -1.570796, -0.785398, -1.570796};
-constexpr std::array<double, 7> kRightUpper{
-  3.490659, 3.3161253267948965, 1.570796, 2.443461, 1.570796, 0.785398, 1.570796};
-
 template<typename T>
 void init(T & value)
 {
   value = {};
   value.struct_size = sizeof(value);
   value.abi_version = OA_CONTROL_ABI_V1;
+}
+
+const oa_manifest_config & standard_manifest_config()
+{
+  static const oa_manifest_config config = []() {
+      oa_manifest_config value{};
+      init(value);
+      if (oa_manifest_get_openarm_v10_virtual_config(&value) != OA_CONTROL_OK) {
+        throw std::runtime_error("canonical virtual manifest description failed");
+      }
+      return value;
+    }();
+  return config;
 }
 
 bool checked_add(const std::uint64_t left, const std::uint64_t right, std::uint64_t & result)
@@ -125,7 +129,7 @@ public:
   bool cancel(const std::string & owner)
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (closing_ || health_.owner != owner) {
+    if (closing_ || health_.owner != owner || !terminalizing_owner_.empty()) {
       return false;
     }
     cancel_owner_ = owner;
@@ -136,9 +140,19 @@ public:
   void release(const std::string & owner, const std::string & reason)
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (health_.owner == owner && !pending_.has_value() && !active_.has_value()) {
+    if (health_.owner == owner && !pending_.has_value() && !active_.has_value() &&
+      terminalizing_owner_.empty())
+    {
       health_.owner.clear();
-      health_.adapter_state = AdapterState::idle;
+      if (cancelled_reservation_owner_ == owner) {
+        cancelled_reservation_owner_.clear();
+      }
+      if (health_.adapter_state != AdapterState::stopped_requires_restart &&
+        health_.adapter_state != AdapterState::fault &&
+        health_.adapter_state != AdapterState::closing)
+      {
+        health_.adapter_state = AdapterState::idle;
+      }
       health_.reason = reason;
       notify_health_unlocked();
     }
@@ -196,45 +210,66 @@ private:
     }
     signal_startup();
 
-    auto next_cycle = origin_ + std::chrono::nanoseconds(kCycleNs);
-    for (;;) {
-      bool should_close = false;
-      {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait_until(lock, next_cycle, [this]() {
-          return closing_ || pending_.has_value() || !cancel_owner_.empty();
-        });
-        should_close = closing_;
-      }
-      if (should_close) {
-        shutdown_on_owner_thread();
-        break;
-      }
+    try {
+      auto next_cycle = origin_ + std::chrono::nanoseconds(kCycleNs);
+      for (;;) {
+        bool should_close = false;
+        {
+          std::unique_lock<std::mutex> lock(mutex_);
+          cv_.wait_until(lock, next_cycle, [this]() {
+            return closing_ || pending_.has_value() || !cancel_owner_.empty();
+          });
+          if (!closing_ && health_.adapter_state == AdapterState::stopped_requires_restart &&
+            !pending_.has_value() && cancel_owner_.empty())
+          {
+            cv_.wait(lock, [this]() {
+              return closing_ || pending_.has_value() || !cancel_owner_.empty();
+            });
+          }
+          should_close = closing_;
+        }
+        if (should_close) {
+          shutdown_on_owner_thread();
+          break;
+        }
 
-      process_cancel();
-      process_pending();
+        process_cancel();
+        process_pending();
 
-      const auto now = std::chrono::steady_clock::now();
-      if (now < next_cycle) {
-        continue;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (health_.adapter_state == AdapterState::stopped_requires_restart) {
+            continue;
+          }
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_cycle) {
+          continue;
+        }
+        const std::uint64_t controller_now = elapsed_ns(origin_, now);
+        if (!heartbeat(controller_now)) {
+          break;
+        }
+        const oa_control_status advance_status = oa_controller_advance(controller_, controller_now);
+        if (advance_status != OA_CONTROL_OK) {
+          fault(advance_status, "advance_failed");
+          break;
+        }
+        controller_now_ns_ = controller_now;
+        if (!publish_measured()) {
+          break;
+        }
+        drain_events();
+        next_cycle += std::chrono::nanoseconds(kCycleNs);
+        if (next_cycle <= now) {
+          next_cycle = now + std::chrono::nanoseconds(kCycleNs);
+        }
       }
-      const std::uint64_t controller_now = elapsed_ns(origin_, now);
-      if (!heartbeat(controller_now)) {
-        break;
-      }
-      const oa_control_status advance_status = oa_controller_advance(controller_, controller_now);
-      if (advance_status != OA_CONTROL_OK) {
-        fault(advance_status, "advance_failed");
-        break;
-      }
-      controller_now_ns_ = controller_now;
-      if (!publish_measured()) {
-        break;
-      }
-      drain_events();
-      next_cycle += std::chrono::nanoseconds(kCycleNs);
-      if (next_cycle <= now) {
-        next_cycle = now + std::chrono::nanoseconds(kCycleNs);
+    } catch (...) {
+      try {
+        fault(OA_CONTROL_EFAULT, "worker_exception");
+      } catch (...) {
       }
     }
     destroy_handles();
@@ -285,7 +320,7 @@ private:
       health_.verify_epoch = verify.verify_epoch;
       health_.reason = "ready";
     }
-    if (!state_callback_(MeasuredState{snapshot_, controller_now_ns_})) {
+    if (!invoke_state_callback(MeasuredState{snapshot_, controller_now_ns_})) {
       throw std::runtime_error("initial measured state publication failed");
     }
   }
@@ -309,7 +344,8 @@ private:
     const std::uint64_t skew = next.arm[0].t_ns > next.arm[1].t_ns ?
       next.arm[0].t_ns - next.arm[1].t_ns : next.arm[1].t_ns - next.arm[0].t_ns;
     if (skew > next.max_cross_bus_skew_ns ||
-      (next.lifecycle != OA_LIFECYCLE_ARMED_IDLE && next.lifecycle != OA_LIFECYCLE_EXECUTING))
+      (next.lifecycle != OA_LIFECYCLE_ARMED_IDLE && next.lifecycle != OA_LIFECYCLE_EXECUTING &&
+      next.lifecycle != OA_LIFECYCLE_DISARMED))
     {
       return false;
     }
@@ -328,7 +364,7 @@ private:
       fault(OA_CONTROL_ESTALE, "invalid_measured_snapshot");
       return false;
     }
-    if (!state_callback_(MeasuredState{snapshot_, controller_now_ns_})) {
+    if (!invoke_state_callback(MeasuredState{snapshot_, controller_now_ns_})) {
       fault(OA_CONTROL_ETIMEOUT, "publication_clock_invalid");
       return false;
     }
@@ -339,6 +375,7 @@ private:
   void process_pending()
   {
     std::optional<SessionCommand> pending;
+    bool canceled_before_submit = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!pending_) {
@@ -346,6 +383,32 @@ private:
       }
       pending = std::move(pending_);
       pending_.reset();
+      canceled_before_submit = cancelled_reservation_owner_ == pending->owner;
+      if (canceled_before_submit) {
+        terminalizing_owner_ = pending->owner;
+      }
+    }
+    if (canceled_before_submit) {
+      CommandResult result;
+      result.outcome = CommandResult::Outcome::canceled;
+      result.control_status = OA_CONTROL_OK;
+      result.terminal_feedback_seq[0] = snapshot_.arm[0].feedback_seq;
+      result.terminal_feedback_seq[1] = snapshot_.arm[1].feedback_seq;
+      result.lifecycle = snapshot_.lifecycle;
+      result.event = OA_EVENT_STOPPED;
+      result.reason = "canceled_reserved_disable_stop";
+      invoke_terminal_callback(*pending, result);
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (health_.owner == pending->owner) {
+        health_.owner.clear();
+      }
+      cancelled_reservation_owner_.clear();
+      terminalizing_owner_.clear();
+      health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
+      health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
+      health_.reason = result.reason;
+      notify_health_unlocked();
+      return;
     }
 
     oa_motion_plan *plan = nullptr;
@@ -443,6 +506,9 @@ private:
       active_ = std::move(active);
       health_.adapter_state = AdapterState::executing;
       health_.command_id = command_id;
+      health_.plan_seed_feedback_seq[0] = report.seed_feedback_seq[0];
+      health_.plan_seed_feedback_seq[1] = report.seed_feedback_seq[1];
+      health_.plan_duration_ns = report.duration_ns;
       health_.reason = "executing";
       notify_health_unlocked();
     }
@@ -461,14 +527,21 @@ private:
     result.lifecycle = snapshot_.lifecycle;
     result.collision_checked = false;
     result.reason = reason;
-    if (command.terminal) {
-      command.terminal(result);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      terminalizing_owner_ = command.owner;
     }
+    invoke_terminal_callback(command, result);
     std::lock_guard<std::mutex> lock(mutex_);
-    health_.owner.clear();
+    if (health_.owner == command.owner) {
+      health_.owner.clear();
+    }
     health_.adapter_state = AdapterState::idle;
     health_.reason = reason;
     health_.last_cause = status;
+    health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
+    health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
+    terminalizing_owner_.clear();
     notify_health_unlocked();
   }
 
@@ -525,36 +598,47 @@ private:
 
   void complete_active(const oa_event & event)
   {
-    std::optional<Active> completed;
+    CommandResult result;
+    SessionCommand command;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!active_ || event.command_id != active_->command_id) {
         return;
       }
-      completed = std::move(active_);
+      command = active_->command;
+      result.outcome = CommandResult::Outcome::completed;
+      result.control_status = OA_CONTROL_OK;
+      result.command_id = event.command_id;
+      result.seed_feedback_seq[0] = active_->report.seed_feedback_seq[0];
+      result.seed_feedback_seq[1] = active_->report.seed_feedback_seq[1];
+      result.plan_duration_ns = active_->report.duration_ns;
+      result.terminal_feedback_seq[0] = snapshot_.arm[0].feedback_seq;
+      result.terminal_feedback_seq[1] = snapshot_.arm[1].feedback_seq;
+      result.lifecycle = event.lifecycle;
+      result.event = event.kind;
+      result.cause = event.cause;
+      result.collision_checked = active_->report.collision_checked != 0U;
+      result.reason = "completed_measured_feedback";
+      terminalizing_owner_ = command.owner;
+    }
+    invoke_terminal_callback(command, result);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!active_ || active_->command_id != event.command_id) {
+        return;
+      }
       active_.reset();
+      terminalizing_owner_.clear();
       health_.command_id = 0U;
-      health_.owner.clear();
+      if (health_.owner == command.owner) {
+        health_.owner.clear();
+      }
       health_.adapter_state = AdapterState::idle;
+      health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
+      health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
       health_.reason = "completed";
     }
-    CommandResult result;
-    result.outcome = CommandResult::Outcome::completed;
-    result.control_status = OA_CONTROL_OK;
-    result.command_id = event.command_id;
-    result.seed_feedback_seq[0] = completed->report.seed_feedback_seq[0];
-    result.seed_feedback_seq[1] = completed->report.seed_feedback_seq[1];
-    result.terminal_feedback_seq[0] = snapshot_.arm[0].feedback_seq;
-    result.terminal_feedback_seq[1] = snapshot_.arm[1].feedback_seq;
-    result.lifecycle = event.lifecycle;
-    result.event = event.kind;
-    result.cause = event.cause;
-    result.collision_checked = completed->report.collision_checked != 0U;
-    result.reason = "completed_measured_feedback";
-    if (completed->command.terminal) {
-      completed->command.terminal(result);
-    }
-    health_callback_();
+    invoke_health_callback();
   }
 
   void publish_feedback()
@@ -587,14 +671,20 @@ private:
       feedback.measured_progress = start_squared <= 1.0e-18 ? 1.0 :
         std::clamp(1.0 - std::sqrt(remaining_squared / start_squared), 0.0, 1.0);
     }
-    callback(feedback);
+    try {
+      callback(feedback);
+    } catch (...) {
+      fault(OA_CONTROL_EFAULT, "feedback_callback_failed");
+    }
   }
 
   void process_cancel()
   {
     std::string owner;
-    std::optional<SessionCommand> pending;
-    std::optional<Active> active;
+    std::optional<SessionCommand> command;
+    std::optional<oa_motion_plan_report> report;
+    std::uint64_t command_id = 0U;
+    bool active_command = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (cancel_owner_.empty()) {
@@ -602,49 +692,108 @@ private:
       }
       owner = std::move(cancel_owner_);
       cancel_owner_.clear();
-      if (pending_ && pending_->owner == owner) {
-        pending = std::move(pending_);
-        pending_.reset();
+      if (health_.owner != owner) {
+        return;
       }
       if (active_ && active_->command.owner == owner) {
-        active = std::move(active_);
-        active_.reset();
+        command = active_->command;
+        report = active_->report;
+        command_id = active_->command_id;
+        active_command = true;
+      } else if (pending_ && pending_->owner == owner) {
+        command = *pending_;
+      }
+      if (command) {
+        terminalizing_owner_ = owner;
       }
     }
-    if (active) {
-      (void)oa_controller_stop(controller_, OA_STOP_DISABLE);
+
+    oa_control_status stop_status = OA_CONTROL_OK;
+    if (snapshot_.lifecycle == OA_LIFECYCLE_ARMED_IDLE ||
+      snapshot_.lifecycle == OA_LIFECYCLE_EXECUTING)
+    {
+      stop_status = oa_controller_stop(controller_, OA_STOP_DISABLE);
       drain_events();
     }
-    SessionCommand * command = pending ? &*pending : (active ? &active->command : nullptr);
-    if (command != nullptr && command->terminal) {
+    if (!refresh_stopped_snapshot()) {
+      stop_status = OA_CONTROL_EFAULT;
+    }
+
+    if (command) {
       CommandResult result;
       result.outcome = CommandResult::Outcome::canceled;
-      result.control_status = OA_CONTROL_OK;
-      result.command_id = active ? active->command_id : 0U;
-      if (active) {
-        result.seed_feedback_seq[0] = active->report.seed_feedback_seq[0];
-        result.seed_feedback_seq[1] = active->report.seed_feedback_seq[1];
+      result.control_status = stop_status;
+      result.command_id = command_id;
+      if (report) {
+        result.seed_feedback_seq[0] = report->seed_feedback_seq[0];
+        result.seed_feedback_seq[1] = report->seed_feedback_seq[1];
+        result.plan_duration_ns = report->duration_ns;
+        result.collision_checked = report->collision_checked != 0U;
       }
       result.terminal_feedback_seq[0] = snapshot_.arm[0].feedback_seq;
       result.terminal_feedback_seq[1] = snapshot_.arm[1].feedback_seq;
-      result.lifecycle = OA_LIFECYCLE_DISARMED;
-      result.event = OA_EVENT_ABORTED;
-      result.reason = "canceled_disable_stop";
-      command->terminal(result);
-    }
-    {
+      result.lifecycle = snapshot_.lifecycle;
+      result.event = active_command ? OA_EVENT_ABORTED : OA_EVENT_STOPPED;
+      result.reason = stop_status == OA_CONTROL_OK ?
+        "canceled_disable_stop" : "cancel_disable_stop_failed";
+      invoke_terminal_callback(*command, result);
       std::lock_guard<std::mutex> lock(mutex_);
-      health_.owner.clear();
+      if (active_ && active_->command.owner == owner) {
+        active_.reset();
+      }
+      if (pending_ && pending_->owner == owner) {
+        pending_.reset();
+      }
+      terminalizing_owner_.clear();
+      if (health_.owner == owner) {
+        health_.owner.clear();
+      }
       health_.command_id = 0U;
       health_.adapter_state = AdapterState::stopped_requires_restart;
-      health_.reason = "canceled_disable_stop";
+      health_.last_cause = stop_status;
+      health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
+      health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
+      health_.reason = result.reason;
+      notify_health_unlocked();
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      health_.command_id = 0U;
+      health_.adapter_state = AdapterState::stopped_requires_restart;
+      health_.last_cause = stop_status;
+      health_.reason = stop_status == OA_CONTROL_OK ?
+        "canceled_reserved_disable_stop" : "cancel_disable_stop_failed";
+      cancelled_reservation_owner_ = owner;
       notify_health_unlocked();
     }
   }
 
+  bool refresh_stopped_snapshot()
+  {
+    oa_snapshot stopped{};
+    init(stopped);
+    if (oa_controller_snapshot(controller_, &stopped) != OA_CONTROL_OK ||
+      stopped.lifecycle != OA_LIFECYCLE_DISARMED)
+    {
+      return false;
+    }
+    snapshot_ = stopped;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      health_.snapshot = snapshot_;
+      health_.controller_now_ns = controller_now_ns_;
+    }
+    return true;
+  }
+
   void fault(const oa_control_status cause, const std::string & reason)
   {
-    (void)oa_controller_stop(controller_, OA_STOP_DISABLE);
+    const auto stop_status = oa_controller_stop(controller_, OA_STOP_DISABLE);
+    if (stop_status == OA_CONTROL_OK) {
+      (void)refresh_stopped_snapshot();
+    }
     std::optional<Active> active;
     std::optional<SessionCommand> pending;
     {
@@ -653,11 +802,15 @@ private:
       active_.reset();
       pending = std::move(pending_);
       pending_.reset();
+      if (active) {
+        terminalizing_owner_ = active->command.owner;
+      } else if (pending) {
+        terminalizing_owner_ = pending->owner;
+      }
       health_.adapter_state = AdapterState::fault;
       health_.last_cause = cause;
       health_.reason = reason;
       health_.command_id = 0U;
-      health_.owner.clear();
       notify_health_unlocked();
     }
     SessionCommand * command = active ? &active->command : (pending ? &*pending : nullptr);
@@ -666,14 +819,27 @@ private:
       result.outcome = CommandResult::Outcome::aborted;
       result.control_status = cause;
       result.command_id = active ? active->command_id : 0U;
+      if (active) {
+        result.seed_feedback_seq[0] = active->report.seed_feedback_seq[0];
+        result.seed_feedback_seq[1] = active->report.seed_feedback_seq[1];
+        result.plan_duration_ns = active->report.duration_ns;
+        result.collision_checked = active->report.collision_checked != 0U;
+      }
       result.terminal_feedback_seq[0] = snapshot_.arm[0].feedback_seq;
       result.terminal_feedback_seq[1] = snapshot_.arm[1].feedback_seq;
-      result.lifecycle = OA_LIFECYCLE_FAULT;
+      result.lifecycle = snapshot_.lifecycle;
       result.event = OA_EVENT_FAULTED;
       result.cause = cause;
       result.reason = reason;
-      command->terminal(result);
+      invoke_terminal_callback(*command, result);
+      std::lock_guard<std::mutex> lock(mutex_);
+      health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
+      health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
     }
+    std::lock_guard<std::mutex> lock(mutex_);
+    health_.owner.clear();
+    terminalizing_owner_.clear();
+    notify_health_unlocked();
   }
 
   void shutdown_on_owner_thread()
@@ -686,25 +852,50 @@ private:
       active_.reset();
       pending = std::move(pending_);
       pending_.reset();
+      if (active) {
+        terminalizing_owner_ = active->command.owner;
+      } else if (pending) {
+        terminalizing_owner_ = pending->owner;
+      }
     }
-    if (active) {
-      (void)oa_controller_stop(controller_, OA_STOP_DISABLE);
-    } else if (snapshot_.lifecycle == OA_LIFECYCLE_ARMED_IDLE) {
-      (void)oa_controller_disarm(controller_, controller_now_ns_ + kHeartbeatAheadNs);
+    oa_control_status stop_status = OA_CONTROL_OK;
+    if (snapshot_.lifecycle == OA_LIFECYCLE_EXECUTING ||
+      snapshot_.lifecycle == OA_LIFECYCLE_ARMED_IDLE)
+    {
+      stop_status = oa_controller_stop(controller_, OA_STOP_DISABLE);
+      drain_events();
+      if (!refresh_stopped_snapshot()) {
+        stop_status = OA_CONTROL_EFAULT;
+      }
     }
     SessionCommand * command = active ? &active->command : (pending ? &*pending : nullptr);
-    if (command != nullptr && command->terminal) {
+    if (command != nullptr) {
       CommandResult result;
       result.outcome = CommandResult::Outcome::aborted;
-      result.control_status = OA_CONTROL_ESTATE;
+      result.control_status = stop_status == OA_CONTROL_OK ? OA_CONTROL_ESTATE : stop_status;
       result.command_id = active ? active->command_id : 0U;
+      if (active) {
+        result.seed_feedback_seq[0] = active->report.seed_feedback_seq[0];
+        result.seed_feedback_seq[1] = active->report.seed_feedback_seq[1];
+        result.plan_duration_ns = active->report.duration_ns;
+        result.collision_checked = active->report.collision_checked != 0U;
+      }
       result.terminal_feedback_seq[0] = snapshot_.arm[0].feedback_seq;
       result.terminal_feedback_seq[1] = snapshot_.arm[1].feedback_seq;
-      result.lifecycle = OA_LIFECYCLE_DISARMED;
+      result.lifecycle = snapshot_.lifecycle;
       result.event = OA_EVENT_ABORTED;
-      result.reason = "shutdown";
-      command->terminal(result);
+      result.reason = stop_status == OA_CONTROL_OK ? "shutdown_disable_stop" :
+        "shutdown_disable_stop_failed";
+      invoke_terminal_callback(*command, result);
+      std::lock_guard<std::mutex> lock(mutex_);
+      health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
+      health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
     }
+    std::lock_guard<std::mutex> lock(mutex_);
+    health_.owner.clear();
+    health_.command_id = 0U;
+    health_.last_cause = stop_status;
+    terminalizing_owner_.clear();
   }
 
   void destroy_handles() noexcept
@@ -718,7 +909,37 @@ private:
   void notify_health_unlocked()
   {
     cv_.notify_all();
-    health_callback_();
+    invoke_health_callback();
+  }
+
+  bool invoke_state_callback(const MeasuredState & state) noexcept
+  {
+    try {
+      return state_callback_ && state_callback_(state);
+    } catch (...) {
+      return false;
+    }
+  }
+
+  void invoke_health_callback() noexcept
+  {
+    try {
+      if (health_callback_) {
+        health_callback_();
+      }
+    } catch (...) {
+    }
+  }
+
+  static void invoke_terminal_callback(
+    const SessionCommand & command, const CommandResult & result) noexcept
+  {
+    try {
+      if (command.terminal) {
+        command.terminal(result);
+      }
+    } catch (...) {
+    }
   }
 
   StateCallback state_callback_;
@@ -731,6 +952,8 @@ private:
   bool closing_{};
   std::string startup_error_;
   std::string cancel_owner_;
+  std::string cancelled_reservation_owner_;
+  std::string terminalizing_owner_;
   std::optional<SessionCommand> pending_;
   std::optional<Active> active_;
   SessionHealth health_;
@@ -783,12 +1006,16 @@ void VirtualControlSession::close() noexcept
 
 const std::array<std::string, 14> & VirtualControlSession::joint_names()
 {
-  static const std::array<std::string, 14> names{
-    "openarm_left_joint1", "openarm_left_joint2", "openarm_left_joint3",
-    "openarm_left_joint4", "openarm_left_joint5", "openarm_left_joint6",
-    "openarm_left_joint7", "openarm_right_joint1", "openarm_right_joint2",
-    "openarm_right_joint3", "openarm_right_joint4", "openarm_right_joint5",
-    "openarm_right_joint6", "openarm_right_joint7"};
+  static const std::array<std::string, 14> names = []() {
+      std::array<std::string, 14> value{};
+      const auto & config = standard_manifest_config();
+      for (std::size_t side = 0U; side < 2U; ++side) {
+        for (std::size_t joint = 0U; joint < 7U; ++joint) {
+          value[side * 7U + joint] = config.arm[side].motor[joint].joint_name;
+        }
+      }
+      return value;
+    }();
   return names;
 }
 
@@ -812,9 +1039,8 @@ bool VirtualControlSession::joint_target_in_limits(
   if (side > OA_RIGHT || joint >= 7U || !std::isfinite(target)) {
     return false;
   }
-  const auto & lower = side == OA_LEFT ? kLeftLower : kRightLower;
-  const auto & upper = side == OA_LEFT ? kLeftUpper : kRightUpper;
-  return target >= lower[joint] && target <= upper[joint];
+  const auto & motor = standard_manifest_config().arm[side].motor[joint];
+  return target >= motor.lower_rad && target <= motor.upper_rad;
 }
 
 const char * VirtualControlSession::adapter_state_name(const AdapterState state) noexcept
