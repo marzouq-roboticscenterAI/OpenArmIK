@@ -22,23 +22,37 @@ extern "C" {
  * coordinates (never motor coordinates). */
 typedef struct oa_transform { double m[16]; } oa_transform;
 
-typedef int32_t oa_status;
-/* OA_OK: tolerance and effective bounds (including margin) satisfied.
- * OA_EINVAL: invalid ABI/options or numerically unsafe finite input.
- * OA_ENONFINITE: NaN/Inf input or non-finite internal arithmetic.
- * OA_EBOUNDS: requested limit margin leaves no feasible box.
- * OA_ENOCONVERGENCE: no strictly primary-error-decreasing feasible step.
- * OA_ESTAGNATED_AT_BOUNDS: active bounds prevent a decreasing step.
- * OA_ESINGULAR: requested damping cannot solve the rank-deficient system.
- * OA_EBUDGET: max_iterations exhausted without tolerance satisfaction. */
-#define OA_OK                   ((oa_status)0)
-#define OA_EINVAL               ((oa_status)1)
-#define OA_ENONFINITE           ((oa_status)2)
-#define OA_EBOUNDS              ((oa_status)3)
-#define OA_ENOCONVERGENCE       ((oa_status)4)
-#define OA_ESTAGNATED_AT_BOUNDS ((oa_status)5)
-#define OA_ESINGULAR            ((oa_status)6)
-#define OA_EBUDGET              ((oa_status)7)
+typedef int32_t oa_model_status;
+/* OA_MODEL_OK: tolerance and effective bounds (including margin) satisfied.
+ * OA_MODEL_EINVAL: invalid ABI/options or numerically unsafe finite input.
+ * OA_MODEL_ENONFINITE: NaN/Inf input or non-finite internal arithmetic.
+ * OA_MODEL_EBOUNDS: requested limit margin leaves no feasible box.
+ * OA_MODEL_ENOCONVERGENCE: no strictly primary-error-decreasing feasible step.
+ * OA_MODEL_ESTAGNATED_AT_BOUNDS: active bounds prevent a decreasing step.
+ * OA_MODEL_ESINGULAR: requested damping cannot solve the rank-deficient system.
+ * OA_MODEL_EBUDGET: max_iterations exhausted without tolerance satisfaction. */
+#define OA_MODEL_OK                   ((oa_model_status)0)
+#define OA_MODEL_EINVAL               ((oa_model_status)1)
+#define OA_MODEL_ENONFINITE           ((oa_model_status)2)
+#define OA_MODEL_EBOUNDS              ((oa_model_status)3)
+#define OA_MODEL_ENOCONVERGENCE       ((oa_model_status)4)
+#define OA_MODEL_ESTAGNATED_AT_BOUNDS ((oa_model_status)5)
+#define OA_MODEL_ESINGULAR            ((oa_model_status)6)
+#define OA_MODEL_EBUDGET              ((oa_model_status)7)
+
+#if !defined(OPENARM_DISABLE_LEGACY_GENERIC_STATUS) && \
+    !defined(OPENARM_LEGACY_GENERIC_STATUS_DEFINED)
+#define OPENARM_LEGACY_GENERIC_STATUS_DEFINED 1
+typedef oa_model_status oa_status;
+#define OA_OK                   OA_MODEL_OK
+#define OA_EINVAL               OA_MODEL_EINVAL
+#define OA_ENONFINITE           OA_MODEL_ENONFINITE
+#define OA_EBOUNDS              OA_MODEL_EBOUNDS
+#define OA_ENOCONVERGENCE       OA_MODEL_ENOCONVERGENCE
+#define OA_ESTAGNATED_AT_BOUNDS OA_MODEL_ESTAGNATED_AT_BOUNDS
+#define OA_ESINGULAR            OA_MODEL_ESINGULAR
+#define OA_EBUDGET              OA_MODEL_EBUDGET
+#endif
 
 typedef struct oa_model oa_model;
 
@@ -71,7 +85,7 @@ typedef struct oa_ik_options {
 typedef struct oa_ik_diagnostics {
     uint32_t abi_version;
     uint32_t struct_size;
-    oa_status status;
+    oa_model_status status;
     uint32_t iterations;
     uint32_t active_limit_mask;
     double q[OA_DOF];
@@ -94,19 +108,21 @@ const char *oa_model_flattened_urdf_sha256(const oa_model *model);
 const char *oa_model_source_sha256(const oa_model *model);
 const char *oa_model_joint_name(const oa_model *model, size_t index);
 const char *oa_model_tip_frame(const oa_model *model);
-oa_status oa_model_limits(const oa_model *model, size_t index, double *lower, double *upper);
+oa_model_status oa_model_limits(const oa_model *model, size_t index, double *lower,
+                                double *upper);
 
-oa_status oa_fk(const oa_model *model, const double q[OA_DOF], oa_fk_result *out);
-oa_status oa_geometric_jacobian(const oa_model *model, const double q[OA_DOF], oa_jacobian *out);
-/* ABI-v1 compatibility symbol. It always returns OA_EINVAL and never writes
+oa_model_status oa_fk(const oa_model *model, const double q[OA_DOF], oa_fk_result *out);
+oa_model_status oa_geometric_jacobian(const oa_model *model, const double q[OA_DOF],
+                                      oa_jacobian *out);
+/* ABI-v1 compatibility symbol. It always returns OA_MODEL_EINVAL and never writes
  * through out. This preserves safety for callers with the old 248-byte result. */
-oa_status oa_ik_position(const oa_model *model, const double target_body_m[3],
-                         const oa_ik_options *options, void *out);
+oa_model_status oa_ik_position(const oa_model *model, const double target_body_m[3],
+                               const oa_ik_options *options, void *out);
 
 /* output_version and output_size are validated before the first output write. */
-oa_status oa_ik_position_v2(const oa_model *model, const double target_body_m[3],
-                            const oa_ik_options *options, uint32_t output_version,
-                            uint32_t output_size, oa_ik_diagnostics *out);
+oa_model_status oa_ik_position_v2(const oa_model *model, const double target_body_m[3],
+                                  const oa_ik_options *options, uint32_t output_version,
+                                  uint32_t output_size, oa_ik_diagnostics *out);
 
 #ifdef __cplusplus
 }

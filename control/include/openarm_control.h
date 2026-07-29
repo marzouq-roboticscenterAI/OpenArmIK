@@ -16,7 +16,7 @@ extern "C" {
 typedef struct oa_manifest oa_manifest;
 typedef struct oa_controller oa_controller;
 typedef struct oa_motion_plan oa_motion_plan;
-typedef uint32_t oa_status;
+typedef uint32_t oa_control_status;
 typedef uint32_t oa_side;
 
 /* Opaque handles are validated without dereferencing caller memory. Calls on one
@@ -25,28 +25,52 @@ typedef uint32_t oa_side;
  * synchronizes with pins before freeing its registry slot. Already-pinned
  * immutable work retains shared state safely. Handles are monotonic,
  * never-dereferenced token values and are not reused. Calls begun afterward
- * return OA_EINVAL; token-space exhaustion fails closed with OA_ENOMEM. */
+ * return OA_CONTROL_EINVAL; token-space exhaustion fails closed with
+ * OA_CONTROL_ENOMEM. */
 
 #define OA_LEFT UINT32_C(0)
 #define OA_RIGHT UINT32_C(1)
 
-#define OA_OK UINT32_C(0)
-#define OA_EINVAL UINT32_C(1)
-#define OA_EABI UINT32_C(2)
-#define OA_ESTATE UINT32_C(3)
-#define OA_ESTALE UINT32_C(4)
-#define OA_ETIMEOUT UINT32_C(5)
-#define OA_ECAN UINT32_C(6)
-#define OA_EFAULT UINT32_C(7)
-#define OA_EESTOP UINT32_C(8)
-#define OA_ELIMIT UINT32_C(9)
-#define OA_EIDENTITY UINT32_C(10)
-#define OA_EUNREACHABLE UINT32_C(11)
-#define OA_ECOLLISION UINT32_C(12)
-#define OA_EBUSY UINT32_C(13)
-#define OA_EIO UINT32_C(14)
-#define OA_ENOMEM UINT32_C(15)
-#define OA_EUNSUPPORTED UINT32_C(16)
+#define OA_CONTROL_OK UINT32_C(0)
+#define OA_CONTROL_EINVAL UINT32_C(1)
+#define OA_CONTROL_EABI UINT32_C(2)
+#define OA_CONTROL_ESTATE UINT32_C(3)
+#define OA_CONTROL_ESTALE UINT32_C(4)
+#define OA_CONTROL_ETIMEOUT UINT32_C(5)
+#define OA_CONTROL_ECAN UINT32_C(6)
+#define OA_CONTROL_EFAULT UINT32_C(7)
+#define OA_CONTROL_EESTOP UINT32_C(8)
+#define OA_CONTROL_ELIMIT UINT32_C(9)
+#define OA_CONTROL_EIDENTITY UINT32_C(10)
+#define OA_CONTROL_EUNREACHABLE UINT32_C(11)
+#define OA_CONTROL_ECOLLISION UINT32_C(12)
+#define OA_CONTROL_EBUSY UINT32_C(13)
+#define OA_CONTROL_EIO UINT32_C(14)
+#define OA_CONTROL_ENOMEM UINT32_C(15)
+#define OA_CONTROL_EUNSUPPORTED UINT32_C(16)
+
+#if !defined(OPENARM_DISABLE_LEGACY_GENERIC_STATUS) && \
+    !defined(OPENARM_LEGACY_GENERIC_STATUS_DEFINED)
+#define OPENARM_LEGACY_GENERIC_STATUS_DEFINED 1
+typedef oa_control_status oa_status;
+#define OA_OK           OA_CONTROL_OK
+#define OA_EINVAL       OA_CONTROL_EINVAL
+#define OA_EABI         OA_CONTROL_EABI
+#define OA_ESTATE       OA_CONTROL_ESTATE
+#define OA_ESTALE       OA_CONTROL_ESTALE
+#define OA_ETIMEOUT     OA_CONTROL_ETIMEOUT
+#define OA_ECAN         OA_CONTROL_ECAN
+#define OA_EFAULT       OA_CONTROL_EFAULT
+#define OA_EESTOP       OA_CONTROL_EESTOP
+#define OA_ELIMIT       OA_CONTROL_ELIMIT
+#define OA_EIDENTITY    OA_CONTROL_EIDENTITY
+#define OA_EUNREACHABLE OA_CONTROL_EUNREACHABLE
+#define OA_ECOLLISION   OA_CONTROL_ECOLLISION
+#define OA_EBUSY        OA_CONTROL_EBUSY
+#define OA_EIO          OA_CONTROL_EIO
+#define OA_ENOMEM       OA_CONTROL_ENOMEM
+#define OA_EUNSUPPORTED OA_CONTROL_EUNSUPPORTED
+#endif
 
 #define OA_BACKEND_VIRTUAL UINT32_C(1)
 #define OA_BACKEND_PHYSICAL UINT32_C(2)
@@ -208,7 +232,7 @@ typedef struct oa_event {
     uint64_t t_ns;
     uint64_t command_id;
     uint64_t feedback_seq;
-    oa_status cause;
+    oa_control_status cause;
 } oa_event;
 
 typedef struct oa_controller_options {
@@ -300,54 +324,57 @@ typedef struct oa_sim_state {
 #define OA_SIM_FAULT_V1_PREFIX_SIZE \
     ((uint32_t)offsetof(oa_sim_fault, fault_status))
 
-oa_status oa_manifest_create(const oa_manifest_config *config, oa_manifest **out);
+oa_control_status oa_manifest_create(const oa_manifest_config *config, oa_manifest **out);
 /* Stage A uses the compiled config builder. Text/digest loading is reserved. */
-oa_status oa_manifest_load(const char *path, const char *sha256_path, oa_manifest **out);
+oa_control_status oa_manifest_load(const char *path, const char *sha256_path,
+                                   oa_manifest **out);
 void oa_manifest_destroy(oa_manifest *manifest);
 
-oa_status oa_controller_create(const oa_manifest *manifest,
-                               const oa_controller_options *options,
-                               oa_controller **out);
-oa_status oa_controller_open_and_verify(oa_controller *controller,
-                                        oa_verify_report *out);
-oa_status oa_controller_snapshot(oa_controller *controller, oa_snapshot *out);
-oa_status oa_controller_get_kinematics(oa_controller *controller, oa_side side,
-                                       uint64_t required_feedback_seq,
-                                       oa_arm_kinematics *out);
-oa_status oa_controller_get_arm_challenge(oa_controller *controller,
-                                          oa_arm_challenge *out);
-oa_status oa_controller_arm(oa_controller *controller,
-                            const oa_arm_challenge *challenge);
-oa_status oa_controller_plan_joint(oa_controller *controller,
-                                   const oa_joint_move *request,
-                                   oa_motion_plan **out);
-oa_status oa_controller_plan_paired_tcp(oa_controller *controller,
-                                        const oa_paired_tcp_move *request,
-                                        oa_motion_plan **out);
-oa_status oa_motion_plan_get_report(const oa_motion_plan *plan,
-                                    oa_motion_plan_report *out);
-oa_status oa_controller_execute(oa_controller *controller,
-                                const oa_motion_plan *plan,
-                                const oa_execute_request *request,
-                                uint64_t *out_command_id);
-oa_status oa_controller_advance(oa_controller *controller, uint64_t monotonic_ns);
-oa_status oa_controller_sim_set_fault(oa_controller *controller,
-                                      const oa_sim_fault *fault);
-oa_status oa_controller_sim_set_state(oa_controller *controller,
-                                      const oa_sim_state *state);
-oa_status oa_controller_heartbeat(oa_controller *controller, uint64_t command_id,
-                                  uint64_t producer_deadline_ns);
-oa_status oa_controller_set_interlock(oa_controller *controller,
-                                      uint32_t estop_active,
-                                      uint32_t deadman_active);
-oa_status oa_controller_set_collision_scene_revision(oa_controller *controller,
-                                                      uint64_t revision);
-oa_status oa_controller_stop(oa_controller *controller, uint32_t stop_kind);
-oa_status oa_controller_disarm(oa_controller *controller, uint64_t deadline_ns);
-oa_status oa_controller_reset_fault(oa_controller *controller,
-                                    const oa_reset_request *request);
-oa_status oa_controller_poll_event(oa_controller *controller,
-                                   uint64_t deadline_ns, oa_event *out);
+oa_control_status oa_controller_create(const oa_manifest *manifest,
+                                       const oa_controller_options *options,
+                                       oa_controller **out);
+oa_control_status oa_controller_open_and_verify(oa_controller *controller,
+                                                oa_verify_report *out);
+oa_control_status oa_controller_snapshot(oa_controller *controller, oa_snapshot *out);
+oa_control_status oa_controller_get_kinematics(oa_controller *controller, oa_side side,
+                                               uint64_t required_feedback_seq,
+                                               oa_arm_kinematics *out);
+oa_control_status oa_controller_get_arm_challenge(oa_controller *controller,
+                                                  oa_arm_challenge *out);
+oa_control_status oa_controller_arm(oa_controller *controller,
+                                    const oa_arm_challenge *challenge);
+oa_control_status oa_controller_plan_joint(oa_controller *controller,
+                                           const oa_joint_move *request,
+                                           oa_motion_plan **out);
+oa_control_status oa_controller_plan_paired_tcp(oa_controller *controller,
+                                                const oa_paired_tcp_move *request,
+                                                oa_motion_plan **out);
+oa_control_status oa_motion_plan_get_report(const oa_motion_plan *plan,
+                                            oa_motion_plan_report *out);
+oa_control_status oa_controller_execute(oa_controller *controller,
+                                        const oa_motion_plan *plan,
+                                        const oa_execute_request *request,
+                                        uint64_t *out_command_id);
+oa_control_status oa_controller_advance(oa_controller *controller,
+                                        uint64_t monotonic_ns);
+oa_control_status oa_controller_sim_set_fault(oa_controller *controller,
+                                              const oa_sim_fault *fault);
+oa_control_status oa_controller_sim_set_state(oa_controller *controller,
+                                              const oa_sim_state *state);
+oa_control_status oa_controller_heartbeat(oa_controller *controller,
+                                          uint64_t command_id,
+                                          uint64_t producer_deadline_ns);
+oa_control_status oa_controller_set_interlock(oa_controller *controller,
+                                              uint32_t estop_active,
+                                              uint32_t deadman_active);
+oa_control_status oa_controller_set_collision_scene_revision(oa_controller *controller,
+                                                              uint64_t revision);
+oa_control_status oa_controller_stop(oa_controller *controller, uint32_t stop_kind);
+oa_control_status oa_controller_disarm(oa_controller *controller, uint64_t deadline_ns);
+oa_control_status oa_controller_reset_fault(oa_controller *controller,
+                                            const oa_reset_request *request);
+oa_control_status oa_controller_poll_event(oa_controller *controller,
+                                           uint64_t deadline_ns, oa_event *out);
 void oa_motion_plan_destroy(oa_motion_plan *plan);
 void oa_controller_destroy(oa_controller *controller);
 

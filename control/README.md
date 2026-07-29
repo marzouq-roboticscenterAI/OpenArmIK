@@ -7,7 +7,14 @@ with an independent bounded-velocity/acceleration plant. Commands update only
 the plant reference; the lagging plant emits quantized eight-byte DaMiao
 feedback frames, and only decoded frames update measured state.
 The physical backend is deliberately present only as a fail-closed gate and
-returns `OA_EUNSUPPORTED` before verification or motion.
+returns `OA_CONTROL_EUNSUPPORTED` before verification or motion.
+
+Public controller results use the ABI-neutral `oa_control_status` typedef and
+`OA_CONTROL_*` constants. The original V1 `oa_status` and `OA_*` source names
+remain available when this is the first model or control header included.
+Define `OPENARM_DISABLE_LEGACY_GENERIC_STATUS` before including OpenArm headers
+in new multi-module consumers. This changes no function symbol, calling
+convention, status representation, numeric value, or V1 record layout.
 
 The manifest is built with `oa_manifest_create` from fixed-width C records and
 copied into immutable validated storage. Validation rejects duplicate buses,
