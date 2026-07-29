@@ -48,7 +48,9 @@ The transport `vcan0` smoke test is not registered in this hardware-free
 profile. Standalone transport builds retain that test by default. Use
 `--incremental` only when deliberately reusing prior output. A disposable build
 can be isolated with `--output-root /tmp/openarmik-build`; its setup file is
-then `/tmp/openarmik-build/install/setup.bash`.
+then `/tmp/openarmik-build/install/setup.bash`. Output roots may contain spaces,
+but `:` and `;` are rejected because they are prefix-list delimiters used by
+ROS and CMake.
 
 On this Wayland hybrid-GPU laptop the launcher uses Mesa software OpenGL with
 the XWayland/GLX backend required by this RViz/Ogre build. Hardware GLX remains
@@ -77,7 +79,19 @@ Results are structured `diagnostic_msgs/DiagnosticArray` messages on `/openarm_i
 
 RViz may report four unrealistic finger-inertia errors from the pinned canonical generated URDF. They are inherited model data; meshes and TF still load, and this adapter neither edits nor reinterprets that URDF.
 
-`model/` is installed as an ordinary CMake package (`openarm_model::openarm_model`); the ROS package finds that export instead of compiling monorepo-relative sources. `scripts/install_ros_dependencies.sh` is review-only unless explicitly passed `--apply`; it is never run automatically. `./scripts/build.sh --tests` is the preferred hardware-free native test and ROS registration path. To explicitly execute the already-built authored adapter tests (which start ROS middleware):
+The native install exports CMake targets for dependency-safe consumption:
+`OpenArm::Can`, `OpenArm::Model`, `OpenArm::Transport`, and
+`OpenArm::Commission`. Existing model and transport target names remain
+available. Control discovers the installed model package instead of compiling a
+second model copy, and transport links the installed CAN target instead of
+embedding CAN objects. The ROS package likewise finds the installed model
+export instead of compiling monorepo-relative sources. Production archives do
+not contain the native suites' fault-injection hooks.
+
+`scripts/install_ros_dependencies.sh` is review-only unless explicitly passed
+`--apply`; it is never run automatically. `./scripts/build.sh --tests` is the
+preferred hardware-free native test and ROS registration path. To explicitly
+execute the already-built authored adapter tests (which start ROS middleware):
 
 ```bash
 source /opt/ros/lyrical/setup.bash

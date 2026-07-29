@@ -2,10 +2,13 @@ cmake_minimum_required(VERSION 3.16)
 project(openarm_transport_installed_consumer LANGUAGES C CXX)
 
 find_package(OpenArmTransport 1 CONFIG REQUIRED)
+if(NOT TARGET OpenArm::Can OR NOT TARGET OpenArm::Transport)
+    message(FATAL_ERROR "installed CAN/transport targets are unavailable")
+endif()
 
 add_executable(openarm_transport_installed_consumer ../c11_consumer.c)
 target_link_libraries(openarm_transport_installed_consumer
-    PRIVATE OpenArm::openarm_transport)
+    PRIVATE OpenArm::Transport)
 set_target_properties(openarm_transport_installed_consumer PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
     LINKER_LANGUAGE CXX)

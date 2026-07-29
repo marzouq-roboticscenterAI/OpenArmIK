@@ -33,9 +33,31 @@ endif()
 
 if(BUILD_TESTING)
     find_package(Threads REQUIRED)
+    add_library(openarm_commission_test STATIC
+        src/calibration_session.cpp
+        src/c_api.cpp)
+    target_compile_definitions(openarm_commission_test PRIVATE
+        OPENARM_COMMISSION_ENABLE_TEST_HOOKS=1)
+    target_compile_features(openarm_commission_test
+        PUBLIC c_std_11 PRIVATE cxx_std_17)
+    target_include_directories(openarm_commission_test
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    set_target_properties(openarm_commission_test PROPERTIES
+        CXX_EXTENSIONS OFF
+        POSITION_INDEPENDENT_CODE ON)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(openarm_commission_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+        if(OA_COMMISSION_ENABLE_SANITIZERS)
+            target_compile_options(openarm_commission_test PUBLIC
+                -fno-omit-frame-pointer -fsanitize=address,undefined)
+            target_link_options(openarm_commission_test PUBLIC
+                -fno-omit-frame-pointer -fsanitize=address,undefined)
+        endif()
+    endif()
     add_executable(openarm_commission_tests tests/test_commission.cpp)
     target_link_libraries(openarm_commission_tests PRIVATE
-        OpenArm::Commission Threads::Threads)
+        openarm_commission_test Threads::Threads)
     target_include_directories(openarm_commission_tests PRIVATE src)
     target_compile_features(openarm_commission_tests PRIVATE cxx_std_17)
     set_target_properties(openarm_commission_tests PROPERTIES CXX_EXTENSIONS OFF)

@@ -66,6 +66,12 @@ done
 }
 build_root=$(realpath -m -- "$build_root")
 install_prefix=$(realpath -m -- "$install_prefix")
+for path in "$build_root" "$install_prefix"; do
+  if [[ "$path" == *:* || "$path" == *\;* ]]; then
+    printf 'Build/install paths containing : or ; are unsupported: %s\n' "$path" >&2
+    exit 2
+  fi
+done
 root_real=$(realpath -e -- "$root_dir")
 home_real=$(realpath -m -- "${HOME:-/nonexistent}")
 for path in "$build_root" "$install_prefix"; do
@@ -149,3 +155,42 @@ configure_build_test_install control \
   -DOA_CONTROL_BUILD_TESTS="$tests_flag" \
   -DOA_CONTROL_SANITIZERS=OFF \
   -DOA_CONTROL_TSAN=OFF
+
+control_symbols=$(nm -gC --defined-only \
+  "$install_prefix/lib/libopenarm_control.a")
+commission_symbols=$(nm -gC --defined-only \
+  "$install_prefix/lib/libopenarm_commission.a")
+transport_symbols=$(nm -gC --defined-only \
+  "$install_prefix/lib/libopenarm_transport.a")
+if [[ "$control_symbols" == *oa_control_test_* ]]; then
+  printf 'Installed control archive exposes test-only symbols\n' >&2
+  exit 1
+fi
+if [[ "$commission_symbols" == *openarm::commission::test::* ]]; then
+  printf 'Installed commission archive exposes test-only symbols\n' >&2
+  exit 1
+fi
+if [[ "$transport_symbols" == *' T oa_can_'* ]]; then
+  printf 'Installed transport archive embeds CAN implementation symbols\n' >&2
+  exit 1
+fi
+
+if ((run_tests)); then
+  control_config="$install_prefix/lib/cmake/openarm_control/openarm_controlConfig.cmake"
+  model_header=$(<"$install_prefix/include/openarm_model.h")
+  control_header=$(<"$install_prefix/include/openarm_control.h")
+  if [[ -f "$control_config" ]] &&
+     [[ "$model_header" == *OPENARM_DISABLE_LEGACY_GENERIC_STATUS* ]] &&
+     [[ "$control_header" == *OPENARM_DISABLE_LEGACY_GENERIC_STATUS* ]]; then
+    consumer_build="$build_root/installed_native_consumer"
+    cmake -S "$root_dir/tests/installed_native_consumer" -B "$consumer_build" \
+      -DCMAKE_BUILD_TYPE="$build_type" \
+      -DCMAKE_PREFIX_PATH="$install_prefix"
+    cmake --build "$consumer_build" --parallel
+    "$consumer_build/openarm_installed_c11"
+    "$consumer_build/openarm_installed_cxx17"
+  else
+    printf '%s\n' \
+      'Installed all-header consumers deferred until control export/status integration'
+  fi
+fi

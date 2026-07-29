@@ -1,5 +1,7 @@
 #include "calibration_session.hpp"
+#ifdef OPENARM_COMMISSION_ENABLE_TEST_HOOKS
 #include "test_hooks.hpp"
+#endif
 
 #include <atomic>
 #include <cmath>
@@ -23,8 +25,10 @@ enum class HandleKind {
     Recipe
 };
 
+#ifdef OPENARM_COMMISSION_ENABLE_TEST_HOOKS
 std::atomic<bool> fail_allocation{false};
 std::atomic<bool> throw_exception{false};
+#endif
 
 class HandleRegistry final {
 public:
@@ -70,6 +74,7 @@ public:
         return true;
     }
 
+#ifdef OPENARM_COMMISSION_ENABLE_TEST_HOOKS
     [[nodiscard]] std::size_t active_count() const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         return handles_.size();
@@ -79,6 +84,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         next_token_ = std::numeric_limits<std::uintptr_t>::max();
     }
+#endif
 
 private:
     struct Entry {
@@ -230,9 +236,11 @@ bool valid_recipe(const oa_commission_recipe &recipe) noexcept {
 template <typename Callable>
 oa_commission_status guard(Callable &&callable) noexcept {
     try {
+#ifdef OPENARM_COMMISSION_ENABLE_TEST_HOOKS
         if (throw_exception.exchange(false)) {
             throw std::runtime_error("injected exception");
         }
+#endif
         return callable();
     } catch (const std::bad_alloc &) {
         return OA_COMMISSION_ENOMEM;
@@ -258,6 +266,7 @@ oa_commission_status validate_record(const Record *record) noexcept {
 
 }  // namespace
 
+#ifdef OPENARM_COMMISSION_ENABLE_TEST_HOOKS
 namespace openarm::commission::test {
 
 void fail_next_allocation() noexcept {
@@ -277,6 +286,7 @@ void exhaust_handle_tokens() noexcept {
 }
 
 }  // namespace openarm::commission::test
+#endif
 
 extern "C" oa_commission_status oa_commission_manual_create(
     const oa_commission_manual_options *options,
@@ -293,9 +303,11 @@ extern "C" oa_commission_status oa_commission_manual_create(
         return OA_COMMISSION_EINVAL;
     }
     return guard([&]() {
+#ifdef OPENARM_COMMISSION_ENABLE_TEST_HOOKS
         if (fail_allocation.exchange(false)) {
             throw std::bad_alloc();
         }
+#endif
         auto implementation = std::make_unique<ManualCalibrationSession>(*options);
         std::uintptr_t token = 0U;
         if (!registry().add_manual(std::move(implementation), token)) {
@@ -443,9 +455,11 @@ extern "C" oa_commission_status oa_commission_recipe_create(
         return OA_COMMISSION_EINVAL;
     }
     return guard([&]() {
+#ifdef OPENARM_COMMISSION_ENABLE_TEST_HOOKS
         if (fail_allocation.exchange(false)) {
             throw std::bad_alloc();
         }
+#endif
         auto implementation = std::make_unique<RecipeCalibrationSession>(*recipe);
         std::uintptr_t token = 0U;
         if (!registry().add_recipe(std::move(implementation), token)) {

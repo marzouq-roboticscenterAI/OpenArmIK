@@ -150,8 +150,8 @@ ControllerRegistry &controller_registry() {
     return registry;
 }
 
+#ifdef OPENARM_CONTROL_ENABLE_TEST_HOOKS
 std::atomic<std::int32_t> controller_create_fail_after{-1};
-
 void controller_create_checkpoint() {
     const std::int32_t current = controller_create_fail_after.load();
     if (current < 0) {
@@ -163,6 +163,9 @@ void controller_create_checkpoint() {
     }
     controller_create_fail_after.store(current - 1);
 }
+#else
+void controller_create_checkpoint() noexcept {}
+#endif
 
 std::shared_ptr<ControllerSlot> pin_controller(const oa_controller *controller) {
     if (controller == nullptr) {
@@ -193,6 +196,7 @@ oa_control_status with_controller(oa_controller *controller, Callable &&callable
 }
 }  // namespace
 
+#ifdef OPENARM_CONTROL_ENABLE_TEST_HOOKS
 extern "C" void oa_control_test_fail_controller_create_after(
     const std::int32_t checkpoints) {
     controller_create_fail_after.store(checkpoints);
@@ -215,6 +219,7 @@ extern "C" std::size_t oa_control_test_active_plan_count(void) {
     const std::lock_guard<std::mutex> lock(registry.mutex);
     return registry.active.size();
 }
+#endif
 
 extern "C" oa_control_status oa_manifest_create(const oa_manifest_config *config,
                                          oa_manifest **out) {

@@ -35,10 +35,18 @@ commissioning manifest and higher controller lifecycle.
 Build and test:
 
 ```sh
-cmake -S transport -B build/transport -DBUILD_TESTING=ON
+cmake -S can -B build/can -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX="$PWD/build/native-prefix"
+cmake --build build/can --parallel
+cmake --install build/can
+cmake -S transport -B build/transport -DBUILD_TESTING=ON \
+  -DCMAKE_PREFIX_PATH="$PWD/build/native-prefix"
 cmake --build build/transport --parallel
 ctest --test-dir build/transport --output-on-failure
 ```
+
+The installed package exports `OpenArm::Transport`, retains
+`OpenArm::openarm_transport`, and discovers its `OpenArm::Can` dependency.
 
 The `vcan0` smoke test opens and closes only a sysfs-verified virtual interface.
 It skips when such an interface is unavailable and never sends a CAN frame or

@@ -2,4 +2,11 @@
 
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
+find_dependency(OpenArmCan 1 CONFIG)
 include("${CMAKE_CURRENT_LIST_DIR}/OpenArmTransportTargets.cmake")
+
+if(NOT TARGET OpenArm::Transport)
+  add_library(OpenArm::Transport INTERFACE IMPORTED)
+  set_property(TARGET OpenArm::Transport PROPERTY
+    INTERFACE_LINK_LIBRARIES OpenArm::openarm_transport)
+endif()

@@ -1,0 +1,5 @@
+@PACKAGE_INIT@
+
+set(OpenArmCan_PREFIX "${PACKAGE_PREFIX_DIR}")
+include("${CMAKE_CURRENT_LIST_DIR}/OpenArmCanTargets.cmake")
+check_required_components(OpenArmCan)

@@ -59,6 +59,10 @@ if [[ "$output_root" != /* ]]; then
   output_root="$PWD/$output_root"
 fi
 output_root=$(realpath -m -- "$output_root")
+if [[ "$output_root" == *:* || "$output_root" == *\;* ]]; then
+  printf 'Output roots containing : or ; are unsupported: %s\n' "$output_root" >&2
+  exit 2
+fi
 root_real=$(realpath -e -- "$root_dir")
 home_real=$(realpath -m -- "${HOME:-/nonexistent}")
 case "$output_root" in

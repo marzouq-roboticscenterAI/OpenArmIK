@@ -87,7 +87,12 @@ triggering controller operation return `OA_EBUSY` without continuing execution.
 Build and test without Python:
 
 ```sh
-cmake -S control -B control/build -DCMAKE_BUILD_TYPE=Release
+cmake -S model -B model/build -DCMAKE_BUILD_TYPE=Release \
+  -DOA_MODEL_BUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX="$PWD/build/native-prefix"
+cmake --build model/build --parallel
+cmake --install model/build
+cmake -S control -B control/build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="$PWD/build/native-prefix"
 cmake --build control/build --parallel
 ctest --test-dir control/build --output-on-failure
 ```
@@ -96,7 +101,8 @@ Sanitizer verification:
 
 ```sh
 cmake -S control -B control/build-sanitize -DCMAKE_BUILD_TYPE=Debug \
-  -DOA_CONTROL_SANITIZERS=ON
+  -DOA_CONTROL_SANITIZERS=ON \
+  -DCMAKE_PREFIX_PATH="$PWD/build/native-prefix"
 cmake --build control/build-sanitize --parallel
 ctest --test-dir control/build-sanitize --output-on-failure
 ```
