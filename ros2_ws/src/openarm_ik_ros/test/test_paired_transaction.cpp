@@ -71,6 +71,8 @@ TEST(PairedTransaction, CommitsBothArmsTogetherAndMeetsFkTolerance)
   EXPECT_EQ(result.right.status, OA_OK);
   EXPECT_EQ(result.left.collision_checked, 0U);
   EXPECT_EQ(result.right.collision_checked, 0U);
+  EXPECT_TRUE(result.achieved_available);
+  EXPECT_STREQ(openarm_ik_ros::PairedTransactionProcessor::continuity_policy(), "continuity-v1");
   EXPECT_LE(result.left.position_error_m, 1e-4);
   EXPECT_LE(result.right.position_error_m, 1e-4);
   const std::array<double, OA_DOF> zero{};
@@ -105,9 +107,54 @@ TEST(PairedTransaction, RejectsInvalidRequestsWithoutChangingEitherArm)
   EXPECT_FALSE(processor.process(request, kNow).committed);
   request = valid_request();
   request.left = {10.0, 10.0, 10.0};
-  EXPECT_FALSE(processor.process(request, kNow).committed);
+  const auto left_failure = processor.process(request, kNow);
+  EXPECT_FALSE(left_failure.committed);
+  EXPECT_FALSE(left_failure.achieved_available);
+  request = valid_request();
+  request.right = {10.0, 10.0, 10.0};
+  const auto right_failure = processor.process(request, kNow);
+  EXPECT_FALSE(right_failure.committed);
+  EXPECT_FALSE(right_failure.achieved_available);
   EXPECT_EQ(processor.left_q(), left_before);
   EXPECT_EQ(processor.right_q(), right_before);
+}
+
+TEST(PairedTransaction, ValidatesExpiryAndTimestampBoundariesWithoutOverflow)
+{
+  EXPECT_FALSE(openarm_ik_ros::PairedTransactionProcessor::valid_expiry_nanoseconds(0));
+  EXPECT_FALSE(openarm_ik_ros::PairedTransactionProcessor::valid_expiry_nanoseconds(-1));
+  EXPECT_TRUE(openarm_ik_ros::PairedTransactionProcessor::valid_expiry_nanoseconds(kExpiry));
+  EXPECT_TRUE(openarm_ik_ros::PairedTransactionProcessor::valid_expiry_nanoseconds(
+      openarm_ik_ros::kMaximumExpiryMilliseconds * 1000000LL));
+  openarm_ik_ros::PairedTransactionProcessor invalid_processor(0);
+  EXPECT_EQ(invalid_processor.process(valid_request(), kNow).reason, "invalid_expiry");
+
+  openarm_ik_ros::PairedTransactionProcessor processor(kExpiry);
+  auto request = valid_request();
+  request.stamp_nanoseconds = kNow - kExpiry;
+  EXPECT_TRUE(processor.process(request, kNow).committed);
+  request = valid_request();
+  request.stamp_nanoseconds = kNow - kExpiry - 1LL;
+  EXPECT_EQ(processor.process(request, kNow).reason, "stale_request");
+  request = valid_request();
+  request.stamp_nanoseconds = kNow + openarm_ik_ros::kMaximumFutureSkewNanoseconds;
+  EXPECT_TRUE(processor.process(request, kNow).committed);
+  request = valid_request();
+  request.stamp_nanoseconds = kNow + openarm_ik_ros::kMaximumFutureSkewNanoseconds + 1LL;
+  EXPECT_EQ(processor.process(request, kNow).reason, "future_request");
+  request = valid_request();
+  request.stamp_nanoseconds = 0;
+  EXPECT_EQ(processor.process(request, kNow).reason, "missing_stamp");
+  request.stamp_nanoseconds = -1;
+  EXPECT_EQ(processor.process(request, kNow).reason, "missing_stamp");
+  request = valid_request();
+  EXPECT_EQ(processor.process(request, 0).reason, "invalid_clock");
+  request.stamp_nanoseconds = std::numeric_limits<std::int64_t>::max();
+  EXPECT_EQ(processor.process(request, 1).reason, "future_request");
+  request.stamp_nanoseconds = 1;
+  EXPECT_EQ(
+    processor.process(request, std::numeric_limits<std::int64_t>::max()).reason,
+    "stale_request");
 }
 
 }  // namespace

@@ -14,6 +14,11 @@ extern "C" {
 namespace openarm_ik_ros
 {
 
+inline constexpr const char * kContinuityPolicy = "continuity-v1";
+inline constexpr std::int64_t kMinimumExpiryMilliseconds = 1LL;
+inline constexpr std::int64_t kMaximumExpiryMilliseconds = 60000LL;
+inline constexpr std::int64_t kMaximumFutureSkewNanoseconds = 1000000000LL;
+
 struct PairedTarget
 {
   std::size_t pose_count{};
@@ -27,6 +32,7 @@ struct TransactionResult
 {
   std::uint64_t sequence{};
   bool committed{};
+  bool achieved_available{};
   std::string reason;
   oa_ik_diagnostics left{};
   oa_ik_diagnostics right{};
@@ -37,10 +43,12 @@ class PairedTransactionProcessor
 public:
   explicit PairedTransactionProcessor(std::int64_t expiry_nanoseconds);
 
+  static bool valid_expiry_nanoseconds(std::int64_t expiry_nanoseconds) noexcept;
   TransactionResult process(const PairedTarget & request, std::int64_t now_nanoseconds);
   const std::array<double, OA_DOF> & left_q() const noexcept;
   const std::array<double, OA_DOF> & right_q() const noexcept;
   std::vector<std::string> joint_names() const;
+  static const char * continuity_policy() noexcept;
 
 private:
   static bool finite_target(const std::array<double, 3> & target) noexcept;

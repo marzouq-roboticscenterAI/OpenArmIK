@@ -12,6 +12,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -27,14 +28,22 @@ class OpenArmIkRosNode final : public rclcpp::Node
 public:
   OpenArmIkRosNode()
   : Node("openarm_ik_ros"),
-    processor_(declare_parameter<std::int64_t>("request_expiry_ms", 1000LL) * 1000000LL),
-    names_(processor_.joint_names())
+    processor_(openarm_ik_ros::kMinimumExpiryMilliseconds * 1000000LL)
   {
-    joint_publisher_ = create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10U);
+    const auto expiry_ms = declare_parameter<std::int64_t>("request_expiry_ms", 1000LL);
+    if (expiry_ms < openarm_ik_ros::kMinimumExpiryMilliseconds ||
+      expiry_ms > openarm_ik_ros::kMaximumExpiryMilliseconds)
+    {
+      throw std::invalid_argument("request_expiry_ms must be in [1, 60000]");
+    }
+    processor_ = PairedTransactionProcessor(expiry_ms * 1000000LL);
+    names_ = processor_.joint_names();
+    const auto qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+    joint_publisher_ = create_publisher<sensor_msgs::msg::JointState>("/joint_states", qos);
     diagnostics_publisher_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
-      "/openarm_ik/diagnostics", 10U);
+      "/openarm_ik/diagnostics", qos);
     target_subscription_ = create_subscription<geometry_msgs::msg::PoseArray>(
-      "/openarm_ik/paired_xyz", 10U,
+      "/openarm_ik/paired_xyz", qos,
       std::bind(&OpenArmIkRosNode::on_target, this, std::placeholders::_1));
     publish_state();
     publish_timer_ = create_wall_timer(
@@ -131,17 +140,29 @@ private:
     status.message = result.reason;
     status.values = {
       field("sequence", std::to_string(result.sequence)),
+      field("committed", result.committed ? "true" : "false"),
+      field("achieved_available", result.achieved_available ? "true" : "false"),
       field("backend", "virtual"),
       field("collision_checked", "false"),
       field("orientation", "free"),
+      field("redundancy_policy", PairedTransactionProcessor::continuity_policy()),
+      field("continuity_seed", "last_committed_joint_posture"),
+      field("position_tolerance_m", "0.0001"),
+      field("max_joint_step_rad", "0.15"),
+      field("damping_min", "0.0001"),
+      field("damping_max", "0.3"),
+      field("posture_weight", "1.0_each_joint"),
+      field("max_iterations", "300"),
       field("left_status", std::to_string(result.left.status)),
-      field("right_status", std::to_string(result.right.status)),
-      field("left_residual_m", scalar(result.left.position_error_m)),
-      field("right_residual_m", scalar(result.right.position_error_m)),
-      field("left_achieved_hand_tcp_xyz", tcp_xyz(result.left)),
-      field("right_achieved_hand_tcp_xyz", tcp_xyz(result.right)),
-      field("left_achieved_hand_tcp_matrix", tcp_matrix(result.left)),
-      field("right_achieved_hand_tcp_matrix", tcp_matrix(result.right))};
+      field("right_status", std::to_string(result.right.status))};
+    if (result.achieved_available) {
+      status.values.push_back(field("left_residual_m", scalar(result.left.position_error_m)));
+      status.values.push_back(field("right_residual_m", scalar(result.right.position_error_m)));
+      status.values.push_back(field("left_achieved_hand_tcp_xyz", tcp_xyz(result.left)));
+      status.values.push_back(field("right_achieved_hand_tcp_xyz", tcp_xyz(result.right)));
+      status.values.push_back(field("left_achieved_hand_tcp_matrix", tcp_matrix(result.left)));
+      status.values.push_back(field("right_achieved_hand_tcp_matrix", tcp_matrix(result.right)));
+    }
     diagnostic_msgs::msg::DiagnosticArray report;
     report.header.stamp = now();
     report.status.push_back(std::move(status));

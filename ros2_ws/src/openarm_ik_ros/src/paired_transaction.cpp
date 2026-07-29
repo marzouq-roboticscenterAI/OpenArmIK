@@ -7,15 +7,18 @@
 
 namespace openarm_ik_ros
 {
-namespace
-{
 constexpr const char * kWorldFrame = "world";
-constexpr std::int64_t kMaximumFutureSkewNanoseconds = 1000000000LL;
-}  // namespace
 
 PairedTransactionProcessor::PairedTransactionProcessor(const std::int64_t expiry_nanoseconds)
 : expiry_nanoseconds_(expiry_nanoseconds)
 {
+}
+
+bool PairedTransactionProcessor::valid_expiry_nanoseconds(
+  const std::int64_t expiry_nanoseconds) noexcept
+{
+  return expiry_nanoseconds >= kMinimumExpiryMilliseconds * 1000000LL &&
+         expiry_nanoseconds <= kMaximumExpiryMilliseconds * 1000000LL;
 }
 
 TransactionResult PairedTransactionProcessor::process(
@@ -26,6 +29,10 @@ TransactionResult PairedTransactionProcessor::process(
   initialize_diagnostics(&result.left);
   initialize_diagnostics(&result.right);
 
+  if (!valid_expiry_nanoseconds(expiry_nanoseconds_)) {
+    result.reason = "invalid_expiry";
+    return result;
+  }
   if (request.pose_count != 2U) {
     result.reason = "expected_exactly_two_poses";
     return result;
@@ -38,12 +45,17 @@ TransactionResult PairedTransactionProcessor::process(
     result.reason = "missing_stamp";
     return result;
   }
-  if (now_nanoseconds - request.stamp_nanoseconds > expiry_nanoseconds_) {
-    result.reason = "stale_request";
+  if (now_nanoseconds <= 0) {
+    result.reason = "invalid_clock";
     return result;
   }
-  if (request.stamp_nanoseconds - now_nanoseconds > kMaximumFutureSkewNanoseconds) {
-    result.reason = "future_request";
+  if (request.stamp_nanoseconds > now_nanoseconds) {
+    if (request.stamp_nanoseconds - now_nanoseconds > kMaximumFutureSkewNanoseconds) {
+      result.reason = "future_request";
+      return result;
+    }
+  } else if (now_nanoseconds - request.stamp_nanoseconds > expiry_nanoseconds_) {
+    result.reason = "stale_request";
     return result;
   }
   if (!finite_target(request.left) || !finite_target(request.right)) {
@@ -73,6 +85,7 @@ TransactionResult PairedTransactionProcessor::process(
   left_q_ = next_left;
   right_q_ = next_right;
   result.committed = true;
+  result.achieved_available = true;
   result.reason = "committed";
   return result;
 }
@@ -100,6 +113,11 @@ std::vector<std::string> PairedTransactionProcessor::joint_names() const
   names.emplace_back("openarm_left_finger_joint1");
   names.emplace_back("openarm_right_finger_joint1");
   return names;
+}
+
+const char * PairedTransactionProcessor::continuity_policy() noexcept
+{
+  return kContinuityPolicy;
 }
 
 bool PairedTransactionProcessor::finite_target(const std::array<double, 3> & target) noexcept
