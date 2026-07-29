@@ -90,6 +90,7 @@ public:
                           std::uint64_t now_ns, double dt_s) noexcept;
     void force_state(const JointVector &q, const JointVector &dq,
                      std::uint64_t now_ns) noexcept;
+    void materialize_stop(bool enabled_hold, std::uint64_t now_ns) noexcept;
     [[nodiscard]] oa_arm_snapshot snapshot(std::uint64_t now_ns,
                                            std::uint64_t timeout_ns) const noexcept;
     [[nodiscard]] JointVector measured_q() const noexcept;
@@ -177,7 +178,9 @@ public:
 
 private:
     void publish(std::uint32_t kind, oa_status cause, std::uint64_t command_id) noexcept;
-    void latch_fault(oa_status cause) noexcept;
+    void materialize_fault_stop(bool enabled_hold) noexcept;
+    void latch_fault(oa_status cause,
+                     bool controlled_stop_available = false) noexcept;
     [[nodiscard]] bool fresh() const noexcept;
     [[nodiscard]] bool healthy() const noexcept;
     [[nodiscard]] bool disabled() const noexcept;

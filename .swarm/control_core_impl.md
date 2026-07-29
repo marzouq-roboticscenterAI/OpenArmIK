@@ -129,3 +129,10 @@ policy now have explicit enforcement and regression coverage. A high-volume
 create/destroy regression checks all three registries return to zero active
 entries and that nonsanitized resident memory remains bounded. The final matrix
 contains three executables rather than two.
+
+The final stop-policy correction materializes an encoder-visible zero-velocity
+hold for controlled producer/cycle watchdog stops. Untrusted missing/skewed
+feedback, partial sends, and motor faults deterministically fall back to an
+encoder-visible zero-velocity two-arm disable. Cause-specific tests cover
+producer expiry, command expiry, missed cycles, stale feedback, partial sends,
+skew, and motor fault status.

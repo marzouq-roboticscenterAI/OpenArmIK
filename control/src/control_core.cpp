@@ -321,6 +321,15 @@ void ArmRuntime::force_state(const JointVector &q, const JointVector &dq,
     ++feedback_seq_;
 }
 
+void ArmRuntime::materialize_stop(const bool enabled_hold,
+                                  const std::uint64_t now_ns) noexcept {
+    const JointVector held_q = measured_q();
+    set_enabled(enabled_hold);
+    for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
+        motor_[joint].force_state(held_q[joint], 0.0, now_ns);
+    }
+}
+
 oa_arm_snapshot ArmRuntime::snapshot(const std::uint64_t now_ns,
                                      const std::uint64_t timeout_ns) const noexcept {
     oa_arm_snapshot out{};
@@ -812,7 +821,7 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
     if ((lifecycle_ == OA_LIFECYCLE_ARMED_IDLE ||
          lifecycle_ == OA_LIFECYCLE_EXECUTING) &&
         now_ns_ - previous_ns > options_.cycle_ns) {
-        latch_fault(OA_ETIMEOUT);
+        latch_fault(OA_ETIMEOUT, true);
         return OA_ETIMEOUT;
     }
 
@@ -820,11 +829,11 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
     std::array<JointVector, 2> dq_reference{};
     if (lifecycle_ == OA_LIFECYCLE_EXECUTING) {
         if (now_ns_ > producer_deadline_ns_) {
-            latch_fault(OA_ESTALE);
+            latch_fault(OA_ESTALE, true);
             return OA_ESTALE;
         }
         if (now_ns_ > command_expiry_ns_) {
-            latch_fault(OA_ETIMEOUT);
+            latch_fault(OA_ETIMEOUT, true);
             return OA_ETIMEOUT;
         }
         if (!healthy()) {
@@ -1018,7 +1027,7 @@ oa_status Controller::heartbeat(const std::uint64_t command_id,
         return OA_ESTATE;
     }
     if (producer_deadline_ns <= now_ns_) {
-        latch_fault(OA_ESTALE);
+        latch_fault(OA_ESTALE, true);
         return OA_ESTALE;
     }
     producer_deadline_ns_ = producer_deadline_ns;
@@ -1154,18 +1163,28 @@ void Controller::publish(const std::uint32_t kind, const oa_status cause,
     ++event_count_;
 }
 
-void Controller::latch_fault(const oa_status cause) noexcept {
+void Controller::materialize_fault_stop(const bool enabled_hold) noexcept {
+    for (auto &runtime : arm_) {
+        if (options_.backend == OA_BACKEND_VIRTUAL) {
+            runtime.materialize_stop(enabled_hold, now_ns_);
+        } else {
+            runtime.set_enabled(false);
+        }
+    }
+}
+
+void Controller::latch_fault(const oa_status cause,
+                             const bool controlled_stop_available) noexcept {
     const auto failed_id = command_id_;
-    const bool controlled_stop = executing_.has_value() &&
+    /* Only coherent watchdog paths may retain an enabled hold. Transport or
+     * motor-integrity faults always take the disabled fallback. */
+    const bool controlled_stop = controlled_stop_available &&
+                                 options_.backend == OA_BACKEND_VIRTUAL &&
+                                 executing_.has_value() &&
                                  active_stop_kind_ == OA_STOP_CONTROLLED;
     executing_.reset();
     command_id_ = 0U;
-    for (auto &runtime : arm_) {
-        runtime.set_enabled(controlled_stop);
-        if (options_.backend == OA_BACKEND_VIRTUAL && cause == OA_ETIMEOUT) {
-            runtime.force_state(runtime.measured_q(), JointVector{}, now_ns_);
-        }
-    }
+    materialize_fault_stop(controlled_stop);
     active_stop_kind_ = OA_STOP_DISABLE;
     lifecycle_ = OA_LIFECYCLE_FAULT;
     outstanding_nonce_ = ++nonce_counter_;

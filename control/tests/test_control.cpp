@@ -966,6 +966,131 @@ void test_registry_storage_is_bounded() {
 #endif
 }
 
+void check_materialized_fault_stop(Fixture &fixture, const bool enabled_hold,
+                                   const std::int32_t fault_side = -1,
+                                   const std::int32_t fault_joint = -1) {
+    oa_snapshot state{};
+    init(state);
+    CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+    CHECK(state.lifecycle == OA_LIFECYCLE_FAULT);
+    for (std::size_t side = 0U; side < 2U; ++side) {
+        for (std::size_t joint = 0U; joint < 7U; ++joint) {
+            const bool faulted = static_cast<std::int32_t>(side) == fault_side &&
+                                 static_cast<std::int32_t>(joint) == fault_joint;
+            CHECK(state.arm[side].status[joint] ==
+                  (faulted ? 8U : (enabled_hold ? 1U : 0U)));
+            CHECK(std::abs(state.arm[side].dq[joint]) <= 1.2e-2);
+        }
+    }
+}
+
+void test_fault_stop_policy_by_cause() {
+    for (const std::uint32_t stop_kind : {OA_STOP_DISABLE, OA_STOP_CONTROLLED}) {
+        Fixture fixture;
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.2);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = stop_kind;
+        request.producer_deadline_ns = 10000000U;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ESTALE);
+        check_materialized_fault_stop(fixture, stop_kind == OA_STOP_CONTROLLED);
+        oa_motion_plan_destroy(plan);
+    }
+    {
+        Fixture fixture;
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.2);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        request.expiry_ns = report.duration_ns;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        std::uint64_t now = 0U;
+        while (now + 10000000U <= request.expiry_ns) {
+            now += 10000000U;
+            CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+        }
+        CHECK(oa_controller_advance(fixture.controller, now + 10000000U) == OA_ETIMEOUT);
+        check_materialized_fault_stop(fixture, true);
+        oa_motion_plan_destroy(plan);
+    }
+    {
+        Fixture fixture;
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.2);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_OK);
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = OA_RIGHT;
+        fault.drop_mask = 1U;
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ESTALE);
+        check_materialized_fault_stop(fixture, false);
+        oa_motion_plan_destroy(plan);
+    }
+    {
+        Fixture fixture;
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.2);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_OK);
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = OA_LEFT;
+        fault.command_fail_mask = 1U;
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ECAN);
+        check_materialized_fault_stop(fixture, false);
+        oa_motion_plan_destroy(plan);
+    }
+    {
+        Fixture fixture;
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.2);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_OK);
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = OA_RIGHT;
+        fault.feedback_delay_ns = 2000000U;
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ECAN);
+        check_materialized_fault_stop(fixture, false);
+        oa_motion_plan_destroy(plan);
+    }
+    {
+        Fixture fixture;
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.2);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_OK);
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = OA_RIGHT;
+        fault.fault_mask = 1U << 3U;
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_EFAULT);
+        check_materialized_fault_stop(fixture, false, 1, 3);
+        oa_motion_plan_destroy(plan);
+    }
+}
+
 void test_cycle_deadline_dwell_and_stop_policy() {
     {
         Fixture fixture;
@@ -1053,6 +1178,7 @@ int main() {
     test_watchdog_estop_event_overflow_and_concurrency();
     test_invalid_handles_and_transactional_create();
     test_registry_storage_is_bounded();
+    test_fault_stop_policy_by_cause();
     test_cycle_deadline_dwell_and_stop_policy();
     std::puts("openarm_control: all tests passed");
     return 0;
