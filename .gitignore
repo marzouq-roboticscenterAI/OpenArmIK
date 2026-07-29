@@ -1,0 +1,22 @@
+# Canonical upstream repositories are downloaded locally and recorded by commit.
+upstream/
+
+# CMake and ROS 2 build products.
+build/
+install/
+log/
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Coverage, sanitizer, and test artifacts.
+coverage/
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+
+# Editor and OS noise.
+.vscode/
+.idea/
+*~
