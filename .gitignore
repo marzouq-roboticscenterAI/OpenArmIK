@@ -11,6 +11,7 @@ ros2_ws/install/
 ros2_ws/log/
 ros2_ws/log_coverage/
 ros2_ws/model_build/
+ros2_ws/native_build/
 
 # Coverage, sanitizer, and test artifacts.
 coverage/
