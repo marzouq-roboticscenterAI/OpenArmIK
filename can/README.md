@@ -21,6 +21,35 @@ The feedback decoder rejects extended/RTR/error IDs, nonstandard IDs, wrong DLC,
 wrong arbitration IDs, and a mismatched embedded motor-ID nibble.  It preserves
 the complete status/fault nibble.  Known fault nibbles return `OA_CAN_EFAULT`
 after filling the decoded feedback record; unknown nibbles return `OA_CAN_EFRAME`.
+MOS and rotor/coil temperatures are preserved as the protocol's direct unsigned
+byte readings in degrees Celsius; the codec does not invent a safe thermal
+threshold.
+
+The typed DaMiao register API knows the exact pinned RID set, each RID's wire
+type, and the read/write classification published by the upstream CLI.  Typed
+queries and writes reject unknown RIDs, type mismatches, non-finite floats, known
+register-range violations, invalid IDs, and writes to read-only registers.
+Response decoding correlates arbitration ID, echoed target ID, opcode, RID, wire
+type, and DLC before exposing a value.  Integer and IEEE-754 binary32 payloads
+are encoded explicitly little-endian.  The older untyped query builder remains
+available for ABI compatibility.
+
+`oa_can_mit_profile_from_registers` only constructs a complete profile from
+correlated PMAX, VMAX, and TMAX query results for one motor.  The profile-aware
+MIT and feedback functions bind that profile to the queried send/receive IDs and
+use those queried spans instead of a motor-family guess.  Profile-aware MIT,
+POS_VEL, and POS_FORCE encoders always reject values
+outside the verified mapping spans; they have no saturation mode.  POS_VEL's
+second float is a non-negative maximum travel speed, not a signed velocity
+target.  POS_FORCE uses the documented non-negative speed limit and `[0,1]`
+per-unit current limit, not amperes.
+
+Set-zero (`0xFE`), clear-error (`0xFB`), register-write (`0x55`), and flash-save
+(`0xAA`) builders only construct frames.  They do not transmit them and do not
+make those operations safe.  Set-zero saves the current encoder pose as zero; it
+does not find robot home.  Flash-save and set-zero belong only in an isolated,
+explicit commissioning lifecycle after disable and readback.  The in-memory
+diagnostics transport continues to reject all of these state-changing frames.
 
 The commissioned manifest contains local expected-ID, decode-range, joint-map,
 and serial metadata.  `oa_can_probe_expected` verifies only that post-request,

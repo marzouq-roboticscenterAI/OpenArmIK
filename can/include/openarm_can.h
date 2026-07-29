@@ -44,6 +44,68 @@ typedef uint32_t oa_can_range_policy;
 #define OA_CAN_RANGE_REJECT UINT32_C(0)
 #define OA_CAN_RANGE_SATURATE UINT32_C(1)
 
+typedef uint32_t oa_can_register_value_type;
+#define OA_CAN_REGISTER_U32 UINT32_C(1)
+#define OA_CAN_REGISTER_F32 UINT32_C(2)
+
+typedef uint32_t oa_can_register_operation;
+#define OA_CAN_REGISTER_QUERY UINT32_C(0x33)
+#define OA_CAN_REGISTER_WRITE UINT32_C(0x55)
+
+typedef uint32_t oa_can_register_id;
+#define OA_CAN_RID_UV_VALUE UINT32_C(0)
+#define OA_CAN_RID_KT_VALUE UINT32_C(1)
+#define OA_CAN_RID_OT_VALUE UINT32_C(2)
+#define OA_CAN_RID_OC_VALUE UINT32_C(3)
+#define OA_CAN_RID_ACC UINT32_C(4)
+#define OA_CAN_RID_DEC UINT32_C(5)
+#define OA_CAN_RID_MAX_SPD UINT32_C(6)
+#define OA_CAN_RID_MST_ID UINT32_C(7)
+#define OA_CAN_RID_ESC_ID UINT32_C(8)
+#define OA_CAN_RID_TIMEOUT UINT32_C(9)
+#define OA_CAN_RID_CTRL_MODE UINT32_C(10)
+#define OA_CAN_RID_DAMP UINT32_C(11)
+#define OA_CAN_RID_INERTIA UINT32_C(12)
+#define OA_CAN_RID_HW_VER UINT32_C(13)
+#define OA_CAN_RID_SW_VER UINT32_C(14)
+#define OA_CAN_RID_SERIAL_NUMBER UINT32_C(15)
+#define OA_CAN_RID_NPP UINT32_C(16)
+#define OA_CAN_RID_RS UINT32_C(17)
+#define OA_CAN_RID_LS UINT32_C(18)
+#define OA_CAN_RID_FLUX UINT32_C(19)
+#define OA_CAN_RID_GEAR_RATIO UINT32_C(20)
+#define OA_CAN_RID_PMAX UINT32_C(21)
+#define OA_CAN_RID_VMAX UINT32_C(22)
+#define OA_CAN_RID_TMAX UINT32_C(23)
+#define OA_CAN_RID_I_BW UINT32_C(24)
+#define OA_CAN_RID_KP_ASR UINT32_C(25)
+#define OA_CAN_RID_KI_ASR UINT32_C(26)
+#define OA_CAN_RID_KP_APR UINT32_C(27)
+#define OA_CAN_RID_KI_APR UINT32_C(28)
+#define OA_CAN_RID_OV_VALUE UINT32_C(29)
+#define OA_CAN_RID_GREF UINT32_C(30)
+#define OA_CAN_RID_DETA UINT32_C(31)
+#define OA_CAN_RID_V_BW UINT32_C(32)
+#define OA_CAN_RID_IQ_C1 UINT32_C(33)
+#define OA_CAN_RID_VL_C1 UINT32_C(34)
+#define OA_CAN_RID_CAN_BR UINT32_C(35)
+#define OA_CAN_RID_SUB_VER UINT32_C(36)
+#define OA_CAN_RID_U_OFF UINT32_C(50)
+#define OA_CAN_RID_V_OFF UINT32_C(51)
+#define OA_CAN_RID_K1 UINT32_C(52)
+#define OA_CAN_RID_K2 UINT32_C(53)
+#define OA_CAN_RID_M_OFF UINT32_C(54)
+#define OA_CAN_RID_DIRECTION UINT32_C(55)
+#define OA_CAN_RID_MOTOR_POSITION UINT32_C(80)
+#define OA_CAN_RID_OUTPUT_POSITION UINT32_C(81)
+
+#define OA_CAN_PROFILE_PMAX_VERIFIED (UINT32_C(1) << 0)
+#define OA_CAN_PROFILE_VMAX_VERIFIED (UINT32_C(1) << 1)
+#define OA_CAN_PROFILE_TMAX_VERIFIED (UINT32_C(1) << 2)
+#define OA_CAN_PROFILE_ALL_VERIFIED \
+    (OA_CAN_PROFILE_PMAX_VERIFIED | OA_CAN_PROFILE_VMAX_VERIFIED | \
+     OA_CAN_PROFILE_TMAX_VERIFIED)
+
 typedef uint8_t oa_can_feedback_status;
 #define OA_CAN_FEEDBACK_DISABLED UINT8_C(0)
 #define OA_CAN_FEEDBACK_ENABLED UINT8_C(1)
@@ -122,6 +184,89 @@ typedef struct oa_can_feedback {
     uint8_t mos_temperature_c;
     uint8_t rotor_temperature_c;
 } oa_can_feedback;
+
+typedef struct oa_can_register_info {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    oa_can_register_id register_id;
+    oa_can_register_value_type value_type;
+    uint32_t writable;
+} oa_can_register_info;
+
+typedef struct oa_can_register_request {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint16_t send_id;
+    uint16_t receive_id;
+    oa_can_register_id register_id;
+    oa_can_register_value_type value_type;
+} oa_can_register_request;
+
+typedef struct oa_can_register_write {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint16_t send_id;
+    uint16_t reserved;
+    oa_can_register_id register_id;
+    oa_can_register_value_type value_type;
+    uint32_t value_u32;
+    float value_f32;
+} oa_can_register_write;
+
+typedef struct oa_can_register_value {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint16_t receive_id;
+    uint16_t target_send_id;
+    oa_can_register_id register_id;
+    oa_can_register_value_type value_type;
+    oa_can_register_operation operation;
+    uint32_t raw_value;
+    uint32_t value_u32;
+    float value_f32;
+} oa_can_register_value;
+
+typedef struct oa_can_mit_profile {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint16_t target_send_id;
+    uint16_t receive_id;
+    double pmax_rad;
+    double vmax_rad_s;
+    double tmax_nm;
+    uint32_t verified_mask;
+} oa_can_mit_profile;
+
+typedef struct oa_can_mit_profile_command {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint16_t send_id;
+    uint16_t reserved;
+    double position_rad;
+    double velocity_rad_s;
+    double kp;
+    double kd;
+    double torque_nm;
+} oa_can_mit_profile_command;
+
+typedef struct oa_can_pos_vel_command {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint16_t send_id;
+    uint16_t reserved;
+    double position_rad;
+    double max_velocity_rad_s;
+} oa_can_pos_vel_command;
+
+typedef struct oa_can_pos_force_command {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint16_t send_id;
+    uint16_t reserved;
+    double position_rad;
+    double max_velocity_rad_s;
+    double current_limit_per_unit;
+} oa_can_pos_force_command;
 
 typedef struct oa_can_joint_mapping {
     uint32_t struct_size;
@@ -221,8 +366,42 @@ oa_can_status oa_can_decode_feedback(const oa_can_frame *frame,
                                      uint8_t expected_motor_id,
                                      oa_can_motor_type motor_type,
                                      oa_can_feedback *out_feedback);
+/* Typed RID metadata and codecs; these construct/decode frames but never transmit. */
+oa_can_status oa_can_register_info_for_id(oa_can_register_id register_id,
+                                           oa_can_register_info *out_info);
+oa_can_status oa_can_make_register_query_typed(const oa_can_register_request *request,
+                                                oa_can_frame *out_frame);
+oa_can_status oa_can_make_register_write(const oa_can_register_write *write,
+                                         oa_can_frame *out_frame);
+oa_can_status oa_can_decode_register_response(const oa_can_frame *frame,
+                                               const oa_can_register_request *expected,
+                                               oa_can_register_operation expected_operation,
+                                               oa_can_register_value *out_value);
+oa_can_status oa_can_mit_profile_from_registers(const oa_can_register_value *pmax,
+                                                const oa_can_register_value *vmax,
+                                                const oa_can_register_value *tmax,
+                                                oa_can_mit_profile *out_profile);
+/* Profile-aware motion codecs reject every out-of-profile input; no saturation. */
+oa_can_status oa_can_encode_mit_profile(const oa_can_mit_profile_command *command,
+                                        const oa_can_mit_profile *profile,
+                                        oa_can_frame *out_frame);
+oa_can_status oa_can_decode_feedback_profile(const oa_can_frame *frame,
+                                              uint16_t expected_receive_id,
+                                              uint8_t expected_motor_id,
+                                              const oa_can_mit_profile *profile,
+                                              oa_can_feedback *out_feedback);
+oa_can_status oa_can_encode_pos_vel(const oa_can_pos_vel_command *command,
+                                    const oa_can_mit_profile *profile,
+                                    oa_can_frame *out_frame);
+oa_can_status oa_can_encode_pos_force(const oa_can_pos_force_command *command,
+                                      const oa_can_mit_profile *profile,
+                                      oa_can_frame *out_frame);
 oa_can_status oa_can_make_enable(uint16_t send_id, oa_can_frame *out_frame);
 oa_can_status oa_can_make_disable(uint16_t send_id, oa_can_frame *out_frame);
+/* Commissioning-only primitives: set-zero does not discover physical home. */
+oa_can_status oa_can_make_set_zero(uint16_t send_id, oa_can_frame *out_frame);
+oa_can_status oa_can_make_clear_error(uint16_t send_id, oa_can_frame *out_frame);
+oa_can_status oa_can_make_save_parameters(uint16_t send_id, oa_can_frame *out_frame);
 oa_can_status oa_can_make_refresh_status(uint16_t send_id, oa_can_frame *out_frame);
 oa_can_status oa_can_make_register_query(uint16_t send_id, uint8_t register_id,
                                          oa_can_frame *out_frame);

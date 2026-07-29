@@ -51,6 +51,53 @@ static oa_can_frame feedback_frame(uint16_t receive_id, uint8_t motor_id, uint8_
     return frame;
 }
 
+static uint32_t raw_float(float value) {
+    uint32_t raw;
+    (void)memcpy(&raw, &value, sizeof(raw));
+    return raw;
+}
+
+static oa_can_frame register_frame(uint16_t receive_id, uint16_t send_id,
+                                   oa_can_register_operation operation,
+                                   oa_can_register_id register_id, uint32_t raw) {
+    oa_can_frame frame;
+    INITIALIZE(frame);
+    frame.can_id = receive_id;
+    frame.dlc = 8u;
+    frame.data[0] = (uint8_t)send_id;
+    frame.data[1] = (uint8_t)(send_id >> 8u);
+    frame.data[2] = (uint8_t)operation;
+    frame.data[3] = (uint8_t)register_id;
+    frame.data[4] = (uint8_t)raw;
+    frame.data[5] = (uint8_t)(raw >> 8u);
+    frame.data[6] = (uint8_t)(raw >> 16u);
+    frame.data[7] = (uint8_t)(raw >> 24u);
+    return frame;
+}
+
+static oa_can_register_request register_request(oa_can_register_id register_id,
+                                                oa_can_register_value_type value_type) {
+    oa_can_register_request request;
+    INITIALIZE(request);
+    request.send_id = 0x123u;
+    request.receive_id = 0x321u;
+    request.register_id = register_id;
+    request.value_type = value_type;
+    return request;
+}
+
+static oa_can_mit_profile dynamic_profile(void) {
+    oa_can_mit_profile profile;
+    INITIALIZE(profile);
+    profile.target_send_id = 1u;
+    profile.receive_id = 0x11u;
+    profile.pmax_rad = 20.0;
+    profile.vmax_rad_s = 20.0;
+    profile.tmax_nm = 30.0;
+    profile.verified_mask = OA_CAN_PROFILE_ALL_VERIFIED;
+    return profile;
+}
+
 static double lsb(double lower, double upper, unsigned int bits) {
     return (upper - lower) / (double)((UINT32_C(1) << bits) - UINT32_C(1));
 }
@@ -274,6 +321,291 @@ static void test_public_integer_widths(void) {
     CHECK(sizeof(oa_can_range_policy) == sizeof(uint32_t));
     CHECK(sizeof(oa_can_fake_lifecycle) == sizeof(uint32_t));
     CHECK(sizeof(oa_can_feedback_status) == sizeof(uint8_t));
+    CHECK(sizeof(oa_can_register_value_type) == sizeof(uint32_t));
+    CHECK(sizeof(oa_can_register_operation) == sizeof(uint32_t));
+    CHECK(sizeof(oa_can_register_id) == sizeof(uint32_t));
+}
+
+static void test_register_codecs_and_dynamic_profile(void) {
+    oa_can_register_info info;
+    oa_can_register_request request = register_request(OA_CAN_RID_PMAX, OA_CAN_REGISTER_F32);
+    oa_can_register_write write;
+    oa_can_register_value pmax;
+    oa_can_register_value vmax;
+    oa_can_register_value tmax;
+    oa_can_register_value register_value;
+    oa_can_mit_profile profile;
+    oa_can_mit_profile_command mit;
+    oa_can_pos_vel_command pos_vel;
+    oa_can_pos_force_command pos_force;
+    oa_can_frame frame;
+    oa_can_feedback feedback;
+    const uint8_t mit_golden[8] = {0xbfu, 0xffu, 0xbfu, 0xf7u,
+                                   0xffu, 0x7fu, 0xf3u, 0xffu};
+    const uint8_t pos_vel_golden[8] = {0x00u, 0x00u, 0xc0u, 0x3fu,
+                                       0x00u, 0x00u, 0x10u, 0x40u};
+    const uint8_t pos_force_golden[8] = {0x00u, 0x00u, 0xc0u, 0xbfu,
+                                         0xe1u, 0x00u, 0x88u, 0x13u};
+    INITIALIZE(info);
+    INITIALIZE(frame);
+    CHECK(oa_can_register_info_for_id(OA_CAN_RID_SERIAL_NUMBER, &info) == OA_CAN_OK);
+    CHECK(info.value_type == OA_CAN_REGISTER_U32 && info.writable == 0u);
+    CHECK(oa_can_register_info_for_id(OA_CAN_RID_PMAX, &info) == OA_CAN_OK);
+    CHECK(info.value_type == OA_CAN_REGISTER_F32 && info.writable == 1u);
+    CHECK(oa_can_register_info_for_id(49u, &info) == OA_CAN_EINVAL);
+
+    CHECK(oa_can_make_register_query_typed(&request, &frame) == OA_CAN_OK);
+    CHECK(frame.can_id == 0x7ffu && frame.dlc == 8u && frame.data[0] == 0x23u &&
+          frame.data[1] == 0x01u && frame.data[2] == 0x33u && frame.data[3] == 21u);
+    INITIALIZE(write);
+    write.send_id = 0x123u;
+    write.register_id = OA_CAN_RID_PMAX;
+    write.value_type = OA_CAN_REGISTER_F32;
+    write.value_f32 = 12.5f;
+    CHECK(oa_can_make_register_write(&write, &frame) == OA_CAN_OK);
+    CHECK(frame.can_id == 0x7ffu && frame.data[0] == 0x23u && frame.data[1] == 0x01u &&
+          frame.data[2] == 0x55u && frame.data[3] == 21u && frame.data[4] == 0x00u &&
+          frame.data[5] == 0x00u && frame.data[6] == 0x48u && frame.data[7] == 0x41u);
+    write.register_id = OA_CAN_RID_CTRL_MODE;
+    write.value_type = OA_CAN_REGISTER_U32;
+    write.value_f32 = 0.0f;
+    write.value_u32 = 1u;
+    CHECK(oa_can_make_register_write(&write, &frame) == OA_CAN_OK);
+    CHECK(frame.data[3] == 10u && frame.data[4] == 1u && frame.data[5] == 0u &&
+          frame.data[6] == 0u && frame.data[7] == 0u);
+    request.register_id = OA_CAN_RID_CTRL_MODE;
+    request.value_type = OA_CAN_REGISTER_U32;
+    frame = register_frame(request.receive_id, request.send_id, OA_CAN_REGISTER_WRITE,
+                           OA_CAN_RID_CTRL_MODE, 1u);
+    INITIALIZE(register_value);
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_WRITE,
+                                          &register_value) == OA_CAN_OK);
+    CHECK(register_value.operation == OA_CAN_REGISTER_WRITE &&
+          register_value.value_type == OA_CAN_REGISTER_U32 &&
+          register_value.value_u32 == 1u && register_value.raw_value == 1u);
+    request.register_id = OA_CAN_RID_SERIAL_NUMBER;
+    frame = register_frame(request.receive_id, request.send_id, OA_CAN_REGISTER_QUERY,
+                           OA_CAN_RID_SERIAL_NUMBER, UINT32_C(0x12345678));
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_QUERY,
+                                          &register_value) == OA_CAN_OK);
+    CHECK(register_value.value_u32 == UINT32_C(0x12345678));
+    CHECK(oa_can_make_set_zero(0x123u, &frame) == OA_CAN_OK);
+    CHECK(frame.can_id == 0x123u && frame.data[7] == 0xfeu);
+    CHECK(oa_can_make_clear_error(0x123u, &frame) == OA_CAN_OK);
+    CHECK(frame.can_id == 0x123u && frame.data[7] == 0xfbu);
+    CHECK(oa_can_make_save_parameters(0x123u, &frame) == OA_CAN_OK);
+    CHECK(frame.can_id == 0x7ffu && frame.data[0] == 0x23u && frame.data[1] == 0x01u &&
+          frame.data[2] == 0xaau && frame.data[3] == 0u && frame.data[7] == 0u);
+
+    INITIALIZE(pmax);
+    request.send_id = 5u;
+    request.receive_id = 0x15u;
+    request.register_id = OA_CAN_RID_PMAX;
+    request.value_type = OA_CAN_REGISTER_F32;
+    frame = register_frame(request.receive_id, request.send_id, OA_CAN_REGISTER_QUERY,
+                           OA_CAN_RID_PMAX, raw_float(20.0f));
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_QUERY, &pmax) ==
+          OA_CAN_OK);
+    CHECK(pmax.receive_id == request.receive_id && pmax.target_send_id == request.send_id &&
+          pmax.register_id == OA_CAN_RID_PMAX && pmax.value_type == OA_CAN_REGISTER_F32 &&
+          pmax.operation == OA_CAN_REGISTER_QUERY && pmax.value_f32 == 20.0f);
+    request.register_id = OA_CAN_RID_VMAX;
+    INITIALIZE(vmax);
+    frame = register_frame(request.receive_id, request.send_id, OA_CAN_REGISTER_QUERY,
+                           OA_CAN_RID_VMAX, raw_float(20.0f));
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_QUERY, &vmax) ==
+          OA_CAN_OK);
+    request.register_id = OA_CAN_RID_TMAX;
+    INITIALIZE(tmax);
+    frame = register_frame(request.receive_id, request.send_id, OA_CAN_REGISTER_QUERY,
+                           OA_CAN_RID_TMAX, raw_float(30.0f));
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_QUERY, &tmax) ==
+          OA_CAN_OK);
+    INITIALIZE(profile);
+    CHECK(oa_can_mit_profile_from_registers(&pmax, &vmax, &tmax, &profile) == OA_CAN_OK);
+    CHECK(profile.target_send_id == 5u && profile.receive_id == 0x15u &&
+          profile.pmax_rad == 20.0 && profile.vmax_rad_s == 20.0 &&
+          profile.tmax_nm == 30.0 && profile.verified_mask == OA_CAN_PROFILE_ALL_VERIFIED);
+
+    INITIALIZE(mit);
+    mit.send_id = 5u;
+    mit.position_rad = 10.0;
+    mit.velocity_rad_s = 10.0;
+    mit.kp = 250.0;
+    mit.kd = 2.5;
+    mit.torque_nm = -15.0;
+    INITIALIZE(frame);
+    CHECK(oa_can_encode_mit_profile(&mit, &profile, &frame) == OA_CAN_OK);
+    CHECK(frame.can_id == 5u && memcmp(frame.data, mit_golden, sizeof(mit_golden)) == 0);
+    frame = feedback_frame(0x15u, 5u, OA_CAN_FEEDBACK_ENABLED,
+                           0xbfffu, 0xbffu, 0x3ffu);
+    INITIALIZE(feedback);
+    CHECK(oa_can_decode_feedback_profile(&frame, 0x15u, 5u, &profile, &feedback) == OA_CAN_OK);
+    CHECK(feedback.motor_id == 5u && feedback.status_nibble == OA_CAN_FEEDBACK_ENABLED &&
+          feedback.mos_temperature_c == 42u && feedback.rotor_temperature_c == 51u);
+    CHECK(fabs(feedback.position_rad - 10.0) <= lsb(-20.0, 20.0, 16u));
+    CHECK(fabs(feedback.velocity_rad_s - 10.0) <= lsb(-20.0, 20.0, 12u));
+    CHECK(fabs(feedback.torque_nm + 15.0) <= lsb(-30.0, 30.0, 12u));
+
+    INITIALIZE(pos_vel);
+    pos_vel.send_id = 5u;
+    pos_vel.position_rad = 1.5;
+    pos_vel.max_velocity_rad_s = 2.25;
+    CHECK(oa_can_encode_pos_vel(&pos_vel, &profile, &frame) == OA_CAN_OK);
+    CHECK(frame.can_id == 0x105u && memcmp(frame.data, pos_vel_golden, sizeof(pos_vel_golden)) == 0);
+    INITIALIZE(pos_force);
+    pos_force.send_id = 5u;
+    pos_force.position_rad = -1.5;
+    pos_force.max_velocity_rad_s = 2.25;
+    pos_force.current_limit_per_unit = 0.5;
+    CHECK(oa_can_encode_pos_force(&pos_force, &profile, &frame) == OA_CAN_OK);
+    CHECK(frame.can_id == 0x305u &&
+          memcmp(frame.data, pos_force_golden, sizeof(pos_force_golden)) == 0);
+}
+
+static void test_new_codec_malformed_and_canaries(void) {
+    oa_can_register_request request = register_request(OA_CAN_RID_PMAX, OA_CAN_REGISTER_F32);
+    oa_can_register_write write;
+    oa_can_mit_profile profile = dynamic_profile();
+    oa_can_mit_profile_command mit;
+    oa_can_pos_vel_command pos_vel;
+    oa_can_pos_force_command pos_force;
+    oa_can_feedback feedback;
+    oa_can_frame frame;
+    struct guarded_frame {
+        oa_can_frame value;
+        uint64_t canary;
+    } guarded_frame;
+    struct guarded_value {
+        oa_can_register_value value;
+        uint64_t canary;
+    } guarded_value;
+    struct guarded_profile {
+        oa_can_mit_profile value;
+        uint64_t canary;
+    } guarded_profile;
+    unsigned char frame_snapshot[sizeof(guarded_frame)];
+    unsigned char value_snapshot[sizeof(guarded_value)];
+    unsigned char profile_snapshot[sizeof(guarded_profile)];
+
+    (void)memset(&guarded_frame, 0xa5, sizeof(guarded_frame));
+    guarded_frame.value.struct_size = (uint32_t)sizeof(guarded_frame.value);
+    guarded_frame.value.abi_version = OA_CAN_ABI_VERSION;
+    (void)memcpy(frame_snapshot, &guarded_frame, sizeof(frame_snapshot));
+    request.value_type = OA_CAN_REGISTER_U32;
+    CHECK(oa_can_make_register_query_typed(&request, &guarded_frame.value) == OA_CAN_EINVAL);
+    CHECK(memcmp(frame_snapshot, &guarded_frame, sizeof(frame_snapshot)) == 0);
+    request.value_type = OA_CAN_REGISTER_F32;
+    request.register_id = 49u;
+    CHECK(oa_can_make_register_query_typed(&request, &guarded_frame.value) == OA_CAN_EINVAL);
+    request.register_id = OA_CAN_RID_PMAX;
+    request.abi_version = OA_CAN_ABI_VERSION + 1u;
+    CHECK(oa_can_make_register_query_typed(&request, &guarded_frame.value) == OA_CAN_EINVAL);
+    request.abi_version = OA_CAN_ABI_VERSION;
+
+    INITIALIZE(write);
+    write.send_id = 1u;
+    write.register_id = OA_CAN_RID_SERIAL_NUMBER;
+    write.value_type = OA_CAN_REGISTER_U32;
+    write.value_u32 = 1u;
+    CHECK(oa_can_make_register_write(&write, &guarded_frame.value) == OA_CAN_EINVAL);
+    write.register_id = OA_CAN_RID_CTRL_MODE;
+    write.value_u32 = 5u;
+    CHECK(oa_can_make_register_write(&write, &guarded_frame.value) == OA_CAN_ERANGE);
+    write.register_id = OA_CAN_RID_PMAX;
+    write.value_type = OA_CAN_REGISTER_F32;
+    write.value_u32 = 0u;
+    write.value_f32 = NAN;
+    CHECK(oa_can_make_register_write(&write, &guarded_frame.value) == OA_CAN_EINVAL);
+    write.value_f32 = -1.0f;
+    CHECK(oa_can_make_register_write(&write, &guarded_frame.value) == OA_CAN_ERANGE);
+
+    frame = register_frame(request.receive_id, request.send_id, OA_CAN_REGISTER_QUERY,
+                           OA_CAN_RID_PMAX, raw_float(20.0f));
+    (void)memset(&guarded_value, 0x5a, sizeof(guarded_value));
+    guarded_value.value.struct_size = (uint32_t)sizeof(guarded_value.value);
+    guarded_value.value.abi_version = OA_CAN_ABI_VERSION;
+    (void)memcpy(value_snapshot, &guarded_value, sizeof(value_snapshot));
+    frame.dlc = 7u;
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_QUERY,
+                                          &guarded_value.value) == OA_CAN_EFRAME);
+    CHECK(memcmp(value_snapshot, &guarded_value, sizeof(value_snapshot)) == 0);
+    frame.dlc = 8u;
+    frame.can_id |= OA_CAN_EFF_FLAG;
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_QUERY,
+                                          &guarded_value.value) == OA_CAN_EFRAME);
+    frame.can_id = request.receive_id + 1u;
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_QUERY,
+                                          &guarded_value.value) == OA_CAN_EID);
+    frame = register_frame(request.receive_id, request.send_id + 1u, OA_CAN_REGISTER_QUERY,
+                           OA_CAN_RID_PMAX, raw_float(20.0f));
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_QUERY,
+                                          &guarded_value.value) == OA_CAN_EID);
+    frame = register_frame(request.receive_id, request.send_id, OA_CAN_REGISTER_WRITE,
+                           OA_CAN_RID_PMAX, raw_float(20.0f));
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_QUERY,
+                                          &guarded_value.value) == OA_CAN_EFRAME);
+    frame = register_frame(request.receive_id, request.send_id, OA_CAN_REGISTER_QUERY,
+                           OA_CAN_RID_VMAX, raw_float(20.0f));
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_QUERY,
+                                          &guarded_value.value) == OA_CAN_EFRAME);
+    frame = register_frame(request.receive_id, request.send_id, OA_CAN_REGISTER_QUERY,
+                           OA_CAN_RID_PMAX, raw_float(NAN));
+    CHECK(oa_can_decode_register_response(&frame, &request, OA_CAN_REGISTER_QUERY,
+                                          &guarded_value.value) == OA_CAN_EINVAL);
+
+    (void)memset(&guarded_profile, 0xc3, sizeof(guarded_profile));
+    guarded_profile.value.struct_size = (uint32_t)sizeof(guarded_profile.value);
+    guarded_profile.value.abi_version = OA_CAN_ABI_VERSION;
+    (void)memcpy(profile_snapshot, &guarded_profile, sizeof(profile_snapshot));
+    INITIALIZE(guarded_value.value);
+    guarded_value.value.receive_id = request.receive_id;
+    guarded_value.value.target_send_id = request.send_id;
+    guarded_value.value.register_id = OA_CAN_RID_PMAX;
+    guarded_value.value.value_type = OA_CAN_REGISTER_F32;
+    guarded_value.value.operation = OA_CAN_REGISTER_QUERY;
+    guarded_value.value.raw_value = raw_float(20.0f);
+    guarded_value.value.value_f32 = 20.0f;
+    CHECK(oa_can_mit_profile_from_registers(&guarded_value.value, &guarded_value.value,
+                                            &guarded_value.value, &guarded_profile.value) ==
+          OA_CAN_EINVAL);
+    CHECK(memcmp(profile_snapshot, &guarded_profile, sizeof(profile_snapshot)) == 0);
+
+    INITIALIZE(mit);
+    mit.send_id = 1u;
+    profile.verified_mask = OA_CAN_PROFILE_PMAX_VERIFIED;
+    CHECK(oa_can_encode_mit_profile(&mit, &profile, &guarded_frame.value) == OA_CAN_EINVAL);
+    profile = dynamic_profile();
+    mit.position_rad = 21.0;
+    CHECK(oa_can_encode_mit_profile(&mit, &profile, &guarded_frame.value) == OA_CAN_ERANGE);
+    mit.position_rad = NAN;
+    CHECK(oa_can_encode_mit_profile(&mit, &profile, &guarded_frame.value) == OA_CAN_EINVAL);
+    frame = feedback_frame(0x11u, 2u, OA_CAN_FEEDBACK_DISABLED, 0x8000u, 0x800u, 0x800u);
+    INITIALIZE(feedback);
+    CHECK(oa_can_decode_feedback_profile(&frame, 0x11u, 1u, &profile, &feedback) == OA_CAN_EID);
+    frame.data[0] = (uint8_t)((7u << 4u) | 1u);
+    CHECK(oa_can_decode_feedback_profile(&frame, 0x11u, 1u, &profile, &feedback) == OA_CAN_EFRAME);
+
+    INITIALIZE(pos_vel);
+    pos_vel.send_id = 1u;
+    pos_vel.position_rad = 21.0;
+    pos_vel.max_velocity_rad_s = 1.0;
+    CHECK(oa_can_encode_pos_vel(&pos_vel, &profile, &guarded_frame.value) == OA_CAN_ERANGE);
+    pos_vel.position_rad = NAN;
+    CHECK(oa_can_encode_pos_vel(&pos_vel, &profile, &guarded_frame.value) == OA_CAN_EINVAL);
+    pos_vel.position_rad = 0.0;
+    pos_vel.send_id = 0x700u;
+    CHECK(oa_can_encode_pos_vel(&pos_vel, &profile, &guarded_frame.value) == OA_CAN_EINVAL);
+    INITIALIZE(pos_force);
+    pos_force.send_id = 1u;
+    pos_force.max_velocity_rad_s = 1.0;
+    pos_force.current_limit_per_unit = 1.01;
+    CHECK(oa_can_encode_pos_force(&pos_force, &profile, &guarded_frame.value) == OA_CAN_ERANGE);
+    pos_force.current_limit_per_unit = INFINITY;
+    CHECK(oa_can_encode_pos_force(&pos_force, &profile, &guarded_frame.value) == OA_CAN_EINVAL);
+    pos_force.current_limit_per_unit = 0.5;
+    pos_force.send_id = 0x500u;
+    CHECK(oa_can_encode_pos_force(&pos_force, &profile, &guarded_frame.value) == OA_CAN_EINVAL);
 }
 
 static oa_can_arm_manifest manifest_two(void) {
@@ -436,6 +768,9 @@ static void test_fake_rejects_control_frames(void) {
     oa_can_frame frame;
     oa_can_encode_result encoded;
     oa_can_mit_command command = command_for(OA_CAN_MOTOR_DM4310);
+    oa_can_mit_profile profile = dynamic_profile();
+    oa_can_pos_vel_command pos_vel;
+    oa_can_register_write write;
     uint64_t sent_ns;
     INITIALIZE(frame);
     CHECK(oa_can_make_enable(1u, &frame) == OA_CAN_OK);
@@ -459,6 +794,26 @@ static void test_fake_rejects_control_frames(void) {
     frame.data[7] = 1u;
     CHECK(transport.send(transport.context, &frame, &sent_ns) == OA_CAN_ESTATE);
     CHECK(oa_can_fake_rejected_control_count(fake) == 3u);
+    INITIALIZE(pos_vel);
+    pos_vel.send_id = 1u;
+    pos_vel.max_velocity_rad_s = 1.0;
+    CHECK(oa_can_encode_pos_vel(&pos_vel, &profile, &frame) == OA_CAN_OK);
+    CHECK(transport.send(transport.context, &frame, &sent_ns) == OA_CAN_ESTATE);
+    INITIALIZE(write);
+    write.send_id = 1u;
+    write.register_id = OA_CAN_RID_CTRL_MODE;
+    write.value_type = OA_CAN_REGISTER_U32;
+    write.value_u32 = 1u;
+    CHECK(oa_can_make_register_write(&write, &frame) == OA_CAN_OK);
+    CHECK(transport.send(transport.context, &frame, &sent_ns) == OA_CAN_ESTATE);
+    CHECK(oa_can_make_set_zero(1u, &frame) == OA_CAN_OK);
+    CHECK(transport.send(transport.context, &frame, &sent_ns) == OA_CAN_ESTATE);
+    CHECK(oa_can_make_clear_error(1u, &frame) == OA_CAN_OK);
+    CHECK(transport.send(transport.context, &frame, &sent_ns) == OA_CAN_ESTATE);
+    CHECK(oa_can_make_save_parameters(1u, &frame) == OA_CAN_OK);
+    CHECK(transport.send(transport.context, &frame, &sent_ns) == OA_CAN_ESTATE);
+    CHECK(oa_can_fake_rejected_control_count(fake) == 8u &&
+          oa_can_fake_torque_enabled(fake) == 0);
     oa_can_fake_destroy(fake);
 }
 
@@ -599,6 +954,8 @@ int main(void) {
     test_size_version_and_malformed_inputs();
     test_status_nibbles();
     test_public_integer_widths();
+    test_register_codecs_and_dynamic_profile();
+    test_new_codec_malformed_and_canaries();
     test_probe_fresh_disabled_only();
     test_probe_rejects_stale_enabled_fault_and_busy();
     test_probe_receive_budget_boundary();
