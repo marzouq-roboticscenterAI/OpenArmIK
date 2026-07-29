@@ -5,6 +5,7 @@ root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 output_root="$root_dir/ros2_ws"
 port=8080
 open_browser=1
+browser_command=xdg-open
 build_mode=auto
 renderer=${OPENARM_RVIZ_RENDERER:-auto}
 
@@ -22,6 +23,7 @@ Options:
   --build            Force an incremental build before launch
   --no-build         Never build; fail if installed products are missing
   --no-browser       Print the URL without opening the browser
+  --firefox          Open the portal specifically with Firefox
   --renderer MODE    auto, software, integrated, or nvidia
   -h, --help         Show this help
 
@@ -53,6 +55,10 @@ while (($#)); do
       ;;
     --no-browser)
       open_browser=0
+      shift
+      ;;
+    --firefox)
+      browser_command=firefox
       shift
       ;;
     --renderer)
@@ -334,7 +340,11 @@ done
 printf '\nOpenArm virtual portal: %s\n' "$url"
 printf '%s\n' 'Press Ctrl+C here to stop the portal, RViz, and ROS.'
 if ((open_browser)); then
-  xdg-open "$url" >/dev/null 2>&1 || \
+  command -v "$browser_command" >/dev/null 2>&1 || {
+    printf 'Browser executable not found: %s\n' "$browser_command" >&2
+    exit 1
+  }
+  "$browser_command" "$url" >/dev/null 2>&1 || \
     printf 'Could not open a browser automatically; visit %s\n' "$url" >&2
 fi
 
