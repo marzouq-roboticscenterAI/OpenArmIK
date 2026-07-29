@@ -4,6 +4,7 @@ set -euo pipefail
 apply=0
 assume_yes=0
 update_index=1
+verify_only=0
 
 usage() {
   cat <<'EOF'
@@ -14,6 +15,7 @@ dependencies for OpenArmIK. The default is a review-only dry run.
 
 Options:
   --apply        Run apt-get through sudo
+  --verify       Verify installed packages without using sudo
   --yes          Pass --assume-yes to apt-get (requires --apply)
   --skip-update  Do not run apt-get update before installation
   -h, --help     Show this help
@@ -29,6 +31,9 @@ while (($#)); do
   case "$1" in
     --apply)
       apply=1
+      ;;
+    --verify)
+      verify_only=1
       ;;
     --yes)
       assume_yes=1
@@ -51,6 +56,10 @@ done
 
 if ((assume_yes && !apply)); then
   printf '%s\n' '--yes requires --apply' >&2
+  exit 2
+fi
+if ((verify_only && apply)); then
+  printf '%s\n' '--verify and --apply are mutually exclusive' >&2
   exit 2
 fi
 
@@ -87,7 +96,6 @@ packages=(
   xdg-utils
   libeigen3-dev
   libboost-dev
-  libboost-system-dev
   libfcl-dev
   libjpeg-dev
   libssl-dev
@@ -141,6 +149,32 @@ printf 'OpenArmIK dependency plan for Ubuntu %s (%s):\n' \
   "${VERSION_ID:-unknown}" "$(uname -m)"
 printf '  %s\n' "${packages[@]}"
 
+verify_installed() {
+  local package
+  local -a failed=()
+  for package in "${packages[@]}"; do
+    if ! dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | \
+        grep -q '^ii '; then
+      failed+=("$package")
+    fi
+  done
+  if ((${#failed[@]})); then
+    printf 'Installation verification failed for:\n' >&2
+    printf '  %s\n' "${failed[@]}" >&2
+    return 1
+  fi
+  [[ -r /opt/ros/lyrical/setup.bash ]] || {
+    printf '%s\n' 'Packages are installed, but the ROS setup file is missing.' >&2
+    return 1
+  }
+  printf '\nAll OpenArmIK system dependencies are installed.\n'
+}
+
+if ((verify_only)); then
+  verify_installed
+  exit
+fi
+
 if ((!apply)); then
   printf '\nReview only; no packages were installed. To apply:\n'
   printf '  %q --apply\n' "$0"
@@ -163,23 +197,6 @@ if ((assume_yes)); then
 fi
 sudo apt-get "${apt_options[@]}" "${packages[@]}"
 
-failed=()
-for package in "${packages[@]}"; do
-  if ! dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii '; then
-    failed+=("$package")
-  fi
-done
-if ((${#failed[@]})); then
-  printf 'Installation verification failed for:\n' >&2
-  printf '  %s\n' "${failed[@]}" >&2
-  exit 1
-fi
-
-[[ -r /opt/ros/lyrical/setup.bash ]] || {
-  printf '%s\n' 'Packages installed, but /opt/ros/lyrical/setup.bash is missing.' >&2
-  exit 1
-}
-
-printf '\nAll OpenArmIK system dependencies are installed.\n'
+verify_installed
 printf 'Next: %s/scripts/build.sh --tests\n' \
   "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
