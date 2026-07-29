@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "runtime_internal.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -85,4 +86,43 @@ std::string sha256_hex(const std::uint8_t *data, std::size_t size) {
     return result;
 }
 
+std::string hmac_sha256_hex(
+    const std::array<std::uint8_t, OA_RUNTIME_PERSISTENCE_KEY_BYTES> &key,
+    const std::string &data) {
+    std::array<std::uint8_t, 64U> inner_pad{};
+    std::array<std::uint8_t, 64U> outer_pad{};
+    for (std::size_t index = 0U; index < inner_pad.size(); ++index) {
+        const std::uint8_t key_byte = index < key.size() ? key[index] : 0U;
+        inner_pad[index] = static_cast<std::uint8_t>(key_byte ^ UINT8_C(0x36));
+        outer_pad[index] = static_cast<std::uint8_t>(key_byte ^ UINT8_C(0x5c));
+    }
+    std::string inner(reinterpret_cast<const char *>(inner_pad.data()), inner_pad.size());
+    inner += data;
+    const std::string inner_hex = sha256_hex(inner);
+    std::array<std::uint8_t, 32U> inner_digest{};
+    const auto nibble = [](const char value) -> std::uint8_t {
+        return value >= 'a' ? static_cast<std::uint8_t>(value - 'a' + 10)
+                            : static_cast<std::uint8_t>(value - '0');
+    };
+    for (std::size_t index = 0U; index < inner_digest.size(); ++index) {
+        inner_digest[index] = static_cast<std::uint8_t>(
+            static_cast<std::uint8_t>(nibble(inner_hex[index * 2U]) << 4U) |
+            nibble(inner_hex[index * 2U + 1U]));
+    }
+    std::string outer(reinterpret_cast<const char *>(outer_pad.data()), outer_pad.size());
+    outer.append(reinterpret_cast<const char *>(inner_digest.data()), inner_digest.size());
+    return sha256_hex(outer);
 }
+
+}
+
+#ifdef OA_RUNTIME_ENABLE_TEST_HOOKS
+extern "C" int oa_runtime_test_hmac_sha256_known_vector(void) {
+    std::array<std::uint8_t, OA_RUNTIME_PERSISTENCE_KEY_BYTES> key{};
+    std::fill_n(key.begin(), 20U, UINT8_C(0x0b));
+    return openarm::runtime::hmac_sha256_hex(key, "Hi There") ==
+                   "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+               ? 1
+               : 0;
+}
+#endif

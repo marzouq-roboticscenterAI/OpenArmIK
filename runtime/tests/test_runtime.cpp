@@ -1,3 +1,5 @@
+#define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1
+#include "openarm_control.h"
 #include "openarm_runtime.h"
 
 #include <atomic>
@@ -10,6 +12,11 @@
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
+
+extern "C" void oa_runtime_test_fail_allocation_after(std::int64_t countdown);
+extern "C" oa_runtime_status oa_runtime_test_transport_raii_probe(void);
+extern "C" int oa_runtime_test_hmac_sha256_known_vector(void);
+extern "C" void oa_runtime_test_fail_fsync_after(std::int64_t countdown);
 
 namespace {
 
@@ -41,14 +48,26 @@ void persistence_round_trip(oa_runtime_manifest *manifest) {
     char *const directory = mkdtemp(directory_template);
     CHECK(directory != nullptr);
     const std::string path = std::string(directory) + "/manifest.oarm";
-    CHECK(oa_runtime_manifest_save(manifest, path.c_str(), 0U) == OA_RUNTIME_EPERMISSION);
-    CHECK(oa_runtime_manifest_save(manifest, "/tmp/../tmp/bad.oarm",
-                                   OA_RUNTIME_PERSISTENCE_AUTHORIZED) ==
+    std::uint8_t key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
+    for (std::size_t index = 0U; index < sizeof(key); ++index) {
+        key[index] = static_cast<std::uint8_t>(index + 1U);
+    }
+    oa_runtime_persistence_authority *authority = nullptr;
+    CHECK(oa_runtime_persistence_authority_create("/tmp/..", key, "test-key-v1",
+                                                  &authority) ==
           OA_RUNTIME_EPERMISSION);
-    CHECK(oa_runtime_manifest_save(manifest, path.c_str(),
-                                   OA_RUNTIME_PERSISTENCE_AUTHORIZED) == OA_RUNTIME_OK);
+    CHECK(oa_runtime_persistence_authority_create(directory, key, "test-key-v1",
+                                                  &authority) == OA_RUNTIME_OK);
+    CHECK(oa_runtime_manifest_save(manifest, nullptr, "manifest.oarm") ==
+          OA_RUNTIME_EINVAL);
+    CHECK(oa_runtime_manifest_save(manifest, authority, "../bad.oarm") ==
+          OA_RUNTIME_EINVAL);
+    CHECK(oa_runtime_manifest_save(manifest, authority, "manifest.oarm") == OA_RUNTIME_OK);
     oa_runtime_manifest_preview preview{};
     init(preview);
+    oa_runtime_test_fail_allocation_after(0);
+    CHECK(oa_runtime_manifest_preview_file(path.c_str(), &preview) == OA_RUNTIME_ENOMEM);
+    oa_runtime_test_fail_allocation_after(-1);
     CHECK(oa_runtime_manifest_preview_file(path.c_str(), &preview) == OA_RUNTIME_OK);
     CHECK(preview.valid == 1U && preview.would_be_armable == 1U);
     oa_runtime_manifest *loaded = nullptr;
@@ -59,13 +78,31 @@ void persistence_round_trip(oa_runtime_manifest *manifest) {
     CHECK(oa_runtime_manifest_get_summary(manifest, &first) == OA_RUNTIME_OK);
     CHECK(oa_runtime_manifest_get_summary(loaded, &second) == OA_RUNTIME_OK);
     CHECK(std::strcmp(first.content_sha256, second.content_sha256) == 0);
+    CHECK(second.integrity_kind == OA_RUNTIME_INTEGRITY_HMAC_SHA256 &&
+          second.authenticated == 0U);
     oa_runtime_manifest_destroy(loaded);
+
+    CHECK(oa_runtime_manifest_load_authenticated(authority, "manifest.oarm", &loaded) ==
+          OA_RUNTIME_OK);
+    init(second);
+    CHECK(oa_runtime_manifest_get_summary(loaded, &second) == OA_RUNTIME_OK);
+    CHECK(second.authenticated == 1U &&
+          std::strcmp(second.authentication_key_id, "test-key-v1") == 0);
+    oa_runtime_manifest_destroy(loaded);
+
+    std::uint8_t wrong_key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
+    wrong_key[0] = 1U;
+    oa_runtime_persistence_authority *wrong_authority = nullptr;
+    CHECK(oa_runtime_persistence_authority_create(directory, wrong_key, "test-key-v1",
+                                                  &wrong_authority) == OA_RUNTIME_OK);
+    CHECK(oa_runtime_manifest_load_authenticated(wrong_authority, "manifest.oarm", &loaded) ==
+          OA_RUNTIME_EPERMISSION);
+    oa_runtime_persistence_authority_destroy(wrong_authority);
 
     const std::string symlink_path = std::string(directory) + "/link.oarm";
     CHECK(symlink(path.c_str(), symlink_path.c_str()) == 0);
     CHECK(oa_runtime_manifest_load(symlink_path.c_str(), &loaded) == OA_RUNTIME_EPERMISSION);
-    CHECK(oa_runtime_manifest_save(manifest, symlink_path.c_str(),
-                                   OA_RUNTIME_PERSISTENCE_AUTHORIZED) ==
+    CHECK(oa_runtime_manifest_save(manifest, authority, "link.oarm") ==
           OA_RUNTIME_EPERMISSION);
     CHECK(unlink(symlink_path.c_str()) == 0);
 
@@ -76,11 +113,15 @@ void persistence_round_trip(oa_runtime_manifest *manifest) {
           static_cast<ssize_t>(sizeof(corrupt) - 1U));
     CHECK(close(file) == 0);
     CHECK(oa_runtime_manifest_load(path.c_str(), &loaded) == OA_RUNTIME_ECORRUPT);
+    CHECK(oa_runtime_manifest_load_authenticated(authority, "manifest.oarm", &loaded) ==
+          OA_RUNTIME_ECORRUPT);
+    oa_runtime_persistence_authority_destroy(authority);
+    oa_runtime_persistence_authority_destroy(authority);
     CHECK(unlink(path.c_str()) == 0);
     CHECK(rmdir(directory) == 0);
 }
 
-void manual_calibration(oa_runtime *runtime, oa_runtime_manifest *base) {
+oa_runtime_manifest *manual_calibration(oa_runtime *runtime, oa_runtime_manifest *base) {
     oa_commission_manual_options options{};
     options.struct_size = sizeof(options);
     options.abi_version = OA_COMMISSION_ABI_V1;
@@ -104,10 +145,17 @@ void manual_calibration(oa_runtime *runtime, oa_runtime_manifest *base) {
     oa_commission_manual_report report{};
     report.struct_size = sizeof(report);
     report.abi_version = OA_COMMISSION_ABI_V1;
-    std::this_thread::sleep_for(std::chrono::milliseconds(3));
-    CHECK(oa_runtime_calibration_manual_sample(session, 0U, &report) == OA_RUNTIME_OK);
-    std::this_thread::sleep_for(std::chrono::milliseconds(3));
-    CHECK(oa_runtime_calibration_manual_sample(session, 0U, &report) == OA_RUNTIME_OK);
+    for (unsigned accepted = 0U; accepted < 2U; ++accepted) {
+        oa_runtime_status sample_status = OA_RUNTIME_ESTALE;
+        for (unsigned attempt = 0U; attempt < 100U && sample_status != OA_RUNTIME_OK;
+             ++attempt) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            sample_status =
+                oa_runtime_calibration_manual_sample(session, 0U, &report);
+            CHECK(sample_status == OA_RUNTIME_OK || sample_status == OA_RUNTIME_ESTALE);
+        }
+        CHECK(sample_status == OA_RUNTIME_OK);
+    }
     CHECK(oa_runtime_calibration_manual_begin_review(session, &report) == OA_RUNTIME_OK);
     oa_runtime_manifest *updated = nullptr;
     oa_runtime_manifest_preview preview{};
@@ -121,9 +169,66 @@ void manual_calibration(oa_runtime *runtime, oa_runtime_manifest *base) {
     CHECK(oa_runtime_manifest_get_summary(updated, &summary) == OA_RUNTIME_OK);
     CHECK(summary.manifest_revision == 2U);
     oa_runtime_calibration_destroy(session);
-    oa_runtime_manifest_destroy(updated);
     CHECK(oa_runtime_configuration_apply_physical(runtime, base) ==
           OA_RUNTIME_EUNSUPPORTED);
+    return updated;
+}
+
+void persistence_revision_order(oa_runtime_manifest *base,
+                                oa_runtime_manifest *updated) {
+    char directory_template[] = "/tmp/openarm-runtime-revision-test-XXXXXX";
+    char *const directory = mkdtemp(directory_template);
+    CHECK(directory != nullptr);
+    std::uint8_t key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
+    key[0] = 0xa5U;
+    key[31] = 0x5aU;
+    oa_runtime_persistence_authority *authority = nullptr;
+    CHECK(oa_runtime_persistence_authority_create(directory, key, "revision-key",
+                                                  &authority) == OA_RUNTIME_OK);
+    CHECK(oa_runtime_manifest_save(base, authority, "manifest.oarm") == OA_RUNTIME_OK);
+    oa_runtime_test_fail_fsync_after(0);
+    CHECK(oa_runtime_manifest_save(updated, authority, "manifest.oarm") ==
+          OA_RUNTIME_EIO);
+    oa_runtime_test_fail_fsync_after(-1);
+    oa_runtime_manifest *loaded = nullptr;
+    CHECK(oa_runtime_manifest_load_authenticated(authority, "manifest.oarm", &loaded) ==
+          OA_RUNTIME_OK);
+    oa_runtime_manifest_summary summary{};
+    init(summary);
+    CHECK(oa_runtime_manifest_get_summary(loaded, &summary) == OA_RUNTIME_OK);
+    CHECK(summary.manifest_revision == 1U);
+    oa_runtime_manifest_destroy(loaded);
+
+    oa_runtime_test_fail_fsync_after(2);
+    CHECK(oa_runtime_manifest_save(updated, authority, "manifest.oarm") ==
+          OA_RUNTIME_EIO);
+    oa_runtime_test_fail_fsync_after(-1);
+    CHECK(oa_runtime_manifest_load_authenticated(authority, "manifest.oarm", &loaded) ==
+          OA_RUNTIME_OK);
+    init(summary);
+    CHECK(oa_runtime_manifest_get_summary(loaded, &summary) == OA_RUNTIME_OK);
+    CHECK(summary.manifest_revision == 1U);
+    oa_runtime_manifest_destroy(loaded);
+    CHECK(oa_runtime_manifest_save(updated, authority, "manifest.oarm") == OA_RUNTIME_OK);
+    CHECK(oa_runtime_manifest_save(base, authority, "manifest.oarm") == OA_RUNTIME_ESTALE);
+    CHECK(oa_runtime_manifest_load_authenticated(authority, "manifest.oarm", &loaded) ==
+          OA_RUNTIME_OK);
+    init(summary);
+    CHECK(oa_runtime_manifest_get_summary(loaded, &summary) == OA_RUNTIME_OK);
+    CHECK(summary.manifest_revision == 2U && summary.authenticated == 1U);
+    oa_runtime_manifest_destroy(loaded);
+    CHECK(oa_runtime_manifest_load_authenticated(
+              authority, "manifest.oarm.previous", &loaded) == OA_RUNTIME_OK);
+    init(summary);
+    CHECK(oa_runtime_manifest_get_summary(loaded, &summary) == OA_RUNTIME_OK);
+    CHECK(summary.manifest_revision == 1U && summary.authenticated == 1U);
+    oa_runtime_manifest_destroy(loaded);
+    oa_runtime_persistence_authority_destroy(authority);
+    const std::string current = std::string(directory) + "/manifest.oarm";
+    const std::string previous = current + ".previous";
+    CHECK(unlink(current.c_str()) == 0);
+    CHECK(unlink(previous.c_str()) == 0);
+    CHECK(rmdir(directory) == 0);
 }
 
 void supervised_calibration(oa_runtime *runtime) {
@@ -176,11 +281,11 @@ void supervised_calibration(oa_runtime *runtime) {
     input.abi_version = OA_COMMISSION_ABI_V1;
     input.estop_clear = 1U;
     input.deadman_held = 1U;
-    input.evidence_revision = 1U;
-    input.fixture_revision = 1U;
-    input.posture_mask = 0x7eU;
+    input.evidence_revision = UINT64_MAX;
+    input.fixture_revision = UINT64_MAX;
+    input.posture_mask = 0U;
     for (std::size_t joint = 0U; joint < 7U; ++joint) {
-        input.posture_output_rad[joint] = snapshot.arm[0].q_output_rad[joint];
+        input.posture_output_rad[joint] = 1000.0;
     }
     oa_commission_next_action action{};
     action.struct_size = sizeof(action);
@@ -191,7 +296,34 @@ void supervised_calibration(oa_runtime *runtime) {
     CHECK(oa_runtime_calibration_recipe_step(session, &input, &action, &report) ==
           OA_RUNTIME_OK);
     CHECK(action.kind == OA_RECIPE_ACTION_HOLD_DISABLED);
-    CHECK(oa_runtime_calibration_abort(session) == OA_RUNTIME_OK);
+    input.operator_ready = 1U;
+    input.estop_clear = 1U;
+    input.deadman_held = 1U;
+    oa_runtime_status step_status = OA_RUNTIME_ESTALE;
+    for (unsigned attempt = 0U; attempt < 100U && step_status != OA_RUNTIME_OK; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        step_status = oa_runtime_calibration_recipe_step(session, &input, &action, &report);
+        CHECK(step_status == OA_RUNTIME_OK || step_status == OA_RUNTIME_ESTALE);
+    }
+    CHECK(step_status == OA_RUNTIME_OK);
+    CHECK(action.kind == OA_RECIPE_ACTION_HOLD_DISABLED);
+    CHECK(oa_runtime_set_interlock(runtime, 0U, 1U) == OA_RUNTIME_OK);
+    step_status = OA_RUNTIME_ESTALE;
+    for (unsigned attempt = 0U; attempt < 100U && step_status != OA_RUNTIME_OK; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        step_status = oa_runtime_calibration_recipe_step(session, &input, &action, &report);
+        CHECK(step_status == OA_RUNTIME_OK || step_status == OA_RUNTIME_ESTALE);
+    }
+    CHECK(step_status == OA_RUNTIME_OK);
+    CHECK(action.kind == OA_RECIPE_ACTION_APPROACH);
+    oa_runtime_status first_abort = OA_RUNTIME_OK;
+    oa_runtime_status second_abort = OA_RUNTIME_OK;
+    std::thread first([&] { first_abort = oa_runtime_calibration_abort(session); });
+    std::thread second([&] { second_abort = oa_runtime_calibration_abort(session); });
+    first.join();
+    second.join();
+    CHECK((first_abort == OA_RUNTIME_OK && second_abort == OA_RUNTIME_ESTATE) ||
+          (second_abort == OA_RUNTIME_OK && first_abort == OA_RUNTIME_ESTATE));
     oa_runtime_calibration_destroy(session);
 }
 
@@ -204,8 +336,9 @@ void execute_and_wait(oa_runtime *runtime, oa_runtime_plan *plan,
     init(request);
     request.clock_id = OA_RUNTIME_CLOCK_MONOTONIC;
     request.start_runtime_monotonic_ns = now + 1000000U;
-    request.expiry_runtime_monotonic_ns = now + horizon_ns;
-    request.producer_deadline_runtime_monotonic_ns = now + horizon_ns;
+    const std::uint64_t execution_horizon = horizon_ns - 100000000U;
+    request.expiry_runtime_monotonic_ns = now + execution_horizon;
+    request.producer_deadline_runtime_monotonic_ns = now + execution_horizon;
     request.stop_kind = OA_RUNTIME_STOP_DISABLE;
     std::uint64_t command = 0U;
     CHECK(oa_runtime_execute(runtime, plan, &request, &command) == OA_RUNTIME_OK);
@@ -219,6 +352,10 @@ void execute_and_wait(oa_runtime *runtime, oa_runtime_plan *plan,
         CHECK(status == OA_RUNTIME_OK || status == OA_RUNTIME_ETIMEOUT);
         if (status == OA_RUNTIME_OK && event.kind == OA_RUNTIME_EVENT_COMPLETED &&
             event.command_id == command) {
+            CHECK(event.feedback_seq_valid_mask == 0U);
+            CHECK(event.measurement_timestamp_valid == 0U);
+            CHECK(event.feedback_seq[0] == 0U && event.feedback_seq[1] == 0U);
+            CHECK(event.source_feedback_seq != 0U);
             completed = true;
         }
     }
@@ -228,6 +365,8 @@ void execute_and_wait(oa_runtime *runtime, oa_runtime_plan *plan,
 }
 
 int main() {
+    CHECK(oa_runtime_test_transport_raii_probe() == OA_RUNTIME_OK);
+    CHECK(oa_runtime_test_hmac_sha256_known_vector() == 1);
     oa_runtime_manifest *manifest = nullptr;
     CHECK(oa_runtime_manifest_create_virtual(&manifest) == OA_RUNTIME_OK);
     oa_runtime_manifest_summary manifest_summary{};
@@ -244,6 +383,24 @@ int main() {
     CHECK(oa_runtime_get_capabilities(runtime, &capabilities) == OA_RUNTIME_OK);
     CHECK((capabilities.capabilities & OA_RUNTIME_CAP_VIRTUAL_JOINT_MOTION) != 0U);
     CHECK((capabilities.capabilities & OA_RUNTIME_CAP_PHYSICAL_MOTION) == 0U);
+    CHECK((capabilities.capabilities & (OA_RUNTIME_CAP_MODEL_FK |
+                                        OA_RUNTIME_CAP_SINGLE_XYZ_IK |
+                                        OA_RUNTIME_CAP_PAIRED_XYZ_IK)) == 0U);
+    CHECK(std::strlen(capabilities.coordinate_identity_sha256) == 64U);
+    oa_runtime_model_identity left_identity{};
+    oa_runtime_model_identity right_identity{};
+    init(left_identity);
+    init(right_identity);
+    CHECK(oa_runtime_get_model_identity(runtime, 0U, &left_identity) == OA_RUNTIME_OK);
+    CHECK(oa_runtime_get_model_identity(runtime, 1U, &right_identity) == OA_RUNTIME_OK);
+    CHECK(std::strcmp(left_identity.model_id, right_identity.model_id) != 0);
+    CHECK(std::strlen(left_identity.model_data_sha256) == 64U &&
+          std::strlen(left_identity.flattened_urdf_sha256) == 64U &&
+          std::strlen(left_identity.tcp_frame) != 0U);
+    CHECK(std::strcmp(left_identity.coordinate_identity_sha256,
+                      capabilities.coordinate_identity_sha256) == 0);
+    CHECK(oa_runtime_get_model_identity(runtime, 2U, &left_identity) ==
+          OA_RUNTIME_EINVAL);
 
     oa_runtime_inventory *inventory = nullptr;
     CHECK(oa_runtime_inventory_query(runtime, nullptr, &inventory) == OA_RUNTIME_OK);
@@ -256,6 +413,13 @@ int main() {
     CHECK(oa_runtime_inventory_get_motor(inventory, 13U, &motor) == OA_RUNTIME_OK);
     CHECK(motor.side == 1U && motor.joint == 6U &&
           motor.confidence == OA_RUNTIME_EVIDENCE_VIRTUAL_EXACT);
+    std::uint64_t inventory_now = 0U;
+    CHECK(oa_runtime_now_monotonic_ns(runtime, OA_RUNTIME_CLOCK_MONOTONIC,
+                                      &inventory_now) == OA_RUNTIME_OK);
+    CHECK(motor.query_sent_runtime_monotonic_ns > 1U &&
+          motor.query_sent_runtime_monotonic_ns <= inventory_now &&
+          motor.response_runtime_monotonic_ns ==
+              motor.query_sent_runtime_monotonic_ns);
     CHECK(oa_runtime_inventory_get_summary(
               reinterpret_cast<const oa_runtime_inventory *>(manifest),
               &inventory_summary) == OA_RUNTIME_EINVAL);
@@ -270,7 +434,9 @@ int main() {
     CHECK(kinematics.frame_id == OA_RUNTIME_FRAME_OPENARM_BODY_LINK0);
 
     supervised_calibration(runtime);
-    manual_calibration(runtime, manifest);
+    oa_runtime_manifest *updated_manifest = manual_calibration(runtime, manifest);
+    persistence_revision_order(manifest, updated_manifest);
+    oa_runtime_manifest_destroy(updated_manifest);
     CHECK(oa_runtime_set_interlock(runtime, 0U, 1U) == OA_RUNTIME_OK);
     CHECK(oa_runtime_arm_virtual(runtime) == OA_RUNTIME_OK);
     oa_runtime_joint_move move{};
@@ -293,9 +459,29 @@ int main() {
     move.position_tolerance_rad = 0.001;
     move.velocity_tolerance_rad_s = 0.02;
     oa_runtime_plan *plan = nullptr;
+    const oa_runtime_clock_id valid_clock = move.clock_id;
+    move.clock_id = 0U;
+    CHECK(oa_runtime_plan_joint(runtime, &move, &plan) == OA_RUNTIME_EINVAL);
+    move.clock_id = valid_clock;
     CHECK(oa_runtime_plan_joint(runtime, &move, &plan) == OA_RUNTIME_ESTALE);
     move.required_feedback_seq = snapshot.arm[0].feedback_seq;
     CHECK(oa_runtime_plan_joint(runtime, &move, &plan) == OA_RUNTIME_OK);
+    oa_runtime_plan *second_plan = nullptr;
+    CHECK(oa_runtime_plan_joint(runtime, &move, &second_plan) == OA_RUNTIME_EBUSY);
+    CHECK(second_plan == nullptr);
+    std::uint64_t plan_clock_before = 0U;
+    std::uint64_t plan_clock_after = 0U;
+    CHECK(oa_runtime_now_monotonic_ns(runtime, OA_RUNTIME_CLOCK_MONOTONIC,
+                                      &plan_clock_before) == OA_RUNTIME_OK);
+    std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    CHECK(oa_runtime_now_monotonic_ns(runtime, OA_RUNTIME_CLOCK_MONOTONIC,
+                                      &plan_clock_after) == OA_RUNTIME_OK);
+    CHECK(plan_clock_after > plan_clock_before);
+    oa_runtime_error_detail plan_detail{};
+    init(plan_detail);
+    CHECK(oa_runtime_get_last_error(runtime, &plan_detail) == OA_RUNTIME_OK);
+    CHECK(plan_detail.status == OA_RUNTIME_EBUSY &&
+          plan_detail.facility == OA_RUNTIME_FACILITY_RUNTIME);
     oa_runtime_plan_report plan_report{};
     init(plan_report);
     CHECK(oa_runtime_plan_get_report(plan, &plan_report) == OA_RUNTIME_OK);
@@ -303,6 +489,47 @@ int main() {
     execute_and_wait(runtime, plan, 5000000000ULL);
     oa_runtime_plan_destroy(plan);
     oa_runtime_plan_destroy(plan);
+
+    init(snapshot);
+    CHECK(oa_runtime_snapshot_get(runtime, &snapshot) == OA_RUNTIME_OK);
+    CHECK(oa_runtime_now_monotonic_ns(runtime, OA_RUNTIME_CLOCK_MONOTONIC, &now) ==
+          OA_RUNTIME_OK);
+    move.required_feedback_seq = snapshot.arm[0].feedback_seq;
+    move.target_model_rad = snapshot.arm[0].q_model_rad[0];
+    move.expiry_runtime_monotonic_ns = now + 5000000U;
+    oa_runtime_plan *expired_plan = nullptr;
+    CHECK(oa_runtime_plan_joint(runtime, &move, &expired_plan) == OA_RUNTIME_OK);
+    oa_runtime_plan *replacement_plan = nullptr;
+    oa_runtime_status replacement_status = OA_RUNTIME_EBUSY;
+    for (unsigned attempt = 0U; attempt < 1000U && replacement_status != OA_RUNTIME_OK;
+         ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        init(snapshot);
+        CHECK(oa_runtime_snapshot_get(runtime, &snapshot) == OA_RUNTIME_OK);
+        CHECK(oa_runtime_now_monotonic_ns(runtime, OA_RUNTIME_CLOCK_MONOTONIC, &now) ==
+              OA_RUNTIME_OK);
+        move.required_feedback_seq = snapshot.arm[0].feedback_seq;
+        move.target_model_rad = snapshot.arm[0].q_model_rad[0] + 0.001;
+        move.expiry_runtime_monotonic_ns = now + 5000000000ULL;
+        replacement_status = oa_runtime_plan_joint(runtime, &move, &replacement_plan);
+        CHECK(replacement_status == OA_RUNTIME_OK || replacement_status == OA_RUNTIME_EBUSY ||
+              replacement_status == OA_RUNTIME_ESTALE);
+    }
+    CHECK(replacement_status == OA_RUNTIME_OK);
+    oa_runtime_execute_request expired_execute{};
+    init(expired_execute);
+    expired_execute.clock_id = OA_RUNTIME_CLOCK_MONOTONIC;
+    expired_execute.start_runtime_monotonic_ns = now + 1000000U;
+    expired_execute.expiry_runtime_monotonic_ns = now + 1000000000U;
+    expired_execute.producer_deadline_runtime_monotonic_ns = now + 1000000000U;
+    expired_execute.stop_kind = OA_RUNTIME_STOP_DISABLE;
+    std::uint64_t expired_command = 0U;
+    CHECK(oa_runtime_execute(runtime, expired_plan, &expired_execute,
+                             &expired_command) == OA_RUNTIME_ESTALE);
+    oa_runtime_plan_destroy(expired_plan);
+    second_plan = nullptr;
+    CHECK(oa_runtime_plan_joint(runtime, &move, &second_plan) == OA_RUNTIME_EBUSY);
+    oa_runtime_plan_destroy(replacement_plan);
 
     init(snapshot);
     CHECK(oa_runtime_snapshot_get(runtime, &snapshot) == OA_RUNTIME_OK);
@@ -328,13 +555,54 @@ int main() {
     paired.jerk_scale = 1.0;
     paired.tcp_tolerance_m = 0.001;
     paired.collision_scene_revision = 1U;
+    paired.required_model_revision = capabilities.model_revision;
+    paired.required_tcp_revision[0] = left_identity.tcp_revision;
+    paired.required_tcp_revision[1] = right_identity.tcp_revision;
+    paired.required_collision_policy = capabilities.collision_policy;
+    std::snprintf(paired.required_coordinate_identity_sha256,
+                  sizeof(paired.required_coordinate_identity_sha256), "%s",
+                  capabilities.coordinate_identity_sha256);
     paired.maximum_branch_step_rad = 2.0;
     paired.minimum_singular_value = 0.0;
+    paired.required_coordinate_identity_sha256[0] =
+        paired.required_coordinate_identity_sha256[0] == '0' ? '1' : '0';
+    CHECK(oa_runtime_plan_paired_tcp_body(runtime, &paired, &plan) ==
+          OA_RUNTIME_EIDENTITY);
+    std::snprintf(paired.required_coordinate_identity_sha256,
+                  sizeof(paired.required_coordinate_identity_sha256), "%s",
+                  capabilities.coordinate_identity_sha256);
     CHECK(oa_runtime_plan_paired_tcp_body(runtime, &paired, &plan) == OA_RUNTIME_OK);
     execute_and_wait(runtime, plan, 30000000000ULL);
     oa_runtime_plan_destroy(plan);
 
+    init(snapshot);
+    CHECK(oa_runtime_snapshot_get(runtime, &snapshot) == OA_RUNTIME_OK);
+    paired.required_feedback_seq[0] = snapshot.arm[0].feedback_seq;
+    paired.required_feedback_seq[1] = snapshot.arm[1].feedback_seq;
+    CHECK(oa_runtime_now_monotonic_ns(runtime, OA_RUNTIME_CLOCK_MONOTONIC, &now) ==
+          OA_RUNTIME_OK);
+    paired.expiry_runtime_monotonic_ns = now + 5000000000ULL;
+    paired.left_tcp_m[0] = 100.0;
+    paired.right_tcp_m[0] = 100.0;
+    plan = nullptr;
+    CHECK(oa_runtime_plan_paired_tcp_body(runtime, &paired, &plan) ==
+          OA_RUNTIME_EUNREACHABLE);
+    CHECK(plan == nullptr);
+    oa_runtime_error_detail unreachable_detail{};
+    init(unreachable_detail);
+    CHECK(oa_runtime_get_last_error(runtime, &unreachable_detail) == OA_RUNTIME_OK);
+    CHECK(unreachable_detail.status == OA_RUNTIME_EUNREACHABLE &&
+          unreachable_detail.facility == OA_RUNTIME_FACILITY_CONTROL &&
+          unreachable_detail.lower_code ==
+              static_cast<std::uint32_t>(OA_CONTROL_EUNREACHABLE));
+
     CHECK(oa_runtime_set_interlock(runtime, 0U, 0U) == OA_RUNTIME_EFAULT);
+    oa_runtime_error_detail interlock_detail{};
+    init(interlock_detail);
+    CHECK(oa_runtime_get_last_error(runtime, &interlock_detail) == OA_RUNTIME_OK);
+    CHECK(interlock_detail.status == OA_RUNTIME_EFAULT &&
+          interlock_detail.facility == OA_RUNTIME_FACILITY_CONTROL &&
+          interlock_detail.lower_code != 0U);
     oa_runtime_inventory_destroy(inventory);
     oa_runtime_inventory_destroy(inventory);
     oa_runtime_destroy(runtime);
@@ -368,11 +636,35 @@ int main() {
     CHECK(oa_runtime_get_capabilities(query_runtime, &query_capabilities) == OA_RUNTIME_OK);
     CHECK((query_capabilities.capabilities & OA_RUNTIME_CAP_PHYSICAL_REGISTER_QUERY) != 0U);
     CHECK((query_capabilities.capabilities & OA_RUNTIME_CAP_PHYSICAL_CONFIGURATION) == 0U);
+    CHECK((query_capabilities.capabilities & (OA_RUNTIME_CAP_MODEL_FK |
+                                              OA_RUNTIME_CAP_SINGLE_XYZ_IK |
+                                              OA_RUNTIME_CAP_PAIRED_XYZ_IK)) == 0U);
+    std::uint64_t query_now_before = 0U;
+    std::uint64_t query_now_after = 0U;
+    CHECK(oa_runtime_now_monotonic_ns(query_runtime, OA_RUNTIME_CLOCK_MONOTONIC,
+                                      &query_now_before) == OA_RUNTIME_OK);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    CHECK(oa_runtime_now_monotonic_ns(query_runtime, OA_RUNTIME_CLOCK_MONOTONIC,
+                                      &query_now_after) == OA_RUNTIME_OK);
+    CHECK(query_now_before > 0U && query_now_after > query_now_before);
+    init(kinematics);
+    CHECK(oa_runtime_get_kinematics(query_runtime, 2U, 0U, &kinematics) ==
+          OA_RUNTIME_EINVAL);
+    CHECK(oa_runtime_get_kinematics(query_runtime, 0U, 0U, &kinematics) ==
+          OA_RUNTIME_EUNSUPPORTED);
     oa_runtime_inventory_query_options query{};
     init(query);
     std::snprintf(query.interface_name, sizeof(query.interface_name), "oa_absent");
     query.per_query_timeout_ns = 1000000U;
     query.maximum_received_frames = 1U;
+    oa_runtime_inventory_query_options semantic_bad = query;
+    semantic_bad.per_query_timeout_ns = 0U;
+    CHECK(oa_runtime_inventory_query(query_runtime, &semantic_bad, &inventory) ==
+          OA_RUNTIME_EINVAL);
+    oa_runtime_inventory_query_options abi_bad = query;
+    abi_bad.struct_size = 0U;
+    CHECK(oa_runtime_inventory_query(query_runtime, &abi_bad, &inventory) ==
+          OA_RUNTIME_EABI);
     CHECK(oa_runtime_inventory_query(query_runtime, &query, &inventory) == OA_RUNTIME_OK);
     init(inventory_summary);
     CHECK(oa_runtime_inventory_get_summary(inventory, &inventory_summary) == OA_RUNTIME_OK);
@@ -380,8 +672,49 @@ int main() {
     CHECK(oa_runtime_arm_virtual(query_runtime) == OA_RUNTIME_EUNSUPPORTED);
     CHECK(oa_runtime_configuration_apply_physical(query_runtime, manifest) ==
           OA_RUNTIME_EUNSUPPORTED);
+    oa_commission_manual_options physical_manual{};
+    physical_manual.struct_size = sizeof(physical_manual);
+    physical_manual.abi_version = OA_COMMISSION_ABI_V1;
+    std::snprintf(physical_manual.motor_serial, sizeof(physical_manual.motor_serial), "x");
+    oa_runtime_calibration *physical_calibration = nullptr;
+    CHECK(oa_runtime_calibration_manual_begin(query_runtime, &physical_manual,
+                                              &physical_calibration) ==
+          OA_RUNTIME_EUNSUPPORTED);
+    oa_commission_recipe physical_recipe{};
+    physical_recipe.struct_size = sizeof(physical_recipe);
+    physical_recipe.abi_version = OA_COMMISSION_ABI_V1;
+    CHECK(oa_runtime_calibration_recipe_begin(query_runtime, &physical_recipe,
+                                              &physical_calibration) ==
+          OA_RUNTIME_EUNSUPPORTED);
+    physical_recipe.side = 2U;
+    CHECK(oa_runtime_calibration_recipe_begin(query_runtime, &physical_recipe,
+                                              &physical_calibration) ==
+          OA_RUNTIME_EINVAL);
     oa_runtime_inventory_destroy(inventory);
     oa_runtime_destroy(query_runtime);
+
+    auto offline_options = virtual_options();
+    offline_options.backend = OA_RUNTIME_BACKEND_OFFLINE;
+    oa_runtime *offline_runtime = nullptr;
+    CHECK(oa_runtime_create(&offline_options, manifest, &offline_runtime) == OA_RUNTIME_OK);
+    std::uint64_t offline_before = 0U;
+    std::uint64_t offline_after = 0U;
+    CHECK(oa_runtime_now_monotonic_ns(offline_runtime, OA_RUNTIME_CLOCK_MONOTONIC,
+                                      &offline_before) == OA_RUNTIME_OK);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    CHECK(oa_runtime_now_monotonic_ns(offline_runtime, OA_RUNTIME_CLOCK_MONOTONIC,
+                                      &offline_after) == OA_RUNTIME_OK);
+    CHECK(offline_before > 0U && offline_after > offline_before);
+    oa_runtime_destroy(offline_runtime);
+
+    oa_runtime_options invalid_options = options;
+    invalid_options.backend = 99U;
+    CHECK(oa_runtime_create(&invalid_options, manifest, &offline_runtime) ==
+          OA_RUNTIME_EINVAL);
+    invalid_options = options;
+    invalid_options.struct_size = 0U;
+    CHECK(oa_runtime_create(&invalid_options, manifest, &offline_runtime) ==
+          OA_RUNTIME_EABI);
     oa_runtime_manifest_destroy(manifest);
     return 0;
 }

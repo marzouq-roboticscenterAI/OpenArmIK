@@ -19,6 +19,8 @@ extern "C" {
 #define OA_RUNTIME_MAX_QUERY_MOTORS UINT32_C(16)
 #define OA_RUNTIME_TEXT_CAPACITY UINT32_C(64)
 #define OA_RUNTIME_DIGEST_CAPACITY UINT32_C(65)
+#define OA_RUNTIME_PROVENANCE_CAPACITY UINT32_C(192)
+#define OA_RUNTIME_PERSISTENCE_KEY_BYTES UINT32_C(32)
 
 typedef uint32_t oa_runtime_status;
 #define OA_RUNTIME_OK UINT32_C(0x52000000)
@@ -36,6 +38,9 @@ typedef uint32_t oa_runtime_status;
 #define OA_RUNTIME_EFAULT UINT32_C(0x5200000c)
 #define OA_RUNTIME_ENOMEM UINT32_C(0x5200000d)
 #define OA_RUNTIME_ECOLLISION UINT32_C(0x5200000e)
+#define OA_RUNTIME_EUNREACHABLE UINT32_C(0x5200000f)
+/* Post-commit rollback could not be confirmed; target state/durability is unknown. */
+#define OA_RUNTIME_EDURABILITY UINT32_C(0x52000010)
 
 typedef uint32_t oa_runtime_facility;
 #define OA_RUNTIME_FACILITY_RUNTIME UINT32_C(1)
@@ -63,6 +68,14 @@ typedef uint32_t oa_runtime_units_id;
 typedef uint32_t oa_runtime_orientation_policy;
 #define OA_RUNTIME_ORIENTATION_FREE UINT32_C(1)
 
+typedef uint32_t oa_runtime_collision_policy;
+#define OA_RUNTIME_COLLISION_REJECT_ALL UINT32_C(1)
+#define OA_RUNTIME_COLLISION_VIRTUAL_UNCHECKED UINT32_C(2)
+
+typedef uint32_t oa_runtime_integrity_kind;
+#define OA_RUNTIME_INTEGRITY_UNKEYED_SHA256 UINT32_C(1)
+#define OA_RUNTIME_INTEGRITY_HMAC_SHA256 UINT32_C(2)
+
 #define OA_RUNTIME_EVENT_VERIFIED UINT32_C(1)
 #define OA_RUNTIME_EVENT_ARMED UINT32_C(2)
 #define OA_RUNTIME_EVENT_STARTED UINT32_C(3)
@@ -79,6 +92,8 @@ typedef uint32_t oa_runtime_orientation_policy;
 #define OA_RUNTIME_STOP_CONTROLLED UINT32_C(2)
 
 typedef uint64_t oa_runtime_capability;
+/* Reserved operation bits. Runtime V1 has no standalone FK/IK entry points and
+ * therefore never advertises these bits. */
 #define OA_RUNTIME_CAP_MODEL_FK (UINT64_C(1) << 0)
 #define OA_RUNTIME_CAP_SINGLE_XYZ_IK (UINT64_C(1) << 1)
 #define OA_RUNTIME_CAP_PAIRED_XYZ_IK (UINT64_C(1) << 2)
@@ -117,6 +132,7 @@ typedef struct oa_runtime_manifest oa_runtime_manifest;
 typedef struct oa_runtime_inventory oa_runtime_inventory;
 typedef struct oa_runtime_calibration oa_runtime_calibration;
 typedef struct oa_runtime_plan oa_runtime_plan;
+typedef struct oa_runtime_persistence_authority oa_runtime_persistence_authority;
 
 typedef struct oa_runtime_error_detail {
     uint32_t struct_size;
@@ -146,9 +162,32 @@ typedef struct oa_runtime_capability_report {
     oa_runtime_units_id units_id;
     oa_runtime_frame_id xyz_frame_id;
     oa_runtime_orientation_policy orientation_policy;
+    oa_runtime_collision_policy collision_policy;
     uint32_t collision_checked;
+    uint64_t model_revision;
     oa_runtime_capability capabilities;
+    char coordinate_identity_sha256[OA_RUNTIME_DIGEST_CAPACITY];
 } oa_runtime_capability_report;
+
+typedef struct oa_runtime_model_identity {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t side;
+    oa_runtime_frame_id xyz_frame_id;
+    oa_runtime_units_id units_id;
+    oa_runtime_orientation_policy orientation_policy;
+    oa_runtime_collision_policy collision_policy;
+    uint64_t model_revision;
+    uint64_t tcp_revision;
+    uint64_t collision_scene_revision;
+    char model_id[OA_RUNTIME_TEXT_CAPACITY];
+    char provenance[OA_RUNTIME_PROVENANCE_CAPACITY];
+    char model_data_sha256[OA_RUNTIME_DIGEST_CAPACITY];
+    char flattened_urdf_sha256[OA_RUNTIME_DIGEST_CAPACITY];
+    char source_sha256[OA_RUNTIME_DIGEST_CAPACITY];
+    char tcp_frame[OA_RUNTIME_TEXT_CAPACITY];
+    char coordinate_identity_sha256[OA_RUNTIME_DIGEST_CAPACITY];
+} oa_runtime_model_identity;
 
 typedef struct oa_runtime_interface {
     uint32_t struct_size;
@@ -274,8 +313,11 @@ typedef struct oa_runtime_manifest_summary {
     uint64_t manifest_revision;
     uint64_t model_revision;
     uint64_t inventory_revision;
+    oa_runtime_integrity_kind integrity_kind;
+    uint32_t authenticated;
     char inventory_fingerprint_sha256[OA_RUNTIME_DIGEST_CAPACITY];
     char content_sha256[OA_RUNTIME_DIGEST_CAPACITY];
+    char authentication_key_id[OA_RUNTIME_TEXT_CAPACITY];
 } oa_runtime_manifest_summary;
 
 typedef struct oa_runtime_manifest_preview {
@@ -321,6 +363,7 @@ typedef struct oa_runtime_snapshot {
     uint64_t manifest_revision;
     uint64_t model_revision;
     uint64_t maximum_cross_bus_skew_ns;
+    char coordinate_identity_sha256[OA_RUNTIME_DIGEST_CAPACITY];
     oa_runtime_arm_snapshot arm[OA_RUNTIME_ARMS];
 } oa_runtime_snapshot;
 
@@ -332,6 +375,14 @@ typedef struct oa_runtime_kinematics {
     oa_runtime_orientation_policy orientation_policy;
     uint32_t side;
     uint64_t feedback_seq;
+    uint64_t model_revision;
+    uint64_t tcp_revision;
+    oa_runtime_collision_policy collision_policy;
+    char model_id[OA_RUNTIME_TEXT_CAPACITY];
+    char tcp_frame[OA_RUNTIME_TEXT_CAPACITY];
+    char model_data_sha256[OA_RUNTIME_DIGEST_CAPACITY];
+    char flattened_urdf_sha256[OA_RUNTIME_DIGEST_CAPACITY];
+    char coordinate_identity_sha256[OA_RUNTIME_DIGEST_CAPACITY];
     double q_model_rad[OA_RUNTIME_DOF];
     double joint_xyz_m[OA_RUNTIME_DOF][3];
     double joint_axis_body[OA_RUNTIME_DOF][3];
@@ -372,6 +423,10 @@ typedef struct oa_runtime_paired_tcp_move {
     double jerk_scale;
     double tcp_tolerance_m;
     uint64_t collision_scene_revision;
+    uint64_t required_model_revision;
+    uint64_t required_tcp_revision[OA_RUNTIME_ARMS];
+    oa_runtime_collision_policy required_collision_policy;
+    char required_coordinate_identity_sha256[OA_RUNTIME_DIGEST_CAPACITY];
     double maximum_branch_step_rad;
     double minimum_singular_value;
 } oa_runtime_paired_tcp_move;
@@ -389,6 +444,8 @@ typedef struct oa_runtime_plan_report {
     uint64_t manifest_revision;
     uint64_t model_revision;
     uint64_t collision_scene_revision;
+    oa_runtime_collision_policy collision_policy;
+    char coordinate_identity_sha256[OA_RUNTIME_DIGEST_CAPACITY];
     double target_q_model_rad[OA_RUNTIME_ARMS][OA_RUNTIME_DOF];
     double achieved_tcp_m[OA_RUNTIME_ARMS][3];
     double tcp_residual_m[OA_RUNTIME_ARMS];
@@ -420,14 +477,15 @@ typedef struct oa_runtime_event {
     uint64_t model_revision;
     uint64_t scene_revision;
     uint64_t feedback_seq[OA_RUNTIME_ARMS];
+    uint64_t source_feedback_seq;
+    uint32_t feedback_seq_valid_mask;
+    uint32_t measurement_timestamp_valid;
     uint64_t command_id;
     uint32_t lifecycle;
     uint32_t collision_checked;
     uint32_t motion_authorized;
     oa_runtime_capability capabilities;
 } oa_runtime_event;
-
-#define OA_RUNTIME_PERSISTENCE_AUTHORIZED UINT32_C(0x41555448)
 
 oa_runtime_status oa_runtime_manifest_create_virtual(oa_runtime_manifest **out_manifest);
 oa_runtime_status oa_runtime_manifest_get_summary(const oa_runtime_manifest *manifest,
@@ -439,9 +497,18 @@ oa_runtime_status oa_runtime_manifest_preview_file(const char *absolute_path,
                                                    oa_runtime_manifest_preview *out_preview);
 oa_runtime_status oa_runtime_manifest_load(const char *absolute_path,
                                            oa_runtime_manifest **out_manifest);
+oa_runtime_status oa_runtime_persistence_authority_create(
+    const char *absolute_directory,
+    const uint8_t authentication_key[OA_RUNTIME_PERSISTENCE_KEY_BYTES],
+    const char *authentication_key_id,
+    oa_runtime_persistence_authority **out_authority);
+void oa_runtime_persistence_authority_destroy(oa_runtime_persistence_authority *authority);
+oa_runtime_status oa_runtime_manifest_load_authenticated(
+    const oa_runtime_persistence_authority *authority, const char *file_name,
+    oa_runtime_manifest **out_manifest);
 oa_runtime_status oa_runtime_manifest_save(const oa_runtime_manifest *manifest,
-                                           const char *absolute_path,
-                                           uint32_t persistence_authority);
+                                           const oa_runtime_persistence_authority *authority,
+                                           const char *file_name);
 void oa_runtime_manifest_destroy(oa_runtime_manifest *manifest);
 
 oa_runtime_status oa_runtime_create(const oa_runtime_options *options,
@@ -450,6 +517,8 @@ oa_runtime_status oa_runtime_create(const oa_runtime_options *options,
 void oa_runtime_destroy(oa_runtime *runtime);
 oa_runtime_status oa_runtime_get_capabilities(const oa_runtime *runtime,
                                               oa_runtime_capability_report *out_report);
+oa_runtime_status oa_runtime_get_model_identity(const oa_runtime *runtime, uint32_t side,
+                                                oa_runtime_model_identity *out_identity);
 oa_runtime_status oa_runtime_now_monotonic_ns(const oa_runtime *runtime,
                                               oa_runtime_clock_id clock_id,
                                               uint64_t *out_now_ns);

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "runtime_internal.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 namespace {
@@ -11,7 +12,8 @@ bool commission_text_valid(const char *text, std::size_t capacity) {
 
 oa_runtime_status snapshot_sample(const std::shared_ptr<openarm::runtime::CalibrationData> &session,
                                   oa_commission_encoder_sample &sample,
-                                  std::uint64_t &now) {
+                                  std::uint64_t &now,
+                                  oa_snapshot *out_snapshot = nullptr) {
     if (!session || session->finished || !session->runtime ||
         session->runtime->controller == nullptr) return OA_RUNTIME_ESTATE;
     {
@@ -21,7 +23,11 @@ oa_runtime_status snapshot_sample(const std::shared_ptr<openarm::runtime::Calibr
     oa_snapshot snapshot{};
     openarm::runtime::control_init(snapshot);
     const oa_control_status lower = oa_controller_snapshot(session->runtime->controller, &snapshot);
-    if (lower != OA_CONTROL_OK) return openarm::runtime::map_control(lower);
+    if (lower != OA_CONTROL_OK) {
+        return openarm::runtime::record_error(
+            session->runtime, openarm::runtime::map_control(lower),
+            OA_RUNTIME_FACILITY_CONTROL, lower);
+    }
     const oa_arm_snapshot &arm = snapshot.arm[session->side];
     sample = {};
     sample.struct_size = sizeof(sample);
@@ -35,9 +41,21 @@ oa_runtime_status snapshot_sample(const std::shared_ptr<openarm::runtime::Calibr
     sample.coil_temperature_c = arm.coil_c[session->joint];
     sample.drive_enabled = arm.status[session->joint] == 1U ? 1U : 0U;
     sample.drive_fault = (arm.fault_mask & (UINT32_C(1) << session->joint)) != 0U ? 1U : 0U;
-    now = session->runtime->timeline_ns.load(std::memory_order_acquire);
+    now = openarm::runtime::now_ns();
+    std::uint64_t observed = session->runtime->timeline_ns.load(std::memory_order_acquire);
+    while (observed < now && !session->runtime->timeline_ns.compare_exchange_weak(
+                                 observed, now, std::memory_order_release,
+                                 std::memory_order_acquire)) {}
     if (sample.feedback_seq == 0U || sample.sample_time_ns == 0U ||
-        sample.sample_time_ns > now) return OA_RUNTIME_ESTALE;
+        sample.sample_time_ns > now ||
+        sample.feedback_seq <= session->last_sample_feedback_seq ||
+        sample.sample_time_ns <= session->last_sample_time_ns) {
+        return openarm::runtime::record_error(
+            session->runtime, OA_RUNTIME_ESTALE, OA_RUNTIME_FACILITY_RUNTIME);
+    }
+    session->last_sample_feedback_seq = sample.feedback_seq;
+    session->last_sample_time_ns = sample.sample_time_ns;
+    if (out_snapshot != nullptr) *out_snapshot = snapshot;
     return OA_RUNTIME_OK;
 }
 
@@ -62,8 +80,8 @@ oa_runtime_status publish_manifest(
             std::lock_guard<std::mutex> lock(session->runtime->mutex);
             session->runtime->calibration_revision = patch.replacement_revision;
             if (session->runtime->owner == 2U) session->runtime->owner = 0U;
-            session->finished = true;
         }
+        session->finished = true;
         *out_manifest = handle;
         *out_preview = preview;
         return OA_RUNTIME_OK;
@@ -80,20 +98,24 @@ extern "C" oa_runtime_status oa_runtime_calibration_manual_begin(
     if (out_calibration == nullptr) return OA_RUNTIME_EINVAL;
     *out_calibration = nullptr;
     if (options == nullptr || options->struct_size < sizeof(*options) ||
-        options->abi_version != OA_COMMISSION_ABI_V1 || options->side >= 2U ||
-        options->joint >= 7U || !commission_text_valid(options->motor_serial,
-                                                       sizeof(options->motor_serial))) {
+        options->abi_version != OA_COMMISSION_ABI_V1) {
         return OA_RUNTIME_EABI;
+    }
+    if (options->side >= 2U || options->joint >= 7U ||
+        !commission_text_valid(options->motor_serial, sizeof(options->motor_serial))) {
+        return OA_RUNTIME_EINVAL;
     }
     const auto owner = openarm::runtime::runtimes.pin(runtime);
     if (!owner) return OA_RUNTIME_EINVAL;
     if (owner->options.backend != OA_RUNTIME_BACKEND_VIRTUAL || owner->controller == nullptr) {
-        return OA_RUNTIME_EUNSUPPORTED;
+        return openarm::runtime::record_error(
+            owner, OA_RUNTIME_EUNSUPPORTED, OA_RUNTIME_FACILITY_RUNTIME);
     }
     const oa_motor_config &motor = owner->manifest->config.arm[options->side].motor[options->joint];
     if (options->expected_revision != owner->manifest->config.manifest_revision ||
         std::strncmp(options->motor_serial, motor.serial, sizeof(motor.serial)) != 0) {
-        return OA_RUNTIME_EIDENTITY;
+        return openarm::runtime::record_error(
+            owner, OA_RUNTIME_EIDENTITY, OA_RUNTIME_FACILITY_RUNTIME);
     }
     try {
         auto session = std::make_shared<openarm::runtime::CalibrationData>();
@@ -103,22 +125,30 @@ extern "C" oa_runtime_status oa_runtime_calibration_manual_begin(
         session->joint = options->joint;
         {
             std::lock_guard<std::mutex> lock(owner->mutex);
-            if (owner->closing) return OA_RUNTIME_ESTATE;
-            if (owner->owner != 0U) return OA_RUNTIME_EBUSY;
+            if (owner->closing || owner->owner != 0U) {
+                openarm::runtime::runtime_init(owner->last_error);
+                owner->last_error.status = owner->closing ? OA_RUNTIME_ESTATE
+                                                          : OA_RUNTIME_EBUSY;
+                owner->last_error.facility = OA_RUNTIME_FACILITY_RUNTIME;
+                return owner->last_error.status;
+            }
             owner->owner = 2U;
         }
         const oa_commission_status lower = oa_commission_manual_create(options, &session->manual);
         if (lower != OA_COMMISSION_OK) {
             std::lock_guard<std::mutex> lock(owner->mutex);
             owner->owner = 0U;
-            return openarm::runtime::map_commission(lower);
+            return openarm::runtime::record_error(
+                owner, openarm::runtime::map_commission(lower),
+                OA_RUNTIME_FACILITY_COMMISSION, lower);
         }
         oa_runtime_calibration *const handle = openarm::runtime::calibrations.insert(session);
         if (handle == nullptr) return OA_RUNTIME_ENOMEM;
         *out_calibration = handle;
         return OA_RUNTIME_OK;
     } catch (...) {
-        return OA_RUNTIME_ENOMEM;
+        return openarm::runtime::record_error(
+            owner, OA_RUNTIME_ENOMEM, OA_RUNTIME_FACILITY_RUNTIME);
     }
 }
 
@@ -127,20 +157,29 @@ extern "C" oa_runtime_status oa_runtime_calibration_manual_sample(
     oa_commission_manual_report *out_report) {
     const auto session = openarm::runtime::calibrations.pin(calibration);
     if (!session || session->manual == nullptr) return OA_RUNTIME_EINVAL;
+    std::lock_guard<std::mutex> session_lock(session->mutex);
     oa_commission_encoder_sample sample{};
     std::uint64_t now = 0U;
     oa_runtime_status status = snapshot_sample(session, sample, now);
     if (status != OA_RUNTIME_OK) return status;
-    return openarm::runtime::map_commission(oa_commission_manual_sample(
-        session->manual, reference_index, now, &sample, out_report));
+    const oa_commission_status lower = oa_commission_manual_sample(
+        session->manual, reference_index, now, &sample, out_report);
+    return openarm::runtime::record_error(
+        session->runtime, openarm::runtime::map_commission(lower),
+        OA_RUNTIME_FACILITY_COMMISSION, lower);
 }
 
 extern "C" oa_runtime_status oa_runtime_calibration_manual_begin_review(
     oa_runtime_calibration *calibration, oa_commission_manual_report *out_report) {
     const auto session = openarm::runtime::calibrations.pin(calibration);
-    if (!session || session->manual == nullptr || session->finished) return OA_RUNTIME_EINVAL;
-    return openarm::runtime::map_commission(
-        oa_commission_manual_begin_review(session->manual, out_report));
+    if (!session || session->manual == nullptr) return OA_RUNTIME_EINVAL;
+    std::lock_guard<std::mutex> session_lock(session->mutex);
+    if (session->finished) return OA_RUNTIME_ESTATE;
+    const oa_commission_status lower =
+        oa_commission_manual_begin_review(session->manual, out_report);
+    return openarm::runtime::record_error(
+        session->runtime, openarm::runtime::map_commission(lower),
+        OA_RUNTIME_FACILITY_COMMISSION, lower);
 }
 
 extern "C" oa_runtime_status oa_runtime_calibration_manual_commit(
@@ -148,8 +187,12 @@ extern "C" oa_runtime_status oa_runtime_calibration_manual_commit(
     const char *evidence_record, oa_runtime_manifest **out_manifest,
     oa_runtime_manifest_preview *out_preview) {
     const auto session = openarm::runtime::calibrations.pin(calibration);
-    if (!session || session->manual == nullptr || session->finished ||
-        !commission_text_valid(evidence_record, OA_COMMISSION_TEXT_CAPACITY)) {
+    if (!session || session->manual == nullptr) {
+        return OA_RUNTIME_EINVAL;
+    }
+    std::lock_guard<std::mutex> session_lock(session->mutex);
+    if (session->finished) return OA_RUNTIME_ESTATE;
+    if (!commission_text_valid(evidence_record, OA_COMMISSION_TEXT_CAPACITY)) {
         return OA_RUNTIME_EINVAL;
     }
     oa_commission_mapping_patch patch{};
@@ -157,7 +200,11 @@ extern "C" oa_runtime_status oa_runtime_calibration_manual_commit(
     patch.abi_version = OA_COMMISSION_ABI_V1;
     const oa_commission_status lower = oa_commission_manual_commit(
         session->manual, replacement_revision, evidence_record, &patch);
-    if (lower != OA_COMMISSION_OK) return openarm::runtime::map_commission(lower);
+    if (lower != OA_COMMISSION_OK) {
+        return openarm::runtime::record_error(
+            session->runtime, openarm::runtime::map_commission(lower),
+            OA_RUNTIME_FACILITY_COMMISSION, lower);
+    }
     return publish_manifest(session, patch, out_manifest, out_preview);
 }
 
@@ -167,17 +214,19 @@ extern "C" oa_runtime_status oa_runtime_calibration_recipe_begin(
     if (out_calibration == nullptr) return OA_RUNTIME_EINVAL;
     *out_calibration = nullptr;
     if (recipe == nullptr || recipe->struct_size < sizeof(*recipe) ||
-        recipe->abi_version != OA_COMMISSION_ABI_V1 || recipe->side >= 2U ||
-        recipe->joint >= 7U) return OA_RUNTIME_EABI;
+        recipe->abi_version != OA_COMMISSION_ABI_V1) return OA_RUNTIME_EABI;
+    if (recipe->side >= 2U || recipe->joint >= 7U) return OA_RUNTIME_EINVAL;
     const auto owner = openarm::runtime::runtimes.pin(runtime);
     if (!owner) return OA_RUNTIME_EINVAL;
     if (owner->options.backend != OA_RUNTIME_BACKEND_VIRTUAL || owner->controller == nullptr) {
-        return OA_RUNTIME_EUNSUPPORTED;
+        return openarm::runtime::record_error(
+            owner, OA_RUNTIME_EUNSUPPORTED, OA_RUNTIME_FACILITY_RUNTIME);
     }
     const oa_motor_config &motor = owner->manifest->config.arm[recipe->side].motor[recipe->joint];
     if (recipe->expected_revision != owner->manifest->config.manifest_revision ||
         std::strncmp(recipe->motor_serial, motor.serial, sizeof(motor.serial)) != 0) {
-        return OA_RUNTIME_EIDENTITY;
+        return openarm::runtime::record_error(
+            owner, OA_RUNTIME_EIDENTITY, OA_RUNTIME_FACILITY_RUNTIME);
     }
     try {
         auto session = std::make_shared<openarm::runtime::CalibrationData>();
@@ -185,24 +234,37 @@ extern "C" oa_runtime_status oa_runtime_calibration_recipe_begin(
         session->base = owner->manifest;
         session->side = recipe->side;
         session->joint = recipe->joint;
+        session->required_posture_mask = recipe->required_posture_mask;
+        session->evidence_revision = recipe->simulation_only != 0U
+                                         ? recipe->simulation_evidence_revision
+                                         : recipe->qualification_revision;
+        session->fixture_revision = recipe->fixture_revision;
         {
             std::lock_guard<std::mutex> lock(owner->mutex);
-            if (owner->closing) return OA_RUNTIME_ESTATE;
-            if (owner->owner != 0U) return OA_RUNTIME_EBUSY;
+            if (owner->closing || owner->owner != 0U) {
+                openarm::runtime::runtime_init(owner->last_error);
+                owner->last_error.status = owner->closing ? OA_RUNTIME_ESTATE
+                                                          : OA_RUNTIME_EBUSY;
+                owner->last_error.facility = OA_RUNTIME_FACILITY_RUNTIME;
+                return owner->last_error.status;
+            }
             owner->owner = 2U;
         }
         const oa_commission_status lower = oa_commission_recipe_create(recipe, &session->recipe);
         if (lower != OA_COMMISSION_OK) {
             std::lock_guard<std::mutex> lock(owner->mutex);
             owner->owner = 0U;
-            return openarm::runtime::map_commission(lower);
+            return openarm::runtime::record_error(
+                owner, openarm::runtime::map_commission(lower),
+                OA_RUNTIME_FACILITY_COMMISSION, lower);
         }
         oa_runtime_calibration *const handle = openarm::runtime::calibrations.insert(session);
         if (handle == nullptr) return OA_RUNTIME_ENOMEM;
         *out_calibration = handle;
         return OA_RUNTIME_OK;
     } catch (...) {
-        return OA_RUNTIME_ENOMEM;
+        return openarm::runtime::record_error(
+            owner, OA_RUNTIME_ENOMEM, OA_RUNTIME_FACILITY_RUNTIME);
     }
 }
 
@@ -210,39 +272,72 @@ extern "C" oa_runtime_status oa_runtime_calibration_recipe_step(
     oa_runtime_calibration *calibration, const oa_commission_recipe_input *input,
     oa_commission_next_action *out_action, oa_commission_recipe_report *out_report) {
     const auto session = openarm::runtime::calibrations.pin(calibration);
-    if (!session || session->recipe == nullptr || session->finished || input == nullptr ||
-        input->struct_size < sizeof(*input) || input->abi_version != OA_COMMISSION_ABI_V1) {
+    if (!session || session->recipe == nullptr) {
         return OA_RUNTIME_EINVAL;
     }
+    if (input == nullptr || input->struct_size < sizeof(*input) ||
+        input->abi_version != OA_COMMISSION_ABI_V1) return OA_RUNTIME_EABI;
+    std::lock_guard<std::mutex> session_lock(session->mutex);
+    if (session->finished) return OA_RUNTIME_ESTATE;
     oa_commission_encoder_sample sample{};
+    oa_snapshot snapshot{};
     std::uint64_t now = 0U;
-    oa_runtime_status status = snapshot_sample(session, sample, now);
+    oa_runtime_status status = snapshot_sample(session, sample, now, &snapshot);
     if (status != OA_RUNTIME_OK) return status;
-    oa_commission_recipe_input bound = *input;
+    oa_commission_recipe_input bound{};
+    bound.struct_size = sizeof(bound);
+    bound.abi_version = OA_COMMISSION_ABI_V1;
     bound.now_ns = now;
     bound.encoder = sample;
-    return openarm::runtime::map_commission(
-        oa_commission_recipe_step(session->recipe, &bound, out_action, out_report));
+    bound.operator_ready = input->operator_ready;
+    bound.action_complete = input->action_complete;
+    bound.review_decision = input->review_decision;
+    {
+        std::lock_guard<std::mutex> runtime_lock(session->runtime->mutex);
+        bound.estop_clear = session->runtime->estop_active ? 0U : 1U;
+        bound.deadman_held = session->runtime->deadman_active ? 1U : 0U;
+    }
+    const oa_arm_snapshot &arm = snapshot.arm[session->side];
+    bound.posture_mask =
+        (arm.fresh_mask & session->required_posture_mask) == session->required_posture_mask
+            ? session->required_posture_mask
+            : 0U;
+    bound.evidence_revision = session->evidence_revision;
+    bound.fixture_revision = session->fixture_revision;
+    std::copy_n(arm.raw_q, OA_RUNTIME_DOF, bound.posture_output_rad);
+    const oa_commission_status lower =
+        oa_commission_recipe_step(session->recipe, &bound, out_action, out_report);
+    return openarm::runtime::record_error(
+        session->runtime, openarm::runtime::map_commission(lower),
+        OA_RUNTIME_FACILITY_COMMISSION, lower);
 }
 
 extern "C" oa_runtime_status oa_runtime_calibration_recipe_commit(
     oa_runtime_calibration *calibration, std::uint64_t replacement_revision,
     oa_runtime_manifest **out_manifest, oa_runtime_manifest_preview *out_preview) {
     const auto session = openarm::runtime::calibrations.pin(calibration);
-    if (!session || session->recipe == nullptr || session->finished) return OA_RUNTIME_EINVAL;
+    if (!session || session->recipe == nullptr) return OA_RUNTIME_EINVAL;
+    std::lock_guard<std::mutex> session_lock(session->mutex);
+    if (session->finished) return OA_RUNTIME_ESTATE;
     oa_commission_mapping_patch patch{};
     patch.struct_size = sizeof(patch);
     patch.abi_version = OA_COMMISSION_ABI_V1;
     const oa_commission_status lower =
         oa_commission_recipe_commit(session->recipe, replacement_revision, &patch);
-    if (lower != OA_COMMISSION_OK) return openarm::runtime::map_commission(lower);
+    if (lower != OA_COMMISSION_OK) {
+        return openarm::runtime::record_error(
+            session->runtime, openarm::runtime::map_commission(lower),
+            OA_RUNTIME_FACILITY_COMMISSION, lower);
+    }
     return publish_manifest(session, patch, out_manifest, out_preview);
 }
 
 extern "C" oa_runtime_status oa_runtime_calibration_abort(
     oa_runtime_calibration *calibration) {
     const auto session = openarm::runtime::calibrations.pin(calibration);
-    if (!session || session->finished) return OA_RUNTIME_EINVAL;
+    if (!session) return OA_RUNTIME_EINVAL;
+    std::lock_guard<std::mutex> session_lock(session->mutex);
+    if (session->finished) return OA_RUNTIME_ESTATE;
     const oa_commission_status lower = session->manual != nullptr
                                            ? oa_commission_manual_abort(session->manual)
                                            : oa_commission_recipe_abort(session->recipe);
@@ -252,7 +347,8 @@ extern "C" oa_runtime_status oa_runtime_calibration_abort(
         session->finished = true;
         if (session->runtime->owner == 2U) session->runtime->owner = 0U;
     }
-    return status;
+    return openarm::runtime::record_error(
+        session->runtime, status, OA_RUNTIME_FACILITY_COMMISSION, lower);
 }
 
 extern "C" void oa_runtime_calibration_destroy(oa_runtime_calibration *calibration) {

@@ -18,7 +18,24 @@ constexpr std::array<oa_can_register_id, 14> kRegisterIds{
     OA_CAN_RID_PMAX, OA_CAN_RID_VMAX, OA_CAN_RID_TMAX,
     OA_CAN_RID_GEAR_RATIO, OA_CAN_RID_DIRECTION};
 
-std::shared_ptr<InventoryData> virtual_inventory() {
+struct TransportDeleter {
+    using Cleanup = void (*)(oa_transport *);
+    Cleanup cleanup{};
+
+    void operator()(oa_transport *transport) const noexcept {
+        if (transport == nullptr) return;
+        if (cleanup != nullptr) {
+            cleanup(transport);
+            return;
+        }
+        oa_transport_close(transport);
+        oa_transport_destroy(transport);
+    }
+};
+
+using TransportPtr = std::unique_ptr<oa_transport, TransportDeleter>;
+
+std::shared_ptr<InventoryData> virtual_inventory(std::uint64_t timestamp_ns) {
     auto result = std::make_shared<InventoryData>();
     for (std::uint32_t side = 0U; side < 2U; ++side) {
         oa_runtime_interface interface{};
@@ -39,8 +56,8 @@ std::shared_ptr<InventoryData> virtual_inventory() {
             motor.requested_send_id = static_cast<std::uint16_t>(joint + 1U);
             motor.expected_receive_id = static_cast<std::uint16_t>(joint + 0x11U);
             motor.observed_receive_id = motor.expected_receive_id;
-            motor.query_sent_runtime_monotonic_ns = 1U;
-            motor.response_runtime_monotonic_ns = 1U;
+            motor.query_sent_runtime_monotonic_ns = timestamp_ns;
+            motor.response_runtime_monotonic_ns = timestamp_ns;
             motor.register_presence_mask = (UINT64_C(1) << kRegisterIds.size()) - 1U;
             motor.confidence = OA_RUNTIME_EVIDENCE_VIRTUAL_EXACT;
             motor.unresolved_assignment = 0U;
@@ -135,6 +152,32 @@ void store_value(oa_runtime_motor_evidence &motor, std::size_t index,
 }
 }
 
+#ifdef OA_RUNTIME_ENABLE_TEST_HOOKS
+namespace {
+std::atomic<std::uint32_t> transport_probe_cleanups{0U};
+
+void transport_probe_cleanup(oa_transport *) {
+    transport_probe_cleanups.fetch_add(1U, std::memory_order_relaxed);
+}
+}
+
+extern "C" oa_runtime_status oa_runtime_test_transport_raii_probe(void) {
+    transport_probe_cleanups.store(0U, std::memory_order_relaxed);
+    try {
+        openarm::runtime::TransportPtr lease(
+            reinterpret_cast<oa_transport *>(static_cast<std::uintptr_t>(0x10U)),
+            openarm::runtime::TransportDeleter{transport_probe_cleanup});
+        throw std::bad_alloc();
+    } catch (const std::bad_alloc &) {
+        return transport_probe_cleanups.load(std::memory_order_relaxed) == 1U
+                   ? OA_RUNTIME_OK
+                   : OA_RUNTIME_EFAULT;
+    } catch (...) {
+        return OA_RUNTIME_EFAULT;
+    }
+}
+#endif
+
 extern "C" oa_runtime_status oa_runtime_list_interfaces(
     const oa_runtime *runtime, oa_runtime_interface *interfaces,
     std::size_t capacity, std::size_t *out_count) {
@@ -144,7 +187,7 @@ extern "C" oa_runtime_status oa_runtime_list_interfaces(
     std::vector<oa_runtime_interface> found;
     try {
         if (pinned->options.backend == OA_RUNTIME_BACKEND_VIRTUAL) {
-            found = openarm::runtime::virtual_inventory()->interfaces;
+            found = openarm::runtime::virtual_inventory(openarm::runtime::now_ns())->interfaces;
         } else if (pinned->options.backend == OA_RUNTIME_BACKEND_SOCKETCAN_QUERY) {
             found = openarm::runtime::physical_interfaces();
         }
@@ -170,16 +213,21 @@ extern "C" oa_runtime_status oa_runtime_inventory_query(
     try {
         std::shared_ptr<openarm::runtime::InventoryData> result;
         if (owner->options.backend == OA_RUNTIME_BACKEND_VIRTUAL) {
-            result = openarm::runtime::virtual_inventory();
+            const std::uint64_t timestamp = openarm::runtime::now_ns();
+            result = openarm::runtime::virtual_inventory(timestamp);
         } else if (owner->options.backend == OA_RUNTIME_BACKEND_SOCKETCAN_QUERY) {
             if (options == nullptr || options->struct_size < sizeof(*options) ||
-                options->abi_version != OA_RUNTIME_ABI_VERSION ||
-                options->candidate_count > OA_RUNTIME_MAX_QUERY_MOTORS ||
+                options->abi_version != OA_RUNTIME_ABI_VERSION) {
+                return openarm::runtime::record_error(
+                    owner, OA_RUNTIME_EABI, OA_RUNTIME_FACILITY_RUNTIME);
+            }
+            if (options->candidate_count > OA_RUNTIME_MAX_QUERY_MOTORS ||
                 options->per_query_timeout_ns == 0U ||
                 options->per_query_timeout_ns > 1000000000U ||
                 options->maximum_received_frames == 0U ||
                 std::memchr(options->interface_name, '\0', sizeof(options->interface_name)) == nullptr) {
-                return OA_RUNTIME_EABI;
+                return openarm::runtime::record_error(
+                    owner, OA_RUNTIME_EINVAL, OA_RUNTIME_FACILITY_RUNTIME);
             }
             result = std::make_shared<openarm::runtime::InventoryData>();
             const auto available = openarm::runtime::physical_interfaces();
@@ -196,11 +244,17 @@ extern "C" oa_runtime_status oa_runtime_inventory_query(
                 filters.reserve(options->candidate_count);
                 for (std::uint32_t i = 0U; i < options->candidate_count; ++i) {
                     if (options->candidate[i].struct_size < sizeof(oa_runtime_query_candidate) ||
-                        options->candidate[i].abi_version != OA_RUNTIME_ABI_VERSION ||
-                        options->candidate[i].send_id == 0U ||
+                        options->candidate[i].abi_version != OA_RUNTIME_ABI_VERSION) {
+                        return openarm::runtime::record_error(
+                            owner, OA_RUNTIME_EABI, OA_RUNTIME_FACILITY_RUNTIME);
+                    }
+                    if (options->candidate[i].send_id == 0U ||
                         options->candidate[i].send_id >= 0x7ffU ||
                         options->candidate[i].receive_id == 0U ||
-                        options->candidate[i].receive_id >= 0x7ffU) return OA_RUNTIME_EINVAL;
+                        options->candidate[i].receive_id >= 0x7ffU) {
+                        return openarm::runtime::record_error(
+                            owner, OA_RUNTIME_EINVAL, OA_RUNTIME_FACILITY_RUNTIME);
+                    }
                     oa_transport_filter filter{};
                     filter.struct_size = sizeof(filter);
                     filter.abi_version = OA_TRANSPORT_ABI_VERSION;
@@ -214,11 +268,17 @@ extern "C" oa_runtime_status oa_runtime_inventory_query(
                 open_options.receive_buffer_bytes = 262144U;
                 open_options.can_error_mask = OA_TRANSPORT_CAN_ERROR_MASK;
                 open_options.max_deadline_horizon_ns = 2000000000U;
-                oa_transport *transport = nullptr;
+                oa_transport *raw_transport = nullptr;
                 const oa_transport_status opened = oa_transport_open(
                     options->interface_name, &open_options,
-                    filters.empty() ? nullptr : filters.data(), filters.size(), &transport);
-                if (opened != OA_TRANSPORT_OK) return openarm::runtime::map_transport(opened);
+                    filters.empty() ? nullptr : filters.data(), filters.size(), &raw_transport);
+                if (opened != OA_TRANSPORT_OK) {
+                    return openarm::runtime::record_error(
+                        owner, openarm::runtime::map_transport(opened),
+                        OA_RUNTIME_FACILITY_TRANSPORT, opened);
+                }
+                openarm::runtime::TransportPtr transport(raw_transport);
+                openarm::runtime::allocation_checkpoint();
                 for (std::uint32_t candidate_index = 0U;
                      candidate_index < options->candidate_count; ++candidate_index) {
                     const auto &candidate = options->candidate[candidate_index];
@@ -256,7 +316,7 @@ extern "C" oa_runtime_status oa_runtime_inventory_query(
                         oa_transport_send_result sent{};
                         sent.struct_size = sizeof(sent); sent.abi_version = OA_TRANSPORT_ABI_VERSION;
                         const oa_transport_status send_status =
-                            oa_transport_send(transport, &frame, deadline, &sent);
+                            oa_transport_send(transport.get(), &frame, deadline, &sent);
                         if (send_status != OA_TRANSPORT_OK ||
                             sent.frame_class != OA_TRANSPORT_FRAME_REGISTER_QUERY) continue;
                         motor.query_sent_runtime_monotonic_ns = sent.sent_monotonic_ns;
@@ -264,7 +324,7 @@ extern "C" oa_runtime_status oa_runtime_inventory_query(
                             oa_transport_event event{};
                             event.struct_size = sizeof(event); event.abi_version = OA_TRANSPORT_ABI_VERSION;
                             const oa_transport_status receive_status =
-                                oa_transport_receive(transport, deadline, &event);
+                                oa_transport_receive(transport.get(), deadline, &event);
                             if (receive_status == OA_TRANSPORT_ETIMEOUT) break;
                             if (receive_status != OA_TRANSPORT_OK) { motor.stale_observed = 1U; break; }
                             ++received;
@@ -293,8 +353,6 @@ extern "C" oa_runtime_status oa_runtime_inventory_query(
                                   candidate.send_id, motor.serial_number);
                     result->motors.push_back(motor);
                 }
-                oa_transport_close(transport);
-                oa_transport_destroy(transport);
             }
             result->summary.interface_count =
                 static_cast<std::uint32_t>(result->interfaces.size());
@@ -316,7 +374,8 @@ extern "C" oa_runtime_status oa_runtime_inventory_query(
             std::snprintf(result->summary.fingerprint_sha256,
                           sizeof(result->summary.fingerprint_sha256), "%s", digest.c_str());
         } else {
-            return OA_RUNTIME_EUNSUPPORTED;
+            return openarm::runtime::record_error(
+                owner, OA_RUNTIME_EUNSUPPORTED, OA_RUNTIME_FACILITY_RUNTIME);
         }
         oa_runtime_inventory *const handle = openarm::runtime::inventories.insert(result);
         if (handle == nullptr) return OA_RUNTIME_ENOMEM;
@@ -327,7 +386,8 @@ extern "C" oa_runtime_status oa_runtime_inventory_query(
         *out_inventory = handle;
         return OA_RUNTIME_OK;
     } catch (...) {
-        return OA_RUNTIME_ENOMEM;
+        return openarm::runtime::record_error(
+            owner, OA_RUNTIME_ENOMEM, OA_RUNTIME_FACILITY_RUNTIME);
     }
 }
 
@@ -387,7 +447,8 @@ extern "C" oa_runtime_status oa_runtime_configuration_preview_physical(
 
 extern "C" oa_runtime_status oa_runtime_configuration_apply_physical(
     oa_runtime *runtime, const oa_runtime_manifest *manifest) {
-    if (!openarm::runtime::runtimes.pin(runtime) ||
-        !openarm::runtime::manifests.pin(manifest)) return OA_RUNTIME_EINVAL;
-    return OA_RUNTIME_EUNSUPPORTED;
+    const auto owner = openarm::runtime::runtimes.pin(runtime);
+    if (!owner || !openarm::runtime::manifests.pin(manifest)) return OA_RUNTIME_EINVAL;
+    return openarm::runtime::record_error(
+        owner, OA_RUNTIME_EUNSUPPORTED, OA_RUNTIME_FACILITY_RUNTIME);
 }

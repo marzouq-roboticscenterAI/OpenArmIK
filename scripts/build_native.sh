@@ -136,7 +136,8 @@ configure_build_test_install() {
   local component=$1
   shift
   local component_build="$build_root/$component"
-  cmake --fresh -S "$root_dir/$component" -B "$component_build" \
+  cmake -E remove_directory "$component_build"
+  cmake -S "$root_dir/$component" -B "$component_build" \
     -DCMAKE_BUILD_TYPE="$build_type" \
     -DCMAKE_INSTALL_PREFIX="$install_prefix" \
     -DCMAKE_PREFIX_PATH="$install_prefix" \
@@ -247,6 +248,7 @@ if ((run_tests)); then
      [[ "$model_header" == *OPENARM_DISABLE_LEGACY_GENERIC_STATUS* ]] &&
      [[ "$control_header" == *OPENARM_DISABLE_LEGACY_GENERIC_STATUS* ]]; then
     consumer_build="$build_root/installed_native_consumer"
+    cmake -E remove_directory "$consumer_build"
     cmake -S "$root_dir/tests/installed_native_consumer" -B "$consumer_build" \
       -DCMAKE_BUILD_TYPE="$build_type" \
       -DCMAKE_PREFIX_PATH="$install_prefix" \

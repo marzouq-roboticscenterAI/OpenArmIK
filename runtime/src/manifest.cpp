@@ -22,6 +22,10 @@ Registry<oa_runtime_calibration, CalibrationData, kCalibrationTag> &calibrations
     *new Registry<oa_runtime_calibration, CalibrationData, kCalibrationTag>();
 Registry<oa_runtime_plan, PlanData, kPlanTag> &plans =
     *new Registry<oa_runtime_plan, PlanData, kPlanTag>();
+Registry<oa_runtime_persistence_authority, PersistenceAuthorityData, kPersistenceTag>
+    &persistence_authorities =
+        *new Registry<oa_runtime_persistence_authority, PersistenceAuthorityData,
+                      kPersistenceTag>();
 
 namespace {
 
@@ -274,14 +278,16 @@ oa_runtime_status parse_manifest(const std::string &text,
         lines.emplace_back(text.data() + begin, end - begin);
         begin = end + 1U;
     }
-    if (lines.size() != 17U || lines[0] != "OPENARM_RUNTIME_MANIFEST|1") {
+    if ((lines.size() != 17U && lines.size() != 18U) ||
+        lines[0] != "OPENARM_RUNTIME_MANIFEST|1") {
         return OA_RUNTIME_ECORRUPT;
     }
-    const std::size_t digest_line_offset = text.rfind("sha256|");
-    if (digest_line_offset == std::string::npos || digest_line_offset == 0U) {
+    const std::size_t digest_marker = text.find("\nsha256|");
+    if (digest_marker == std::string::npos) {
         return OA_RUNTIME_ECORRUPT;
     }
-    const auto digest_fields = split(lines.back());
+    const std::size_t digest_line_offset = digest_marker + 1U;
+    const auto digest_fields = split(lines[16U]);
     if (digest_fields.size() != 2U || digest_fields[0] != "sha256" ||
         digest_fields[1].size() != 64U ||
         sha256_hex(reinterpret_cast<const std::uint8_t *>(text.data()), digest_line_offset) !=
@@ -357,6 +363,22 @@ oa_runtime_status parse_manifest(const std::string &text,
         }
     }
     result->content_digest = digest_fields[1];
+    if (lines.size() == 18U) {
+        const auto authentication = split(lines[17U]);
+        if (authentication.size() != 3U || authentication[0] != "hmac-sha256" ||
+            !safe_text(authentication[1], OA_RUNTIME_TEXT_CAPACITY) ||
+            authentication[2].size() != 64U ||
+            !std::all_of(authentication[2].begin(), authentication[2].end(),
+                         [](const char c) {
+                             return (c >= '0' && c <= '9') ||
+                                    (c >= 'a' && c <= 'f');
+                         })) {
+            return OA_RUNTIME_ECORRUPT;
+        }
+        result->integrity_kind = OA_RUNTIME_INTEGRITY_HMAC_SHA256;
+        result->authentication_key_id = authentication[1];
+        result->authentication_tag = authentication[2];
+    }
     if (!validate_manifest_data(*result)) {
         return OA_RUNTIME_ECORRUPT;
     }
@@ -454,11 +476,15 @@ extern "C" oa_runtime_status oa_runtime_manifest_get_summary(
     result.manifest_revision = pinned->config.manifest_revision;
     result.model_revision = pinned->config.model_revision;
     result.inventory_revision = pinned->inventory_revision;
+    result.integrity_kind = pinned->integrity_kind;
+    result.authenticated = pinned->authenticated ? 1U : 0U;
     std::snprintf(result.inventory_fingerprint_sha256,
                   sizeof(result.inventory_fingerprint_sha256), "%s",
                   pinned->inventory_fingerprint.c_str());
     std::snprintf(result.content_sha256, sizeof(result.content_sha256), "%s",
                   pinned->content_digest.c_str());
+    std::snprintf(result.authentication_key_id, sizeof(result.authentication_key_id), "%s",
+                  pinned->authentication_key_id.c_str());
     *out_summary = result;
     return OA_RUNTIME_OK;
 }
