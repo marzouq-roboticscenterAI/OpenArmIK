@@ -359,6 +359,11 @@ void appendLinkMessage(std::array<unsigned char, 128> &buffer,
 }
 
 void testNetlinkPreservesDownThenUp() {
+    CHECK(!openarm::transport::socketCanBackendPermitsAuthorityIssuance());
+    CHECK(!openarm::transport::netlinkReceiveWasTruncated(128U, 128U, 0));
+    CHECK(openarm::transport::netlinkReceiveWasTruncated(128U, 128U,
+                                                         MSG_TRUNC));
+    CHECK(openarm::transport::netlinkReceiveWasTruncated(129U, 128U, 0));
     std::array<unsigned char, 128> buffer{};
     std::size_t length = 0U;
     appendLinkMessage(buffer, length, RTM_DELLINK, 42, 0U);

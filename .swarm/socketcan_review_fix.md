@@ -17,9 +17,9 @@ than five seconds away. It is erased before the syscall, so failure cannot make
 it replayable. Cross-instance, wrong-frame, expired, over-expiry-deadline, and
 replayed tokens are rejected.
 
-Physical SocketCAN backends return `OA_TRANSPORT_EPERMISSION` from authority
-issuance. Only sysfs-verified virtual interfaces and explicit test backends can
-issue, preserving the Stage-A physical query-only gate. There is no public
+SocketCAN backends return `OA_TRANSPORT_EPERMISSION` from authority issuance
+regardless of driver, name, or sysfs location. Only explicit injected simulator/
+test backends can issue, preserving the Stage-A physical query-only gate. There is no public
 issuer, generic control bit, or commissioning bit.
 
 ### Critical 2 — permissive raw-frame classification
@@ -34,7 +34,7 @@ Register writes are reconstructed using the verified `openarm_can` RID metadata
 and `oa_can_make_register_write()`, then compared byte-for-byte. This rejects
 read-only/unknown RIDs, illegal modes/bitrates/IDs, non-finite floats, invalid
 protection/PVT values, and padding/layout errors. Known destructive shapes can
-only run on a virtual/test backend with an exact one-shot authority; physical
+only run on an injected simulator/test backend with an exact one-shot authority; physical
 set-zero/save/write/clear remains unreachable.
 
 ### Important 1 — close was not a completed-operation barrier

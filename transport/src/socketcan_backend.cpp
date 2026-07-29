@@ -6,9 +6,6 @@
 
 #include <array>
 #include <cerrno>
-#include <climits>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <new>
@@ -29,6 +26,13 @@
 #include <unistd.h>
 
 namespace openarm::transport {
+
+bool socketCanBackendPermitsAuthorityIssuance() noexcept { return false; }
+
+bool netlinkReceiveWasTruncated(std::size_t received, std::size_t capacity,
+                                int message_flags) noexcept {
+    return received > capacity || (message_flags & MSG_TRUNC) != 0;
+}
 
 oa_transport_status parseLinkDatagram(const void *data, std::size_t length,
                                       unsigned int ifindex,
@@ -90,9 +94,9 @@ enum class Ready { Can, Link, Closed, Timeout, Failed };
 class SocketCanBackend final : public Backend {
 public:
     SocketCanBackend(int can_fd, int wake_fd, int link_fd, unsigned int ifindex,
-                     bool initial_link_up, bool virtual_interface) noexcept
+                     bool initial_link_up) noexcept
         : can_fd_(can_fd), wake_fd_(wake_fd), link_fd_(link_fd), ifindex_(ifindex),
-          link_up_(initial_link_up), virtual_interface_(virtual_interface) {
+          link_up_(initial_link_up) {
         (void)enqueueLink(initial_link_up);
     }
 
@@ -217,7 +221,7 @@ public:
     }
 
     bool permitsAuthorityIssuance() const noexcept override {
-        return virtual_interface_;
+        return socketCanBackendPermitsAuthorityIssuance();
     }
 
 private:
@@ -311,8 +315,17 @@ private:
     oa_transport_status drainLinkEvents() noexcept {
         std::array<unsigned char, 8192> buffer{};
         while (true) {
+            struct sockaddr_nl sender {};
+            struct iovec vector {};
+            vector.iov_base = buffer.data();
+            vector.iov_len = buffer.size();
+            struct msghdr message {};
+            message.msg_name = &sender;
+            message.msg_namelen = sizeof(sender);
+            message.msg_iov = &vector;
+            message.msg_iovlen = 1U;
             const ssize_t count =
-                ::recv(link_fd_, buffer.data(), buffer.size(), MSG_DONTWAIT);
+                ::recvmsg(link_fd_, &message, MSG_DONTWAIT | MSG_TRUNC);
             if (count < 0) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     return OA_TRANSPORT_OK;
@@ -325,9 +338,16 @@ private:
             if (count == 0) {
                 return OA_TRANSPORT_EIO;
             }
+            const auto received = static_cast<std::size_t>(count);
+            if (netlinkReceiveWasTruncated(received, buffer.size(),
+                                           message.msg_flags) ||
+                message.msg_namelen < sizeof(sender) ||
+                sender.nl_family != AF_NETLINK || sender.nl_pid != 0U) {
+                return OA_TRANSPORT_EFRAME;
+            }
             LinkTransitionBatch batch;
             const auto status = parseLinkDatagram(
-                buffer.data(), static_cast<std::size_t>(count), ifindex_, batch);
+                buffer.data(), received, ifindex_, batch);
             if (status != OA_TRANSPORT_OK) {
                 return status;
             }
@@ -433,7 +453,6 @@ private:
     int link_fd_;
     unsigned int ifindex_;
     bool link_up_;
-    bool virtual_interface_;
     std::array<bool, 64> link_events_{};
     std::size_t link_event_head_{};
     std::size_t link_event_count_{};
@@ -478,18 +497,6 @@ oa_transport_status queryInterface(int fd, const std::string &name,
     out_link_up = (request.ifr_flags & IFF_UP) != 0 &&
                   (request.ifr_flags & IFF_RUNNING) != 0;
     return OA_TRANSPORT_OK;
-}
-
-bool isVirtualInterface(const std::string &name) noexcept {
-    std::array<char, PATH_MAX> source{};
-    std::array<char, PATH_MAX> resolved{};
-    const int count = std::snprintf(source.data(), source.size(),
-                                    "/sys/class/net/%s", name.c_str());
-    if (count <= 0 || static_cast<std::size_t>(count) >= source.size() ||
-        ::realpath(source.data(), resolved.data()) == nullptr) {
-        return false;
-    }
-    return std::strstr(resolved.data(), "/devices/virtual/net/") != nullptr;
 }
 
 } // namespace
@@ -605,8 +612,7 @@ std::unique_ptr<Backend> makeSocketCanBackend(const std::string &interface_name,
     out_status = OA_TRANSPORT_OK;
     std::unique_ptr<Backend> backend(
         new (std::nothrow)
-            SocketCanBackend(can_fd, wake_fd, link_fd, ifindex, link_up,
-                             isVirtualInterface(interface_name)));
+            SocketCanBackend(can_fd, wake_fd, link_fd, ifindex, link_up));
     if (!backend) {
         (void)::close(link_fd);
         (void)::close(wake_fd);

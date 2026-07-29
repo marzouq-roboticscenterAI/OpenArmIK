@@ -18,6 +18,10 @@ oa_transport_status parseLinkDatagram(const void *data, std::size_t length,
                                       unsigned int ifindex,
                                       LinkTransitionBatch &out_batch) noexcept;
 
+bool socketCanBackendPermitsAuthorityIssuance() noexcept;
+bool netlinkReceiveWasTruncated(std::size_t received, std::size_t capacity,
+                                int message_flags) noexcept;
+
 } // namespace openarm::transport
 
 #endif

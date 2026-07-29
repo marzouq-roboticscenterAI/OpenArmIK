@@ -62,20 +62,33 @@ function(oa_transport_sanitizers target)
     endif()
 endfunction()
 
-set(_oa_transport_build_testing "${BUILD_TESTING}")
-set(BUILD_TESTING OFF)
-add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../can"
-                 "${CMAKE_CURRENT_BINARY_DIR}/openarm_can" EXCLUDE_FROM_ALL)
-set(BUILD_TESTING "${_oa_transport_build_testing}")
+add_library(openarm_transport_codec OBJECT
+    "${CMAKE_CURRENT_SOURCE_DIR}/../can/src/openarm_can.c")
+target_include_directories(openarm_transport_codec PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../can/include")
+oa_transport_strict_c(openarm_transport_codec)
+if(OA_TRANSPORT_ENABLE_SANITIZERS AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(openarm_transport_codec PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+elseif(OA_TRANSPORT_ENABLE_THREAD_SANITIZER AND
+       CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(openarm_transport_codec PRIVATE
+        -fsanitize=thread -fno-omit-frame-pointer)
+endif()
 
 add_library(openarm_transport STATIC
     src/c_api.cpp
     src/socketcan_backend.cpp
-    src/transport.cpp)
+    src/transport.cpp
+    $<TARGET_OBJECTS:openarm_transport_codec>)
 target_include_directories(openarm_transport
-    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(openarm_transport PUBLIC Threads::Threads PRIVATE openarm_can)
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../can/include")
+target_link_libraries(openarm_transport PUBLIC Threads::Threads)
 oa_transport_strict_cxx(openarm_transport)
 oa_transport_sanitizers(openarm_transport)
 
@@ -104,7 +117,35 @@ if(BUILD_TESTING)
     oa_transport_sanitizers(openarm_transport_vcan_smoke)
     add_test(NAME openarm_transport_vcan_smoke
              COMMAND openarm_transport_vcan_smoke)
+
+    if(NOT OA_TRANSPORT_ENABLE_SANITIZERS AND
+       NOT OA_TRANSPORT_ENABLE_THREAD_SANITIZER)
+        add_test(NAME openarm_transport_install_consumer
+            COMMAND "${CMAKE_COMMAND}"
+                -DOA_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}
+                -DOA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_install_consumer.cmake")
+    endif()
 endif()
 
-install(TARGETS openarm_transport ARCHIVE DESTINATION lib)
+include(CMakePackageConfigHelpers)
+configure_package_config_file(
+    cmake/OpenArmTransportConfig.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/OpenArmTransportConfig.cmake"
+    INSTALL_DESTINATION lib/cmake/OpenArmTransport)
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/OpenArmTransportConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion)
+
+install(TARGETS openarm_transport EXPORT OpenArmTransportTargets
+        ARCHIVE DESTINATION lib)
 install(FILES include/openarm_transport.h DESTINATION include)
+install(EXPORT OpenArmTransportTargets
+        FILE OpenArmTransportTargets.cmake
+        NAMESPACE OpenArm::
+        DESTINATION lib/cmake/OpenArmTransport)
+install(FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/OpenArmTransportConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/OpenArmTransportConfigVersion.cmake"
+        DESTINATION lib/cmake/OpenArmTransport)

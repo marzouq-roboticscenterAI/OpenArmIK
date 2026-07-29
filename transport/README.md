@@ -12,7 +12,8 @@ are always rejected on a caller-opened handle.
 
 The private controller integration boundary can issue one-shot, unpredictable,
 transport-instance-bound, exact-frame authorities only for an explicitly
-virtual/test backend. Physical SocketCAN backends cannot issue them. Authorities
+injected simulator/test backend. Every Linux SocketCAN backend, including
+`vcan`, `vxcan`, and `slcan`, categorically refuses issuance. Authorities
 expire within five seconds, cannot be replayed or moved between transports, and
 never authorize untyped motion. Register writes must first round-trip through
 the verified `openarm_can` codec; unknown IDs, payloads, modes, and non-finite or
@@ -40,4 +41,5 @@ ctest --test-dir build/transport --output-on-failure
 ```
 
 The `vcan0` smoke test opens and closes only a sysfs-verified virtual interface.
-It skips when such an interface is unavailable and never sends a CAN frame.
+It skips when such an interface is unavailable and never sends a CAN frame or
+enables authority.
