@@ -3,6 +3,7 @@ set -euo pipefail
 
 packages=(
   build-essential
+  libx11-dev
   ros-dev-tools
   ros-lyrical-ament-cmake
   ros-lyrical-ament-cmake-gtest

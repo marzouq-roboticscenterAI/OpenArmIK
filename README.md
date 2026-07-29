@@ -36,7 +36,8 @@ available with `OPENARM_RVIZ_RENDERER=nvidia` or `integrated`, but it flickers
 during live window resize on this host. The launcher also disables HiDPI render
 target scaling for RViz only, closes the RViz window before stopping ROS so
 `Ctrl+C` shuts down cleanly, and holds a single-instance lock to prevent
-duplicate joint-state/TF publishers.
+duplicate joint-state/TF publishers. The window-close path is a compiled C++17
+Xlib utility installed with the ROS package; it has no Python runtime dependency.
 
 The launch starts only `robot_state_publisher`, the virtual adapter, and RViz. `robot_state_publisher` is the only TF authority. The pinned `openarm_description` package supplies mesh URI resolution; the installed robot description is copied from [model/generated/openarm_v10_bimanual.urdf](model/generated/openarm_v10_bimanual.urdf).
 

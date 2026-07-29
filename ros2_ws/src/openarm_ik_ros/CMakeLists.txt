@@ -15,6 +15,7 @@ find_package(openarm_description REQUIRED)
 find_package(openarm_model CONFIG REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(X11 REQUIRED)
 
 option(OPENARM_IK_ROS_COVERAGE "Instrument authored adapter code for gcov" OFF)
 
@@ -33,6 +34,10 @@ target_link_libraries(openarm_ik_ros_node PRIVATE
   rclcpp::rclcpp
   sensor_msgs::sensor_msgs)
 
+add_executable(close_rviz_window src/close_rviz_window.cpp)
+target_compile_options(close_rviz_window PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(close_rviz_window PRIVATE X11::X11)
+
 if(OPENARM_IK_ROS_COVERAGE)
   foreach(target openarm_ik_transaction openarm_ik_ros_node)
     target_compile_options(${target} PRIVATE --coverage -O0)
@@ -40,7 +45,7 @@ if(OPENARM_IK_ROS_COVERAGE)
   endforeach()
 endif()
 
-install(TARGETS openarm_ik_ros_node DESTINATION lib/${PROJECT_NAME})
+install(TARGETS openarm_ik_ros_node close_rviz_window DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch rviz DESTINATION share/${PROJECT_NAME})
 install(FILES package.xml DESTINATION share/${PROJECT_NAME})
 install(FILES "${openarm_model_GENERATED_URDF}" DESTINATION share/${PROJECT_NAME}/urdf)
@@ -72,6 +77,14 @@ if(BUILD_TESTING)
   add_test(
     NAME test_invalid_expiry_parameter
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_invalid_expiry_parameter.py)
+  add_test(NAME test_close_rviz_window_help COMMAND close_rviz_window --help)
+  add_test(NAME test_close_rviz_window_invalid_pid COMMAND close_rviz_window 0)
+  add_test(
+    NAME test_close_rviz_window_invalid_timeout
+    COMMAND close_rviz_window 1 --timeout infinity)
+  set_tests_properties(
+    test_close_rviz_window_invalid_pid test_close_rviz_window_invalid_timeout
+    PROPERTIES WILL_FAIL TRUE)
 endif()
 
 ament_package()

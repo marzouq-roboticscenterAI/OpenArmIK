@@ -90,7 +90,13 @@ if (( ! rviz_enabled )); then
     rviz:=false "${launch_arguments[@]}"
 fi
 
-share_dir=$(ros2 pkg prefix --share openarm_ik_ros)
+package_prefix=$(ros2 pkg prefix openarm_ik_ros)
+share_dir="$package_prefix/share/openarm_ik_ros"
+close_helper="$package_prefix/lib/openarm_ik_ros/close_rviz_window"
+if [[ ! -x "$close_helper" ]]; then
+  printf 'Missing %s; run %s/scripts/build.sh first.\n' "$close_helper" "$root_dir" >&2
+  exit 2
+fi
 core_pid=
 rviz_pid=
 shutting_down=0
@@ -121,7 +127,7 @@ shutdown() {
   trap - EXIT INT TERM
 
   if [[ -n "$rviz_pid" ]] && process_is_running "$rviz_pid"; then
-    if ! "$root_dir/scripts/close_rviz_window.py" "$rviz_pid" --timeout 3; then
+    if ! "$close_helper" "$rviz_pid" --timeout 3; then
       kill -TERM -- "-$rviz_pid" 2>/dev/null || true
     fi
     if ! wait_for_exit "$rviz_pid" 30; then

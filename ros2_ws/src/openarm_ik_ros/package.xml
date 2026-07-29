@@ -6,6 +6,7 @@
   <maintainer email="maintainers@example.invalid">OpenArmIK maintainers</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>libx11-dev</depend>
   <depend>diagnostic_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>rclcpp</depend>
