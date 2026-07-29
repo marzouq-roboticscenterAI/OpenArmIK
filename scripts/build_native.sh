@@ -12,7 +12,8 @@ usage() {
 Usage: scripts/build_native.sh --build-root PATH --install-prefix PATH [OPTIONS]
 
 Build and install CAN, model, commission, transport, and control in dependency
-order. Build and install paths must be supplied explicitly.
+order. Build and install paths must be supplied explicitly. Reusing a build
+root with a different install prefix deterministically refreshes dependencies.
 
 Options:
   --build-type TYPE  CMake build type (default: Release)
@@ -111,6 +112,26 @@ if ((run_tests)); then
   tests_flag=ON
 fi
 
+assert_cache_value() {
+  local cache_file=$1
+  local key=$2
+  local expected=$3
+  local line value=
+  while IFS= read -r line; do
+    case "$line" in
+      "$key":*=*)
+        value=${line#*=}
+        break
+        ;;
+    esac
+  done < "$cache_file"
+  if [[ "$value" != "$expected" ]]; then
+    printf 'Unexpected %s in %s: expected %s, found %s\n' \
+      "$key" "$cache_file" "$expected" "${value:-unset}" >&2
+    exit 1
+  fi
+}
+
 configure_build_test_install() {
   local component=$1
   shift
@@ -120,6 +141,20 @@ configure_build_test_install() {
     -DCMAKE_INSTALL_PREFIX="$install_prefix" \
     -DCMAKE_PREFIX_PATH="$install_prefix" \
     "$@"
+  assert_cache_value "$component_build/CMakeCache.txt" \
+    CMAKE_INSTALL_PREFIX "$install_prefix"
+  assert_cache_value "$component_build/CMakeCache.txt" \
+    CMAKE_PREFIX_PATH "$install_prefix"
+  case "$component" in
+    transport)
+      assert_cache_value "$component_build/CMakeCache.txt" \
+        OpenArmCan_DIR "$install_prefix/lib/cmake/OpenArmCan"
+      ;;
+    control)
+      assert_cache_value "$component_build/CMakeCache.txt" \
+        openarm_model_DIR "$install_prefix/lib/cmake/openarm_model"
+      ;;
+  esac
   cmake --build "$component_build" --parallel
   if ((run_tests)); then
     ctest --test-dir "$component_build" --output-on-failure --no-tests=error
@@ -146,12 +181,14 @@ configure_build_test_install commission \
 
 configure_build_test_install transport \
   -DBUILD_TESTING="$tests_flag" \
+  -DOpenArmCan_DIR="$install_prefix/lib/cmake/OpenArmCan" \
   -DOA_TRANSPORT_ENABLE_SANITIZERS=OFF \
   -DOA_TRANSPORT_ENABLE_THREAD_SANITIZER=OFF \
   -DOA_TRANSPORT_BUILD_VCAN_SMOKE=OFF
 
 configure_build_test_install control \
   -DBUILD_TESTING="$tests_flag" \
+  -Dopenarm_model_DIR="$install_prefix/lib/cmake/openarm_model" \
   -DOA_CONTROL_BUILD_TESTS="$tests_flag" \
   -DOA_CONTROL_SANITIZERS=OFF \
   -DOA_CONTROL_TSAN=OFF

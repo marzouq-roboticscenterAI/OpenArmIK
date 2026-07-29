@@ -1,155 +1,143 @@
-# Independent unified-build review
+# Independent unified-build re-review
 
-Reviewed commit: `16906a02aa555775aec7255f4d720e2ee092f6ed`
+Reviewed series: `514e3a8..0c213b680f886e626760f61707bc2b42dc8034c4`
 
-Parent: `514e3a8`
+Updated commits: `16906a0`, `0c213b6`
 
 Date: 2026-07-29 (America/Los_Angeles)
 
 Verdict: **FINDINGS**
 
-## Findings
+## Finding
 
-### HIGH — The installed five-library SDK cannot be consumed as one header set
+### MEDIUM — Reusing a native build root with a new install prefix silently keeps old dependency packages
 
-The install places both `openarm_model.h` and `openarm_control.h` in the same
-include directory, but they still define the same generic API names with
-incompatible types. `model/include/openarm_model.h:25,34-35` defines signed
-`oa_status`, `OA_OK`, and `OA_EINVAL`; `control/include/openarm_control.h:19,33-34`
-defines the same names using unsigned values.
+`scripts/build_native.sh:114-127` passes the selected
+`CMAKE_PREFIX_PATH` on every component configure, but does not clear or
+override CMake's cached package-specific directory variables. Transport uses
+`find_package(OpenArmCan)` (`transport/CMakeLists.txt:18-22`) and control uses
+`find_package(openarm_model)` (`control/CMakeLists.txt:21-28`), so an existing
+`OpenArmCan_DIR` or `openarm_model_DIR` wins over the newly selected prefix.
 
-Exact strict installed-header checks failed in both include orders:
+This was reproduced without modifying source:
 
-```text
-cc -std=c11 -Wall -Wextra -Wpedantic -Werror \
-  -I"/tmp/openarmik reviewer fresh/install/include" \
-  -include openarm_can.h -include openarm_model.h \
-  -include openarm_commission.h -include openarm_transport.h \
-  -include openarm_control.h -x c -c /dev/null
+```bash
+# First build installed to prefix A.
+./scripts/build.sh --tests \
+  --output-root '/tmp/openarmik updated review fresh' \
+  --build-type Release
 
-openarm_control.h:19:18: error: conflicting types for 'oa_status'
-openarm_model.h:25:17: note: previous declaration ... {aka 'int'}
-openarm_control.h:33:9: error: 'OA_OK' redefined [-Werror]
+# Reuse its native build root but request prefix B.
+./scripts/build_native.sh \
+  --build-root '/tmp/openarmik updated review fresh/native_build' \
+  --install-prefix '/tmp/openarmik updated review alternate install' \
+  --build-type Release
 ```
 
-Reversing all five headers fails with the reciprocal conflict. Each header
-alone compiles cleanly under the same strict flags, so this specifically breaks
-the required integrated external-consumer surface. This is also the exact ABI
-collision Stage 0 of `.swarm/ros_design_synthesis.md` says must be corrected
-before the unified build is accepted.
-
-### HIGH — CAN and control are installed without CMake packages or dependency exports
-
-The fresh prefix contains all five archives and headers, but only model,
-commission, and transport install config packages. `can/CMakeLists.txt:36-40`
-and `control/CMakeLists.txt:53-57` install bare archives/headers without an
-export set, config file, version file, namespace target, or dependency metadata.
-
-Exact discovery from the clean installed prefix:
+The second command exited 0 and installed outputs into prefix B, but its caches
+and generated build rules still used prefix A:
 
 ```text
-openarm_model      found
-openarm_commission found
-openarm_can        not found
-openarm_control    not found
+transport/CMakeCache.txt:
+  CMAKE_INSTALL_PREFIX=/tmp/openarmik updated review alternate install
+  CMAKE_PREFIX_PATH=/tmp/openarmik updated review alternate install
+  OpenArmCan_DIR=/tmp/openarmik updated review fresh/install/lib/cmake/OpenArmCan
+
+control/CMakeCache.txt:
+  CMAKE_INSTALL_PREFIX=/tmp/openarmik updated review alternate install
+  CMAKE_PREFIX_PATH=/tmp/openarmik updated review alternate install
+  openarm_model_DIR=/tmp/openarmik updated review fresh/install/lib/cmake/openarm_model
+
+transport/CMakeFiles/openarm_transport.dir/flags.make:
+  -isystem "/tmp/openarmik updated review fresh/install/include"
+transport/CMakeFiles/openarm_transport_tests.dir/link.txt:
+  "/tmp/openarmik updated review fresh/install/lib/libopenarm_can.a"
+control/CMakeFiles/openarm_control_tests.dir/link.txt:
+  "/tmp/openarmik updated review fresh/install/lib/libopenarm_model.a"
 ```
 
-The available packages are also inconsistent: `openarm_model::openarm_model`,
-`OpenArm::Commission`, and `OpenArm::openarm_transport`; there is no consistent
-`OpenArm::Can`, `OpenArm::Model`, `OpenArm::Transport`,
-`OpenArm::Commission`, `OpenArm::Control` graph. A strict control consumer only
-worked by manually specifying undocumented transitive link details:
+Thus prefix B can contain libraries compiled and tested against a different
+SDK prefix even though the command succeeds. This is a stale-artifact and
+deterministic-linkage failure in the new public native build entry point.
+Explicitly set `OpenArmCan_DIR` and `openarm_model_DIR` from
+`install_prefix`, unset the cached variables before configuration, or reject a
+build-root/install-prefix pairing that differs from the one recorded in the
+cache.
+
+The ordinary top-level `build.sh --incremental` path keeps build and install
+under one fixed output root and passed; the failure requires the independently
+documented `build_native.sh` paths to be reused with a changed prefix.
+
+## Prior findings rechecked
+
+- **CAN exports — resolved.** A clean prefix contains versioned `OpenArmCan`
+  and compatibility `openarm_can` packages. Both expose `OpenArm::Can`.
+- **Duplicate/rebuilt dependencies — resolved for a clean prefix.** Transport
+  finds the installed `OpenArmCan`; control finds the installed model. There is
+  no `openarm_transport_codec` object, no model sub-build below control, and
+  the installed transport archive defines no `oa_can_*` symbol.
+- **Production test hooks — resolved.** Clean Release control and commission
+  archives expose no test hooks. Non-installed test variants contain the
+  expected hook symbols, and all component tests pass against those variants.
+- **Colon/semicolon paths — resolved.** Both entry points reject `:` and `;`
+  before creating output. Paths containing spaces build, install, discover,
+  link, and run successfully.
+- **Installed branch-owned targets — resolved for CAN/model/commission/
+  transport.** A strict relocated external C11 consumer found both CAN package
+  names plus `openarm_model`, `openarm_commission`, and `OpenArmTransport`;
+  asserted `OpenArm::Can`, `OpenArm::Model`, `OpenArm::Commission`,
+  `OpenArm::Transport`, and the compatibility transport target; linked the
+  relocated archives; and ran successfully. The installed transport target
+  carries `$<LINK_ONLY:OpenArm::Can>` and its config declares the CAN
+  dependency.
+
+## Integration dependency, not a branch finding
+
+The model/control generic-status collision and the installed
+`OpenArm::Control` export remain owned by the separately reviewed ABI branch,
+as directed. They are not re-flagged here. This branch prepares strict installed
+C11 and C++17 all-five-header consumers and correctly defers them until the
+control config and collision-free headers are present:
 
 ```text
-c++ consumer.o -L<prefix>/lib -lopenarm_control -lopenarm_model -lm
+Installed all-header consumers deferred until control export/status integration
 ```
 
-Thus the script is a sequential builder/installer, not the exported native
-build graph required by the synthesis and its external-consumer acceptance
-test.
+The clean branch-owned package graph does not block that integration. The
+combined integration must rerun `./scripts/build.sh --tests` and must actually
+configure, build, and execute both strict all-header consumers; a deferral in
+the combined tree would be a failure.
 
-### MEDIUM — The claimed dependency order does not create dependency linkage
+## Fresh verification evidence
 
-`scripts/build_native.sh:124-151` builds components sequentially, but control
-does not discover the just-installed model: `control/CMakeLists.txt:21-36`
-adds and compiles `../model` again. Transport likewise does not link the
-just-built CAN target/package: `transport/CMakeLists.txt:67-95` compiles
-`../can/src/openarm_can.c` into its own archive.
-
-Fresh-build evidence showed a second model compile under
-`native_build/control/openarm_model`, and both installed archives define the
-same codec symbols; for example `nm -g --defined-only` reports
-`oa_can_decode_feedback`, `oa_can_encode_mit`, and the fake-transport symbols in
-both `libopenarm_can.a` and `libopenarm_transport.a`. This preserves the
-previous divergent duplicate-code boundary and means building CAN before
-transport and model before control does not validate package dependency
-discovery or prevent implementation drift.
-
-### MEDIUM — Installed Release archives still expose test-injection controls
-
-The clean Release install contains production-reachable test hooks:
-
-```text
-libopenarm_control.a:
-  oa_control_test_active_controller_count
-  oa_control_test_active_manifest_count
-  oa_control_test_active_plan_count
-  oa_control_test_fail_controller_create_after
-
-libopenarm_commission.a (nm -gC):
-  openarm::commission::test::active_handle_count()
-  openarm::commission::test::fail_next_allocation()
-  openarm::commission::test::throw_next_exception()
-  openarm::commission::test::exhaust_handle_tokens()
-```
-
-The unified entry point unconditionally installs those archives. This fails the
-design's Release-install requirement that injection/registry hooks be compiled
-only into test objects.
-
-### LOW — A valid output path containing `:` builds native code and then fails ROS prefix discovery
-
-`--output-root` accepts arbitrary absolute paths, but `scripts/build.sh:130`
-serializes the path into the colon-delimited `CMAKE_PREFIX_PATH` environment
-variable. A clean invocation using `/tmp/openarmik:colon-review` built and
-installed all native libraries, then exited 1 while configuring
-`openarm_ik_ros` because it could not find the already-installed
-`openarm_descriptionConfig.cmake`. Either reject `:` during argument
-validation or use explicit CMake/colcon prefix mechanisms that do not split the
-selected path. Ordinary paths containing spaces did work.
-
-## Passing evidence
-
-- `git diff --check` and `bash -n` passed.
-- A clean Release build at `/tmp/openarmik reviewer fresh` (path includes
-  spaces) passed: CAN 1/1, model 4/4, commission 2/2, transport 3/3, and control
-  3/3 native tests; both ROS packages built; exactly eight current ROS tests
-  were registered.
-- Five hardware/network/GUI-free ROS tests were executed separately and passed:
-  paired transaction, generated URDF, and the three close-helper argument
-  tests. The DDS-launching ROS tests were intentionally not run.
-- A repeated `--incremental --tests` build passed the same 13 native tests and
-  eight-test registration check.
-- A clean Debug tests-off build passed, recorded Debug for all five native
-  components and ROS, and registered zero tests. Repeating that clean build
-  removed planted stale files from both native-build and install directories.
-- Strict installed single-component C11 consumers for model, commission, and
-  control built and ran; the installed transport CMake-package consumer built
-  and ran from a path containing spaces.
-- Help, missing-value, unknown-option, relative native-root, and invalid
-  build-type behavior returned the expected 0/2 statuses.
-- Cleanup rejected `/`, `/tmp`, `/home`, the repository root, and a symlinked
-  install child escaping the output root; the external sentinel was preserved.
-- The scripts contain no `sudo`, interface mutation, or vcan invocation. The
-  unified transport profile registered only its three hardware-free tests.
-- Sanitizer controls are not exposed by these entry points; all component
-  sanitizer options are explicitly forced off, so no unified sanitizer claim
-  was tested.
+- `git diff --check 514e3a8..0c213b6` and `bash -n` passed.
+- Clean Release `--tests` build at
+  `/tmp/openarmik updated review fresh` passed with a space-containing path:
+  CAN 1/1, model 4/4, commission 2/2, transport 3/3, and control 3/3; both ROS
+  packages built; all eight current ROS tests were freshly registered.
+- A top-level `--incremental --tests` rerun passed the same 13 native tests and
+  eight ROS registrations.
+- A clean Debug tests-off build installed all products; every native component
+  and ROS enumerated zero tests, and the production archive-boundary checks
+  passed.
+- Five safe ROS tests were executed and passed: paired transaction, generated
+  URDF, and the three close-helper argument tests. DDS-launching tests were not
+  run, consistent with the no-network constraint.
+- Standalone transport registered four tests, including vcan smoke; only its
+  three hardware-free tests were run and passed. The unified profile registered
+  and ran the same three, never the vcan test.
+- Relocating the native `include` and `lib` trees to a new path containing
+  spaces preserved package discovery and external linkage.
+- `:` and `;` output/build/install paths returned 2 and created no directory.
+  A cleanup child symlinked outside its output root returned 2 and preserved
+  the external sentinel.
+- No GUI, CAN interface, socket, network, hardware, sudo, or install mutation
+  outside temporary prefixes was used.
 
 ## Disposition
 
-**FINDINGS.** The orchestration itself is reproducible for ordinary paths and
-its cleanup/test-selection behavior held up, but the result is not a usable
-unified installed SDK until the two high-severity header/export failures are
-fixed. The duplicate dependency builds and installed test hooks should be
-closed at the same packaging boundary.
+**FINDINGS.** All earlier branch-owned packaging and Release-boundary findings
+are closed, and the ABI-owned work is properly isolated as an integration
+dependency. The native entry point still needs to eliminate or reject cached
+cross-prefix dependency reuse before its explicit build/install paths are
+deterministic.

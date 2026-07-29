@@ -137,3 +137,47 @@ five-library consumers are present but deferred on this branch. The combined
 integration must re-run `./scripts/build.sh --tests`; success requires those two
 external consumers to configure, build, and execute. No other known build-scope
 finding remains.
+
+## Cached dependency re-review resolution
+
+The follow-up review reproduced stale `OpenArmCan_DIR` and
+`openarm_model_DIR` values when one native build root was reused with another
+install prefix. `build_native.sh` now supplies both package directories
+explicitly from the current install prefix on every configure. Before building,
+it reads each resulting `CMakeCache.txt` and requires current values for:
+
+- every component's `CMAKE_INSTALL_PREFIX` and `CMAKE_PREFIX_PATH`;
+- transport's `OpenArmCan_DIR`; and
+- control's `openarm_model_DIR`.
+
+The permanent regression
+`tests/test_native_prefix_reuse.sh` builds and runs all 13 native tests
+against prefix A, reuses the same five native build directories with prefix B,
+and runs all 13 again. It then checks the caches and performs clean verbose
+rebuilds of the transport and control test executables. Its final fresh
+spaced-path run at `/tmp/openarmik prefix reuse final.bS33rT` passed. Current
+cache and link files contained no prefix-A reference and contained:
+
+```text
+OpenArmCan_DIR=.../prefix-b/lib/cmake/OpenArmCan
+openarm_model_DIR=.../prefix-b/lib/cmake/openarm_model
+openarm_transport_tests .../prefix-b/lib/libopenarm_can.a
+openarm_control_tests .../prefix-b/lib/libopenarm_model.a
+```
+
+Final matrix after the cache fix:
+
+- clean spaced-path Release `--tests` build at
+  `/tmp/openarmik cache final clean`: 13/13 native tests passed, two ROS
+  packages built, and 8 ROS tests registered;
+- incremental `--tests` reuse of that output: the same 13 passes and 8
+  registrations;
+- clean spaced-path Debug tests-off build at
+  `/tmp/openarmik cache final tests off`: all components and ROS built, with
+  zero registered tests in each build directory;
+- `:` and `;` output/build paths: exit 2 before directory creation;
+- production archive hook/embedded-CAN symbol checks: clean; and
+- Bash syntax and `git diff --check`: clean.
+
+The separate header/control-export integration dependency described above is
+unchanged. No native build-cache finding remains.

@@ -52,6 +52,15 @@ then `/tmp/openarmik-build/install/setup.bash`. Output roots may contain spaces,
 but `:` and `;` are rejected because they are prefix-list delimiters used by
 ROS and CMake.
 
+The reusable native helper overwrites and verifies each component's cached
+dependency directory on every invocation. Its two-prefix reuse regression can
+be run without ROS:
+
+```bash
+reuse_root=$(mktemp -d /tmp/openarmik-prefix-reuse.XXXXXX)
+./tests/test_native_prefix_reuse.sh "$reuse_root"
+```
+
 On this Wayland hybrid-GPU laptop the launcher uses Mesa software OpenGL with
 the XWayland/GLX backend required by this RViz/Ogre build. Hardware GLX remains
 available with `OPENARM_RVIZ_RENDERER=nvidia` or `integrated`, but it flickers
