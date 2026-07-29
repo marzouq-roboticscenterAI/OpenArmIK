@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Flatten pinned OpenArm v1.0 bimanual xacro and emit immutable C data."""
+import argparse
+import hashlib
+import json
+import math
+import os
+import pathlib
+import re
+import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
+
+PIN = "6c7b720f1ba48e8bafa3a3dc752c45f397b42221"
+EXPECTED_SOURCE_SHA256 = "3f48ffec1598bebca34f90419521d5e320787746b66bf54937c3faeb7c6cb5fc"
+GENERATOR_VERSION = "3.0.0"
+ENTRY = "assets/robot/openarm_v1.0/urdf/openarm_v10.urdf.xacro"
+SOURCE_PREFIXES = ("assets/robot/openarm_v1.0", "assets/end_effector/parallel_link")
+
+def vec(text):
+    return [float(x) for x in text.split()]
+
+def origin(node):
+    n = node.find("origin")
+    xyz = vec(n.get("xyz", "0 0 0")) if n is not None else [0.0] * 3
+    rpy = vec(n.get("rpy", "0 0 0")) if n is not None else [0.0] * 3
+    r, p, y = rpy
+    cr, sr, cp, sp, cy, sy = math.cos(r), math.sin(r), math.cos(p), math.sin(p), math.cos(y), math.sin(y)
+    return [cy*cp, cy*sp*sr-sy*cr, cy*sp*cr+sy*sr, xyz[0],
+            sy*cp, sy*sp*sr+cy*cr, sy*sp*cr-cy*sr, xyz[1],
+            -sp, cp*sr, cp*cr, xyz[2], 0.0, 0.0, 0.0, 1.0]
+
+def multiply(a, b):
+    return [sum(a[i*4+k] * b[k*4+j] for k in range(4)) for i in range(4) for j in range(4)]
+
+def carray(values):
+    return ", ".join(format(v, ".17g") for v in values)
+
+def flatten(root, xacro, pythonpath, ament_prefix):
+    with tempfile.TemporaryDirectory() as directory:
+        prefix = pathlib.Path(directory) / "prefix"
+        marker = prefix / "share/ament_index/resource_index/packages"
+        marker.mkdir(parents=True)
+        (marker / "openarm_description").write_text("")
+        (prefix / "share/openarm_description").symlink_to(root, target_is_directory=True)
+        output = pathlib.Path(directory) / "openarm_v10.urdf"
+        env = os.environ.copy()
+        env["PYTHONPATH"] = pythonpath
+        env["AMENT_PREFIX_PATH"] = str(prefix) + (os.pathsep + ament_prefix if ament_prefix else "")
+        subprocess.run([str(xacro), ENTRY, "bimanual:=true", "ros2_control:=false", "-o", str(output)],
+                       cwd=root, env=env, check=True)
+        return output.read_bytes()
+
+def source_hash(root):
+    names = subprocess.check_output(["git", "ls-files", "--", *SOURCE_PREFIXES], cwd=root, text=True).splitlines()
+    digest = hashlib.sha256()
+    for name in sorted(names):
+        digest.update(name.encode() + b"\0" + (root / name).read_bytes())
+    return digest.hexdigest()
+
+def tool_identity(xacro, pythonpath):
+    executable = xacro.resolve()
+    script = executable.read_bytes()
+    match = re.search(rb"xacro==([^']+)", script)
+    version = match.group(1).decode() if match else "unknown"
+    digest = hashlib.sha256()
+    digest.update(b"executable\0" + script)
+    found_package = False
+    for entry in pythonpath.split(os.pathsep):
+        package = pathlib.Path(entry) / "xacro"
+        if package.is_dir():
+            found_package = True
+            for source in sorted(package.rglob("*.py")):
+                relative = source.relative_to(package)
+                digest.update(str(relative).encode() + b"\0" + source.read_bytes())
+    if not found_package:
+        raise ValueError("xacro Python package not found in --pythonpath")
+    return version, digest.hexdigest()
+
+def extract(raw):
+    document = ET.fromstring(raw)
+    joints = {j.get("name"): j for j in document.findall("joint")}
+    models = []
+    for side in ("left", "right"):
+        prefix = f"openarm_{side}_"
+        base = joints[prefix + "openarm_body_link0_joint"]
+        chain = [joints[prefix + f"joint{i}"] for i in range(1, 8)]
+        hand = joints[prefix + "hand_joint"]
+        tcp = joints[prefix + "hand_tcp_joint"]
+        if base.find("parent").get("link") != "openarm_body_link0":
+            raise ValueError("unexpected model base")
+        if hand.find("parent").get("link") != prefix + "link7" or tcp.find("parent").get("link") != prefix + "hand":
+            raise ValueError("unexpected current hand_tcp chain")
+        item = {"side": side, "base": origin(base), "tcp": multiply(origin(hand), origin(tcp)), "joint": []}
+        parent = prefix + "link0"
+        for i, joint in enumerate(chain, 1):
+            if joint.get("type") != "revolute" or joint.find("parent").get("link") != parent or joint.find("child").get("link") != prefix + f"link{i}":
+                raise ValueError("unexpected serial chain")
+            item["joint"].append({"name": joint.get("name"), "origin": origin(joint),
+                                  "axis": vec(joint.find("axis").get("xyz")),
+                                  "lower": float(joint.find("limit").get("lower")),
+                                  "upper": float(joint.find("limit").get("upper"))})
+            parent = prefix + f"link{i}"
+        models.append(item)
+    return models
+
+def emit(models, flattened_hash, sources_hash, xacro_version, xacro_hash, generator_hash):
+    generation = {"models": models, "flattened_sha256": flattened_hash, "sources_sha256": sources_hash,
+                  "xacro_version": xacro_version, "xacro_sha256": xacro_hash,
+                  "generator_version": GENERATOR_VERSION, "generator_sha256": generator_hash}
+    data_hash = hashlib.sha256(json.dumps(generation, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    lines = ["/* Generated by tools/generate_model.py; do not edit. */",
+             "/* Derived from Enactic openarm_description under Apache-2.0. */"]
+    for item in models:
+        side = item["side"]
+        lines += [f"static const struct oa_model oa_{side} = {{",
+                  f'    "openarm-v1.0-bimanual-{side}-body-to-hand_tcp",',
+                  f'    "enactic/openarm_description@{PIN}; {ENTRY}; bimanual=true; xacro={xacro_version}; xacro_sha256={xacro_hash}; generator={GENERATOR_VERSION}; generator_sha256={generator_hash}",',
+                  f'    "{data_hash}", "{flattened_hash}", "{sources_hash}",', "    {"]
+        lines += [f'        "{joint["name"]}",' for joint in item["joint"]]
+        lines += [f'    }}, "openarm_{side}_hand_tcp",', "    {{" + carray(item["base"]) + "}},", "    {"]
+        lines += ["        {{" + carray(joint["origin"]) + "}}," for joint in item["joint"]]
+        lines += ["    }, {"]
+        lines += ["        {" + carray(joint["axis"]) + "}," for joint in item["joint"]]
+        lines += ["    }, {" + carray([joint["lower"] for joint in item["joint"]]) + "},",
+                  "    {" + carray([joint["upper"] for joint in item["joint"]]) + "},",
+                  "    {{" + carray(item["tcp"]) + "}}", "};"]
+    return ("\n".join(lines) + "\n").encode()
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("description_root", type=pathlib.Path)
+    parser.add_argument("output", type=pathlib.Path)
+    parser.add_argument("--urdf-output", type=pathlib.Path)
+    parser.add_argument("--xacro", type=pathlib.Path, required=True)
+    parser.add_argument("--pythonpath", required=True)
+    parser.add_argument("--ament-prefix", default="")
+    args = parser.parse_args()
+    root = args.description_root.resolve()
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    if head != PIN:
+        raise ValueError(f"expected openarm_description@{PIN}, got {head}")
+    dirty = subprocess.check_output(["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=root, text=True)
+    if dirty:
+        raise ValueError("openarm_description checkout must be clean")
+    sources_hash = source_hash(root)
+    if sources_hash != EXPECTED_SOURCE_SHA256:
+        raise ValueError(f"canonical source hash mismatch: expected {EXPECTED_SOURCE_SHA256}, got {sources_hash}")
+    xacro_version, xacro_hash = tool_identity(args.xacro, args.pythonpath)
+    generator_hash = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
+    raw = flatten(root, args.xacro, args.pythonpath, args.ament_prefix)
+    models = extract(raw)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_bytes(emit(models, hashlib.sha256(raw).hexdigest(), sources_hash,
+                                 xacro_version, xacro_hash, generator_hash))
+    if args.urdf_output:
+        args.urdf_output.parent.mkdir(parents=True, exist_ok=True)
+        args.urdf_output.write_bytes(raw)
+
+if __name__ == "__main__":
+    main()
