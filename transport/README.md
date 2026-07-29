@@ -5,17 +5,27 @@ API in `include/openarm_transport.h`. It is a transport boundary, not a motor
 controller or calibration implementation.
 
 Opening a handle does not alter the interface, execute shell commands, request
-privileges, enable a motor, or transmit a frame. With no capability record, only
-strict DaMiao register/status queries may be sent. Disable, motion, enable, and
-commissioning frames are rejected. Dangerous permissions require an explicit
-future `CLOCK_MONOTONIC` expiry and are checked again on every send.
+privileges, enable a motor, or transmit a frame. Only strict DaMiao
+register/status queries may be sent. The public C API has no
+authority-issuing entry point: disable, motion, enable, and commissioning frames
+are always rejected on a caller-opened handle.
+
+The private controller integration boundary can issue one-shot, unpredictable,
+transport-instance-bound, exact-frame authorities only for an explicitly
+virtual/test backend. Physical SocketCAN backends cannot issue them. Authorities
+expire within five seconds, cannot be replayed or moved between transports, and
+never authorize untyped motion. Register writes must first round-trip through
+the verified `openarm_can` codec; unknown IDs, payloads, modes, and non-finite or
+out-of-range values fail closed.
 
 The backend accepts only existing Linux classic-CAN interfaces with an exact
 name and `CAN_MTU`. It installs caller-selected standard-ID filters, error-frame
 reporting, software kernel timestamps, and receive-overflow diagnostics. Send
-and receive use bounded absolute monotonic deadlines. `oa_transport_close()` is
-thread-safe and interrupts blocked I/O; destroy is performed after users have
-joined their I/O threads.
+and receive use bounded absolute monotonic deadlines. Netlink is subscribed
+before the initial link snapshot and queues every transition, including a down
+followed immediately by recovery. `oa_transport_close()` signals blocked I/O
+and then joins both operation directions before it returns, preventing a late
+send or file-descriptor reuse race. Destroy follows completed close.
 
 The library never infers motor identity, joint assignment, encoder sign/offset,
 safe limits, or robot home. Those facts belong to a separately verified

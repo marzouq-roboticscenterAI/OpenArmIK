@@ -3,6 +3,12 @@ project(openarm_transport VERSION 1.0.0 LANGUAGES C CXX)
 
 option(OA_TRANSPORT_ENABLE_SANITIZERS
        "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(OA_TRANSPORT_ENABLE_THREAD_SANITIZER
+       "Enable ThreadSanitizer" OFF)
+
+if(OA_TRANSPORT_ENABLE_SANITIZERS AND OA_TRANSPORT_ENABLE_THREAD_SANITIZER)
+    message(FATAL_ERROR "ASan/UBSan and TSan cannot be enabled together")
+endif()
 
 set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -48,8 +54,19 @@ function(oa_transport_sanitizers target)
         target_compile_options(${target} PRIVATE
             -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+    elseif(OA_TRANSPORT_ENABLE_THREAD_SANITIZER AND
+           CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target} PRIVATE
+            -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(${target} PRIVATE -fsanitize=thread)
     endif()
 endfunction()
+
+set(_oa_transport_build_testing "${BUILD_TESTING}")
+set(BUILD_TESTING OFF)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../can"
+                 "${CMAKE_CURRENT_BINARY_DIR}/openarm_can" EXCLUDE_FROM_ALL)
+set(BUILD_TESTING "${_oa_transport_build_testing}")
 
 add_library(openarm_transport STATIC
     src/c_api.cpp
@@ -58,7 +75,7 @@ add_library(openarm_transport STATIC
 target_include_directories(openarm_transport
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(openarm_transport PUBLIC Threads::Threads)
+target_link_libraries(openarm_transport PUBLIC Threads::Threads PRIVATE openarm_can)
 oa_transport_strict_cxx(openarm_transport)
 oa_transport_sanitizers(openarm_transport)
 

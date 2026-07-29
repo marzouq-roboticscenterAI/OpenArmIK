@@ -24,30 +24,36 @@ Branch: `impl/socketcan`
 - Sockets are nonblocking. Absolute `CLOCK_MONOTONIC` send/receive deadlines are
   mandatory and capped by a configurable horizon no greater than 60 seconds.
   Sends recheck the deadline immediately before the syscall. Per-direction
-  mutexes serialize concurrent senders and receivers, while an eventfd makes
-  idempotent `oa_transport_close()` interrupt either blocked direction without
-  waiting for its deadline.
+  mutexes serialize concurrent senders and receivers. Close publishes closure,
+  signals both directions through eventfd, and joins both backend and public
+  operation locks before returning, so no send/receive can succeed later and no
+  descriptor can be reused while an operation is still live.
 - The frame classifier recognizes exact DaMiao register query, status query,
-  register write, save-parameters, enable, disable, set-zero, clear-error, and
-  generic motion shapes. Unknown and malformed system/special frames fail
-  closed. Known register IDs and the codec's conservative writable RID set are
-  enforced at the transport boundary.
-- With no capability record, only register/status queries can transmit.
-  Disable, enable, motion, writes, zero, clear, and save are rejected before
-  reaching the backend. Disable/control/commission permissions require an
-  explicit record; every dangerous record needs a future monotonic expiry, and
-  expiry is checked again on every send. An I/O deadline may not extend beyond
-  that expiry, so a queued frame cannot be transmitted after authority lapses.
-  Commission permission does not imply motion permission, and control permission
-  does not imply commissioning.
+  semantically valid register write, save-parameters, enable, disable, set-zero,
+  and clear-error shapes. Register writes are reconstructed through the verified
+  `openarm_can` codec, rejecting illegal IDs/modes/bitrates, non-finite values,
+  and range failures. Every other ordinary frame, including all untyped raw
+  motion, is unknown and rejected regardless of authority.
+- The installed C ABI is permanently query-only. The private integration layer
+  uses unpredictable one-shot tokens stored in a per-transport nonce registry,
+  bound to one exact frame, instance, class, and expiry of at most five seconds.
+  They cannot cross instances or replay. Physical SocketCAN backends categorically
+  refuse issuance; only sysfs-verified virtual/test backends may issue. This keeps
+  physical enable, motion, zero, write, clear, and save unavailable in Stage A.
+- Netlink subscribes before the first interface-state snapshot. Every matching
+  down/delete/up transition is parsed into a bounded FIFO instead of collapsing
+  a batch to its final state; overflow or malformed/overrun netlink data fails
+  closed.
 
 ## Test coverage
 
-- Injectable fake backend tests cover all frame classifications, malformed
-  query/special rejection, query-only no-write behavior, distinct control and
-  commissioning capabilities, expiry, expired/overlong deadlines, event
-  diagnostics, per-call output preservation, and close interrupting a blocked
-  receive from another thread.
+- Injectable fake backend tests cover malformed/unknown/motion exploit rejection,
+  verified register-write semantics, public query-only behavior, cross-instance
+  and wrong-frame token rejection, one-shot replay prevention, physical authority
+  refusal, expiry, exact deadline equality, and diagnostic event preservation.
+- A simultaneous blocked-send/blocked-receive race proves close wakes and joins
+  both operations. Synthetic netlink datagrams prove down followed by up remains
+  two ordered transitions and malformed/overrun input fails closed.
 - The public boundary is consumed by a separately compiled C11 executable.
 - Exact interface rejection is exercised with the non-CAN loopback device.
 - A `vcan0` smoke test verifies through sysfs that the device is virtual, then
@@ -60,23 +66,35 @@ Branch: `impl/socketcan`
 Strict GCC 15.2 Release build (`-Werror`, conversion/sign/shadow/format checks):
 
 ```text
-cmake -S transport -B /tmp/openarmik-socketcan-release \
+cmake -S transport -B /tmp/openarmik-socketcan-release2 \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-cmake --build /tmp/openarmik-socketcan-release --parallel
-ctest --test-dir /tmp/openarmik-socketcan-release --output-on-failure
+cmake --build /tmp/openarmik-socketcan-release2 --parallel
+ctest --test-dir /tmp/openarmik-socketcan-release2 --output-on-failure
 3/3 tests passed
 ```
 
 Debug ASan + UBSan build with leak detection and halt-on-error:
 
 ```text
-cmake -S transport -B /tmp/openarmik-socketcan-sanitize \
+cmake -S transport -B /tmp/openarmik-socketcan-sanitize2 \
   -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON \
   -DOA_TRANSPORT_ENABLE_SANITIZERS=ON
-cmake --build /tmp/openarmik-socketcan-sanitize --parallel
+cmake --build /tmp/openarmik-socketcan-sanitize2 --parallel
 ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
 UBSAN_OPTIONS=halt_on_error=1 \
-ctest --test-dir /tmp/openarmik-socketcan-sanitize --output-on-failure
+ctest --test-dir /tmp/openarmik-socketcan-sanitize2 --output-on-failure
+3/3 tests passed
+```
+
+Debug ThreadSanitizer build:
+
+```text
+cmake -S transport -B /tmp/openarmik-socketcan-tsan \
+  -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON \
+  -DOA_TRANSPORT_ENABLE_THREAD_SANITIZER=ON
+cmake --build /tmp/openarmik-socketcan-tsan --parallel
+TSAN_OPTIONS=halt_on_error=1 \
+ctest --test-dir /tmp/openarmik-socketcan-tsan --output-on-failure
 3/3 tests passed
 ```
 

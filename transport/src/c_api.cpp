@@ -90,7 +90,7 @@ extern "C" oa_transport_status oa_transport_classify_send_frame(
 extern "C" oa_transport_status oa_transport_open(
     const char *interface_name, const oa_transport_open_options *options,
     const oa_transport_filter *filters, size_t filter_count,
-    const oa_transport_capability *capability, oa_transport **out_transport) {
+    oa_transport **out_transport) {
     if (interface_name == nullptr || out_transport == nullptr ||
         filter_count > OA_TRANSPORT_MAX_FILTERS ||
         (filter_count != 0U && filters == nullptr)) {
@@ -140,38 +140,21 @@ extern "C" oa_transport_status oa_transport_open(
                 Filter{filters[index].can_id, filters[index].can_mask});
         }
 
-        std::uint32_t permissions = OA_TRANSPORT_PERMISSION_QUERY;
-        std::uint64_t capability_expiry_ns = 0U;
-        if (capability != nullptr) {
-            if (!validRecord(capability)) {
-                return OA_TRANSPORT_EABI;
-            }
-            if (capability->reserved != 0U || capability->permissions == 0U ||
-                (capability->permissions & ~OA_TRANSPORT_PERMISSION_ALL) != 0U) {
-                return OA_TRANSPORT_EINVAL;
-            }
-            permissions = capability->permissions;
-            capability_expiry_ns = capability->expiry_monotonic_ns;
-            if ((permissions & ~OA_TRANSPORT_PERMISSION_QUERY) != 0U) {
-                std::uint64_t now_ns = 0U;
-                const auto time_status = openarm::transport::monotonicNow(now_ns);
-                if (time_status != OA_TRANSPORT_OK) {
-                    return time_status;
-                }
-                if (capability_expiry_ns <= now_ns) {
-                    return OA_TRANSPORT_EPERMISSION;
-                }
-            }
-        }
-
         oa_transport_status backend_status = OA_TRANSPORT_EIO;
         auto backend = openarm::transport::makeSocketCanBackend(
             std::string(interface_name, name_length), config, backend_status);
         if (!backend) {
             return backend_status;
         }
+        std::array<std::uint64_t, 2> instance_nonce{};
+        for (auto &part : instance_nonce) {
+            const auto random_status = openarm::transport::secureRandom64(part);
+            if (random_status != OA_TRANSPORT_OK) {
+                return random_status;
+            }
+        }
         auto implementation = std::make_unique<Transport>(
-            std::move(backend), permissions, capability_expiry_ns,
+            std::move(backend), instance_nonce,
             config.max_deadline_horizon_ns);
         auto handle = std::make_unique<oa_transport>();
         handle->implementation = std::move(implementation);
@@ -219,7 +202,8 @@ extern "C" oa_transport_status oa_transport_send(
         oa_transport_frame_class frame_class = OA_TRANSPORT_FRAME_UNKNOWN;
         std::uint64_t sent_ns = 0U;
         const auto status = transport->implementation->send(
-            toInternal(*frame), deadline_monotonic_ns, frame_class, sent_ns);
+            toInternal(*frame), deadline_monotonic_ns, nullptr, frame_class,
+            sent_ns);
         if (status == OA_TRANSPORT_OK) {
             oa_transport_send_result result{};
             result.struct_size = sizeof(result);

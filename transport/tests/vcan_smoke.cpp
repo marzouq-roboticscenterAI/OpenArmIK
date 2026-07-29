@@ -25,8 +25,8 @@ int main() {
         return EXIT_SUCCESS;
     }
     oa_transport *transport = nullptr;
-    const auto status = oa_transport_open("vcan0", nullptr, nullptr, 0U, nullptr,
-                                          &transport);
+    const auto status =
+        oa_transport_open("vcan0", nullptr, nullptr, 0U, &transport);
     if (status != OA_TRANSPORT_OK) {
         std::cerr << "vcan0 open failed: " << status << '\n';
         return EXIT_FAILURE;

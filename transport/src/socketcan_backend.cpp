@@ -1,10 +1,14 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "transport_internal.hpp"
+#include "socketcan_backend_internal.hpp"
 
 #ifdef __linux__
 
 #include <array>
 #include <cerrno>
+#include <climits>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <new>
@@ -25,6 +29,60 @@
 #include <unistd.h>
 
 namespace openarm::transport {
+
+oa_transport_status parseLinkDatagram(const void *data, std::size_t length,
+                                      unsigned int ifindex,
+                                      LinkTransitionBatch &out_batch) noexcept {
+    if (data == nullptr || length < sizeof(struct nlmsghdr) || ifindex == 0U) {
+        return OA_TRANSPORT_EFRAME;
+    }
+    LinkTransitionBatch batch;
+    const auto *bytes = static_cast<const unsigned char *>(data);
+    std::size_t offset = 0U;
+    while (length - offset >= sizeof(struct nlmsghdr)) {
+        struct nlmsghdr header {};
+        std::memcpy(&header, bytes + offset, sizeof(header));
+        const auto message_length = static_cast<std::size_t>(header.nlmsg_len);
+        if (message_length < sizeof(header) || message_length > length - offset) {
+            return OA_TRANSPORT_EFRAME;
+        }
+        if (header.nlmsg_type == NLMSG_ERROR ||
+            header.nlmsg_type == NLMSG_OVERRUN) {
+            return OA_TRANSPORT_EIO;
+        }
+        if ((header.nlmsg_type == RTM_NEWLINK ||
+             header.nlmsg_type == RTM_DELLINK) &&
+            message_length >= sizeof(header) + sizeof(struct ifinfomsg)) {
+            struct ifinfomsg info {};
+            std::memcpy(&info, bytes + offset + sizeof(header), sizeof(info));
+            if (info.ifi_index > 0 &&
+                static_cast<unsigned int>(info.ifi_index) == ifindex) {
+                if (batch.count == batch.states.size()) {
+                    return OA_TRANSPORT_EIO;
+                }
+                batch.states[batch.count++] =
+                    header.nlmsg_type == RTM_NEWLINK &&
+                    (info.ifi_flags & IFF_UP) != 0U &&
+                    (info.ifi_flags & IFF_RUNNING) != 0U;
+            }
+        }
+        const std::size_t aligned = (message_length + 3U) & ~std::size_t{3U};
+        if (aligned > length - offset) {
+            if (message_length != length - offset) {
+                return OA_TRANSPORT_EFRAME;
+            }
+            offset += message_length;
+        } else {
+            offset += aligned;
+        }
+    }
+    if (offset != length) {
+        return OA_TRANSPORT_EFRAME;
+    }
+    out_batch = batch;
+    return OA_TRANSPORT_OK;
+}
+
 namespace {
 
 enum class Ready { Can, Link, Closed, Timeout, Failed };
@@ -32,9 +90,11 @@ enum class Ready { Can, Link, Closed, Timeout, Failed };
 class SocketCanBackend final : public Backend {
 public:
     SocketCanBackend(int can_fd, int wake_fd, int link_fd, unsigned int ifindex,
-                     bool initial_link_up) noexcept
+                     bool initial_link_up, bool virtual_interface) noexcept
         : can_fd_(can_fd), wake_fd_(wake_fd), link_fd_(link_fd), ifindex_(ifindex),
-          link_up_(initial_link_up), initial_link_pending_(true) {}
+          link_up_(initial_link_up), virtual_interface_(virtual_interface) {
+        (void)enqueueLink(initial_link_up);
+    }
 
     ~SocketCanBackend() override {
         close();
@@ -105,9 +165,15 @@ public:
     oa_transport_status receive(std::uint64_t deadline_ns,
                                 Event &out_event) noexcept override {
         std::lock_guard<std::mutex> lock(receive_mutex_);
-        if (initial_link_pending_) {
-            initial_link_pending_ = false;
-            return makeLinkEvent(link_up_, out_event);
+        std::uint64_t now_ns = 0U;
+        if (monotonicNow(now_ns) != OA_TRANSPORT_OK) {
+            return OA_TRANSPORT_EIO;
+        }
+        if (deadline_ns <= now_ns) {
+            return OA_TRANSPORT_ETIMEOUT;
+        }
+        if (link_event_count_ != 0U) {
+            return dequeueLink(out_event);
         }
         while (true) {
             if (closed_.load(std::memory_order_acquire)) {
@@ -124,15 +190,12 @@ public:
                 return OA_TRANSPORT_EIO;
             }
             if (ready == Ready::Link) {
-                bool changed = false;
-                bool up = link_up_;
-                const auto status = drainLinkEvents(changed, up);
+                const auto status = drainLinkEvents();
                 if (status != OA_TRANSPORT_OK) {
                     return status;
                 }
-                if (changed) {
-                    link_up_ = up;
-                    return makeLinkEvent(up, out_event);
+                if (link_event_count_ != 0U) {
+                    return dequeueLink(out_event);
                 }
                 continue;
             }
@@ -150,6 +213,11 @@ public:
             const ssize_t result = ::write(wake_fd_, &value, sizeof(value));
             (void)result;
         }
+        std::scoped_lock operation_lock(send_mutex_, receive_mutex_);
+    }
+
+    bool permitsAuthorityIssuance() const noexcept override {
+        return virtual_interface_;
     }
 
 private:
@@ -188,8 +256,17 @@ private:
             if ((descriptors[1].revents & POLLIN) != 0) {
                 return Ready::Closed;
             }
+            if ((descriptors[1].revents &
+                 static_cast<short>(POLLERR | POLLHUP | POLLNVAL)) != 0) {
+                return Ready::Failed;
+            }
             if (!write && (descriptors[2].revents & POLLIN) != 0) {
                 return Ready::Link;
+            }
+            if (!write &&
+                (descriptors[2].revents &
+                 static_cast<short>(POLLERR | POLLHUP | POLLNVAL)) != 0) {
+                return Ready::Failed;
             }
             if ((descriptors[0].revents &
                  static_cast<short>((write ? POLLOUT : POLLIN) | POLLERR |
@@ -210,9 +287,28 @@ private:
         return status;
     }
 
-    oa_transport_status drainLinkEvents(bool &out_changed,
-                                        bool &out_up) noexcept {
-        out_changed = false;
+    bool enqueueLink(bool up) noexcept {
+        if (link_event_count_ == link_events_.size()) {
+            return false;
+        }
+        const std::size_t tail =
+            (link_event_head_ + link_event_count_) % link_events_.size();
+        link_events_[tail] = up;
+        ++link_event_count_;
+        return true;
+    }
+
+    oa_transport_status dequeueLink(Event &out_event) noexcept {
+        if (link_event_count_ == 0U) {
+            return OA_TRANSPORT_EIO;
+        }
+        const bool up = link_events_[link_event_head_];
+        link_event_head_ = (link_event_head_ + 1U) % link_events_.size();
+        --link_event_count_;
+        return makeLinkEvent(up, out_event);
+    }
+
+    oa_transport_status drainLinkEvents() noexcept {
         std::array<unsigned char, 8192> buffer{};
         while (true) {
             const ssize_t count =
@@ -229,47 +325,19 @@ private:
             if (count == 0) {
                 return OA_TRANSPORT_EIO;
             }
-            std::size_t offset = 0U;
-            const auto length = static_cast<std::size_t>(count);
-            while (length - offset >= sizeof(struct nlmsghdr)) {
-                struct nlmsghdr header {};
-                std::memcpy(&header, buffer.data() + offset, sizeof(header));
-                const auto message_length =
-                    static_cast<std::size_t>(header.nlmsg_len);
-                if (message_length < sizeof(header) ||
-                    message_length > length - offset) {
-                    return OA_TRANSPORT_EFRAME;
-                }
-                if (header.nlmsg_type == NLMSG_ERROR ||
-                    header.nlmsg_type == NLMSG_OVERRUN) {
-                    return OA_TRANSPORT_EIO;
-                }
-                if ((header.nlmsg_type == RTM_NEWLINK ||
-                     header.nlmsg_type == RTM_DELLINK) &&
-                    message_length >= sizeof(header) + sizeof(struct ifinfomsg)) {
-                    struct ifinfomsg info {};
-                    std::memcpy(&info, buffer.data() + offset + sizeof(header),
-                                sizeof(info));
-                    if (info.ifi_index > 0 &&
-                        static_cast<unsigned int>(info.ifi_index) == ifindex_) {
-                        out_changed = true;
-                        out_up = header.nlmsg_type == RTM_NEWLINK &&
-                                 (info.ifi_flags & IFF_UP) != 0U &&
-                                 (info.ifi_flags & IFF_RUNNING) != 0U;
-                    }
-                }
-                const std::size_t aligned = (message_length + 3U) & ~std::size_t{3U};
-                if (aligned > length - offset) {
-                    if (message_length != length - offset) {
-                        return OA_TRANSPORT_EFRAME;
-                    }
-                    offset += message_length;
-                } else {
-                    offset += aligned;
-                }
+            LinkTransitionBatch batch;
+            const auto status = parseLinkDatagram(
+                buffer.data(), static_cast<std::size_t>(count), ifindex_, batch);
+            if (status != OA_TRANSPORT_OK) {
+                return status;
             }
-            if (offset != length) {
-                return OA_TRANSPORT_EFRAME;
+            for (std::size_t index = 0U; index < batch.count; ++index) {
+                if (batch.states[index] != link_up_) {
+                    link_up_ = batch.states[index];
+                    if (!enqueueLink(link_up_)) {
+                        return OA_TRANSPORT_EIO;
+                    }
+                }
             }
         }
     }
@@ -365,7 +433,10 @@ private:
     int link_fd_;
     unsigned int ifindex_;
     bool link_up_;
-    bool initial_link_pending_;
+    bool virtual_interface_;
+    std::array<bool, 64> link_events_{};
+    std::size_t link_event_head_{};
+    std::size_t link_event_count_{};
     std::uint32_t last_overflow_count_{};
     std::atomic<bool> closed_{false};
     std::mutex send_mutex_;
@@ -409,6 +480,18 @@ oa_transport_status queryInterface(int fd, const std::string &name,
     return OA_TRANSPORT_OK;
 }
 
+bool isVirtualInterface(const std::string &name) noexcept {
+    std::array<char, PATH_MAX> source{};
+    std::array<char, PATH_MAX> resolved{};
+    const int count = std::snprintf(source.data(), source.size(),
+                                    "/sys/class/net/%s", name.c_str());
+    if (count <= 0 || static_cast<std::size_t>(count) >= source.size() ||
+        ::realpath(source.data(), resolved.data()) == nullptr) {
+        return false;
+    }
+    return std::strstr(resolved.data(), "/devices/virtual/net/") != nullptr;
+}
+
 } // namespace
 
 std::unique_ptr<Backend> makeSocketCanBackend(const std::string &interface_name,
@@ -432,10 +515,26 @@ std::unique_ptr<Backend> makeSocketCanBackend(const std::string &interface_name,
     if (can_fd < 0) {
         return nullptr;
     }
+    const int link_fd =
+        ::socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (link_fd < 0) {
+        (void)::close(can_fd);
+        return nullptr;
+    }
+    struct sockaddr_nl link_address {};
+    link_address.nl_family = AF_NETLINK;
+    link_address.nl_groups = RTMGRP_LINK;
+    if (::bind(link_fd, reinterpret_cast<const struct sockaddr *>(&link_address),
+               sizeof(link_address)) < 0) {
+        (void)::close(link_fd);
+        (void)::close(can_fd);
+        return nullptr;
+    }
     unsigned int ifindex = 0U;
     bool link_up = false;
     out_status = queryInterface(can_fd, interface_name, ifindex, link_up);
     if (out_status != OA_TRANSPORT_OK) {
+        (void)::close(link_fd);
         (void)::close(can_fd);
         return nullptr;
     }
@@ -445,6 +544,7 @@ std::unique_ptr<Backend> makeSocketCanBackend(const std::string &interface_name,
                              std::numeric_limits<socklen_t>::max()) ||
             ::setsockopt(can_fd, SOL_CAN_RAW, CAN_RAW_FILTER, wire_filters.data(),
                          static_cast<socklen_t>(byte_count)) < 0) {
+            (void)::close(link_fd);
             (void)::close(can_fd);
             out_status = OA_TRANSPORT_EIO;
             return nullptr;
@@ -461,6 +561,7 @@ std::unique_ptr<Backend> makeSocketCanBackend(const std::string &interface_name,
                      sizeof(enabled)) < 0 ||
         ::setsockopt(can_fd, SOL_SOCKET, SO_RXQ_OVFL, &enabled,
                      sizeof(enabled)) < 0) {
+        (void)::close(link_fd);
         (void)::close(can_fd);
         out_status = OA_TRANSPORT_EIO;
         return nullptr;
@@ -468,6 +569,7 @@ std::unique_ptr<Backend> makeSocketCanBackend(const std::string &interface_name,
     if (config.receive_buffer_bytes != 0U) {
         if (config.receive_buffer_bytes >
             static_cast<std::uint32_t>(std::numeric_limits<int>::max())) {
+            (void)::close(link_fd);
             (void)::close(can_fd);
             out_status = OA_TRANSPORT_ERANGE;
             return nullptr;
@@ -476,6 +578,7 @@ std::unique_ptr<Backend> makeSocketCanBackend(const std::string &interface_name,
             static_cast<int>(config.receive_buffer_bytes);
         if (::setsockopt(can_fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer_bytes,
                          sizeof(receive_buffer_bytes)) < 0) {
+            (void)::close(link_fd);
             (void)::close(can_fd);
             out_status = OA_TRANSPORT_EIO;
             return nullptr;
@@ -486,6 +589,7 @@ std::unique_ptr<Backend> makeSocketCanBackend(const std::string &interface_name,
     address.can_ifindex = static_cast<int>(ifindex);
     if (::bind(can_fd, reinterpret_cast<const struct sockaddr *>(&address),
                sizeof(address)) < 0) {
+        (void)::close(link_fd);
         (void)::close(can_fd);
         out_status = OA_TRANSPORT_EIO;
         return nullptr;
@@ -493,25 +597,7 @@ std::unique_ptr<Backend> makeSocketCanBackend(const std::string &interface_name,
 
     const int wake_fd = ::eventfd(0U, EFD_NONBLOCK | EFD_CLOEXEC);
     if (wake_fd < 0) {
-        (void)::close(can_fd);
-        out_status = OA_TRANSPORT_EIO;
-        return nullptr;
-    }
-    const int link_fd =
-        ::socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
-    if (link_fd < 0) {
-        (void)::close(wake_fd);
-        (void)::close(can_fd);
-        out_status = OA_TRANSPORT_EIO;
-        return nullptr;
-    }
-    struct sockaddr_nl link_address {};
-    link_address.nl_family = AF_NETLINK;
-    link_address.nl_groups = RTMGRP_LINK;
-    if (::bind(link_fd, reinterpret_cast<const struct sockaddr *>(&link_address),
-               sizeof(link_address)) < 0) {
         (void)::close(link_fd);
-        (void)::close(wake_fd);
         (void)::close(can_fd);
         out_status = OA_TRANSPORT_EIO;
         return nullptr;
@@ -519,7 +605,8 @@ std::unique_ptr<Backend> makeSocketCanBackend(const std::string &interface_name,
     out_status = OA_TRANSPORT_OK;
     std::unique_ptr<Backend> backend(
         new (std::nothrow)
-            SocketCanBackend(can_fd, wake_fd, link_fd, ifindex, link_up));
+            SocketCanBackend(can_fd, wake_fd, link_fd, ifindex, link_up,
+                             isVirtualInterface(interface_name)));
     if (!backend) {
         (void)::close(link_fd);
         (void)::close(wake_fd);

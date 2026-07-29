@@ -29,15 +29,6 @@ typedef uint32_t oa_transport_status;
 #define OA_TRANSPORT_ENOMEM UINT32_C(10)
 #define OA_TRANSPORT_EUNSUPPORTED UINT32_C(11)
 
-typedef uint32_t oa_transport_permission;
-#define OA_TRANSPORT_PERMISSION_QUERY (UINT32_C(1) << 0)
-#define OA_TRANSPORT_PERMISSION_DISABLE (UINT32_C(1) << 1)
-#define OA_TRANSPORT_PERMISSION_CONTROL (UINT32_C(1) << 2)
-#define OA_TRANSPORT_PERMISSION_COMMISSION (UINT32_C(1) << 3)
-#define OA_TRANSPORT_PERMISSION_ALL                                              \
-    (OA_TRANSPORT_PERMISSION_QUERY | OA_TRANSPORT_PERMISSION_DISABLE |          \
-     OA_TRANSPORT_PERMISSION_CONTROL | OA_TRANSPORT_PERMISSION_COMMISSION)
-
 typedef uint32_t oa_transport_frame_class;
 #define OA_TRANSPORT_FRAME_REGISTER_QUERY UINT32_C(1)
 #define OA_TRANSPORT_FRAME_STATUS_QUERY UINT32_C(2)
@@ -88,18 +79,6 @@ typedef struct oa_transport_open_options {
     uint64_t max_deadline_horizon_ns;
 } oa_transport_open_options;
 
-/*
- * Passing NULL selects query-only operation. Dangerous permissions require a
- * nonzero, future CLOCK_MONOTONIC expiry and are rechecked for every send.
- */
-typedef struct oa_transport_capability {
-    uint32_t struct_size;
-    uint32_t abi_version;
-    uint32_t permissions;
-    uint32_t reserved;
-    uint64_t expiry_monotonic_ns;
-} oa_transport_capability;
-
 typedef struct oa_transport_send_result {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -131,12 +110,13 @@ oa_transport_status oa_transport_classify_send_frame(
 
 /*
  * Opens an existing classic-CAN interface without changing link state, bitrate,
- * MTU, or any motor. filters may be NULL only when filter_count is zero.
+ * MTU, or any motor. filters may be NULL only when filter_count is zero. Public
+ * handles are permanently query-only; no caller-supplied authority is accepted.
  */
 oa_transport_status oa_transport_open(
     const char *interface_name, const oa_transport_open_options *options,
     const oa_transport_filter *filters, size_t filter_count,
-    const oa_transport_capability *capability, oa_transport **out_transport);
+    oa_transport **out_transport);
 
 /* close is idempotent and may interrupt a concurrent receive or send. */
 oa_transport_status oa_transport_close(oa_transport *transport);
