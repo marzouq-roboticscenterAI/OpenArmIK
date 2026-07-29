@@ -1,143 +1,406 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "oa_model_internal.h"
 
-#include <float.h>
 #include <math.h>
 #include <string.h>
 
 #include "generated/oa_model_data.inc"
 
-static int finite_n(const double *v, size_t n) {
+#define OA_NUMERIC_POSITION_MAX 100.0
+#define OA_NUMERIC_POSTURE_MAX 100.0
+#define OA_WEIGHT_MIN 1e-9
+#define OA_WEIGHT_MAX 1e9
+#define OA_ALPHA_MIN 1e-12
+
+static int finite_n(const double *values, size_t count) {
     size_t i;
-    for (i = 0; i < n; ++i) if (!isfinite(v[i])) return 0;
+    for (i = 0; i < count; ++i) {
+        if (!isfinite(values[i])) return 0;
+    }
     return 1;
 }
-static void identity(oa_transform *t) {
-    memset(t, 0, sizeof(*t)); t->m[0] = t->m[5] = t->m[10] = t->m[15] = 1.0;
+
+static void identity(oa_transform *transform) {
+    memset(transform, 0, sizeof(*transform));
+    transform->m[0] = 1.0;
+    transform->m[5] = 1.0;
+    transform->m[10] = 1.0;
+    transform->m[15] = 1.0;
 }
-static void mul(oa_transform *r, const oa_transform *a, const oa_transform *b) {
-    oa_transform x; size_t i, j, k;
-    for (i = 0; i < 4; ++i) for (j = 0; j < 4; ++j) {
-        x.m[i * 4 + j] = 0.0;
-        for (k = 0; k < 4; ++k) x.m[i * 4 + j] += a->m[i * 4 + k] * b->m[k * 4 + j];
+
+static void multiply(oa_transform *result, const oa_transform *left, const oa_transform *right) {
+    oa_transform product;
+    size_t row, column, k;
+    for (row = 0; row < 4; ++row) {
+        for (column = 0; column < 4; ++column) {
+            product.m[row * 4 + column] = 0.0;
+            for (k = 0; k < 4; ++k) {
+                product.m[row * 4 + column] += left->m[row * 4 + k] * right->m[k * 4 + column];
+            }
+        }
     }
-    *r = x;
+    *result = product;
 }
-static void apply_dir(const oa_transform *t, const double v[3], double out[3]) {
-    size_t i;
-    for (i = 0; i < 3; ++i) out[i] = t->m[i * 4] * v[0] + t->m[i * 4 + 1] * v[1] + t->m[i * 4 + 2] * v[2];
+
+static void apply_direction(const oa_transform *transform, const double vector[3], double result[3]) {
+    size_t row;
+    for (row = 0; row < 3; ++row) {
+        result[row] = transform->m[row * 4] * vector[0]
+                    + transform->m[row * 4 + 1] * vector[1]
+                    + transform->m[row * 4 + 2] * vector[2];
+    }
 }
-static void rotation_axis(oa_transform *t, const double a[3], double q) {
-    const double c = cos(q), s = sin(q), d = 1.0 - c, x = a[0], y = a[1], z = a[2];
-    identity(t);
-    t->m[0] = c + x*x*d; t->m[1] = x*y*d - z*s; t->m[2] = x*z*d + y*s;
-    t->m[4] = y*x*d + z*s; t->m[5] = c + y*y*d; t->m[6] = y*z*d - x*s;
-    t->m[8] = z*x*d - y*s; t->m[9] = z*y*d + x*s; t->m[10] = c + z*z*d;
+
+static void axis_rotation(oa_transform *transform, const double axis[3], double angle) {
+    const double c = cos(angle), s = sin(angle), d = 1.0 - c;
+    const double x = axis[0], y = axis[1], z = axis[2];
+    identity(transform);
+    transform->m[0] = c + x*x*d;
+    transform->m[1] = x*y*d - z*s;
+    transform->m[2] = x*z*d + y*s;
+    transform->m[4] = y*x*d + z*s;
+    transform->m[5] = c + y*y*d;
+    transform->m[6] = y*z*d - x*s;
+    transform->m[8] = z*x*d - y*s;
+    transform->m[9] = z*y*d + x*s;
+    transform->m[10] = c + z*z*d;
 }
-static void pos(const oa_transform *t, double p[3]) { p[0] = t->m[3]; p[1] = t->m[7]; p[2] = t->m[11]; }
-static double norm3(const double v[3]) { return sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]); }
+
+static void position(const oa_transform *transform, double result[3]) {
+    result[0] = transform->m[3];
+    result[1] = transform->m[7];
+    result[2] = transform->m[11];
+}
+
+static double norm_squared3(const double vector[3]) {
+    return vector[0]*vector[0] + vector[1]*vector[1] + vector[2]*vector[2];
+}
+
+static void diagnostics_init(oa_ik_diagnostics *out, oa_status status) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->abi_version = OA_MODEL_ABI_VERSION;
+    out->struct_size = OA_IK_DIAGNOSTICS_SIZE;
+    out->status = status;
+    identity(&out->achieved_hand_tcp);
+}
+
+static oa_status diagnostics_fail(oa_ik_diagnostics *out, oa_status status) {
+    if (out) out->status = status;
+    return status;
+}
 
 const oa_model *oa_model_left_v10_bimanual(void) { return &oa_left; }
 const oa_model *oa_model_right_v10_bimanual(void) { return &oa_right; }
-const char *oa_model_id(const oa_model *m) { return m ? m->id : NULL; }
-const char *oa_model_provenance(const oa_model *m) { return m ? m->provenance : NULL; }
-const char *oa_model_data_sha256(const oa_model *m) { return m ? m->data_sha256 : NULL; }
-const char *oa_model_source_sha256(const oa_model *m) { return m ? m->source_sha256 : NULL; }
-const char *oa_model_joint_name(const oa_model *m, size_t i) { return (m && i < OA_DOF) ? m->joint_name[i] : NULL; }
-const char *oa_model_tip_frame(const oa_model *m) { return m ? m->tip_frame : NULL; }
-oa_status oa_model_limits(const oa_model *m, size_t i, double *lo, double *hi) {
-    if (!m || !lo || !hi || i >= OA_DOF) return OA_EINVAL;
-    *lo = m->lower[i]; *hi = m->upper[i]; return OA_OK;
+const char *oa_model_id(const oa_model *model) { return model ? model->id : NULL; }
+const char *oa_model_provenance(const oa_model *model) { return model ? model->provenance : NULL; }
+const char *oa_model_data_sha256(const oa_model *model) { return model ? model->data_sha256 : NULL; }
+const char *oa_model_flattened_urdf_sha256(const oa_model *model) { return model ? model->flattened_urdf_sha256 : NULL; }
+const char *oa_model_source_sha256(const oa_model *model) { return model ? model->source_sha256 : NULL; }
+const char *oa_model_joint_name(const oa_model *model, size_t index) {
+    return (model && index < OA_DOF) ? model->joint_name[index] : NULL;
+}
+const char *oa_model_tip_frame(const oa_model *model) { return model ? model->tip_frame : NULL; }
+
+oa_status oa_model_limits(const oa_model *model, size_t index, double *lower, double *upper) {
+    if (!model || !lower || !upper || index >= OA_DOF) return OA_EINVAL;
+    *lower = model->lower[index];
+    *upper = model->upper[index];
+    return OA_OK;
 }
 
-oa_status oa_fk(const oa_model *m, const double q[OA_DOF], oa_fk_result *out) {
-    oa_transform current, rot; size_t i;
-    if (!m || !q || !out) return OA_EINVAL;
+oa_status oa_fk(const oa_model *model, const double q[OA_DOF], oa_fk_result *out) {
+    oa_transform current, rotation;
+    size_t i;
+    if (!model || !q || !out) return OA_EINVAL;
     if (!finite_n(q, OA_DOF)) return OA_ENONFINITE;
-    current = m->base_in_body; out->base_in_body = current;
+    current = model->base_in_body;
+    out->base_in_body = current;
     for (i = 0; i < OA_DOF; ++i) {
-        mul(&out->joint_pre[i], &current, &m->origin[i]);
-        apply_dir(&out->joint_pre[i], m->axis[i], out->joint_axis_body[i]);
-        rotation_axis(&rot, m->axis[i], q[i]);
-        mul(&current, &out->joint_pre[i], &rot);
+        multiply(&out->joint_pre[i], &current, &model->origin[i]);
+        apply_direction(&out->joint_pre[i], model->axis[i], out->joint_axis_body[i]);
+        axis_rotation(&rotation, model->axis[i], q[i]);
+        multiply(&current, &out->joint_pre[i], &rotation);
         out->link_post[i] = current;
     }
-    mul(&out->hand_tcp, &current, &m->tcp_in_link7);
-    return OA_OK;
+    multiply(&out->hand_tcp, &current, &model->tcp_in_link7);
+    return finite_n(out->hand_tcp.m, 16) ? OA_OK : OA_ENONFINITE;
 }
 
-oa_status oa_geometric_jacobian(const oa_model *m, const double q[OA_DOF], oa_jacobian *out) {
-    oa_fk_result fk; double p[3], o[3], d[3]; size_t i; oa_status st;
+oa_status oa_geometric_jacobian(const oa_model *model, const double q[OA_DOF], oa_jacobian *out) {
+    oa_fk_result fk;
+    double tip[3], joint[3], delta[3];
+    size_t i;
+    oa_status status;
     if (!out) return OA_EINVAL;
-    st = oa_fk(m, q, &fk); if (st != OA_OK) return st;
-    pos(&fk.hand_tcp, p);
+    status = oa_fk(model, q, &fk);
+    if (status != OA_OK) return status;
+    position(&fk.hand_tcp, tip);
     for (i = 0; i < OA_DOF; ++i) {
-        pos(&fk.joint_pre[i], o); d[0] = p[0]-o[0]; d[1] = p[1]-o[1]; d[2] = p[2]-o[2];
-        out->value[0][i] = fk.joint_axis_body[i][1]*d[2] - fk.joint_axis_body[i][2]*d[1];
-        out->value[1][i] = fk.joint_axis_body[i][2]*d[0] - fk.joint_axis_body[i][0]*d[2];
-        out->value[2][i] = fk.joint_axis_body[i][0]*d[1] - fk.joint_axis_body[i][1]*d[0];
-        out->value[3][i] = fk.joint_axis_body[i][0]; out->value[4][i] = fk.joint_axis_body[i][1]; out->value[5][i] = fk.joint_axis_body[i][2];
+        position(&fk.joint_pre[i], joint);
+        delta[0] = tip[0] - joint[0];
+        delta[1] = tip[1] - joint[1];
+        delta[2] = tip[2] - joint[2];
+        out->value[0][i] = fk.joint_axis_body[i][1]*delta[2] - fk.joint_axis_body[i][2]*delta[1];
+        out->value[1][i] = fk.joint_axis_body[i][2]*delta[0] - fk.joint_axis_body[i][0]*delta[2];
+        out->value[2][i] = fk.joint_axis_body[i][0]*delta[1] - fk.joint_axis_body[i][1]*delta[0];
+        out->value[3][i] = fk.joint_axis_body[i][0];
+        out->value[4][i] = fk.joint_axis_body[i][1];
+        out->value[5][i] = fk.joint_axis_body[i][2];
     }
-    return OA_OK;
+    return finite_n(&out->value[0][0], 6 * OA_DOF) ? OA_OK : OA_ENONFINITE;
 }
 
-static int solve3(const double a_in[3][3], const double b[3], double x[3]) {
-    double a[3][4]; size_t i, j, k, p; double v, pivot;
-    for (i=0;i<3;++i) { for(j=0;j<3;++j) a[i][j]=a_in[i][j]; a[i][3]=b[i]; }
-    for (k=0;k<3;++k) {
-        p=k; for(i=k+1;i<3;++i) if(fabs(a[i][k])>fabs(a[p][k])) p=i;
-        if(fabs(a[p][k]) < 1e-15) return 0;
-        if(p!=k) for(j=k;j<4;++j) { v=a[k][j];a[k][j]=a[p][j];a[p][j]=v; }
-        pivot=a[k][k]; for(j=k;j<4;++j) a[k][j]/=pivot;
-        for(i=0;i<3;++i) if(i!=k) { v=a[i][k]; for(j=k;j<4;++j) a[i][j]-=v*a[k][j]; }
+static int solve3(double input[3][3], const double rhs[3], double result[3]) {
+    double augmented[3][4], temporary, pivot;
+    size_t row, column, k, selected;
+    for (row = 0; row < 3; ++row) {
+        for (column = 0; column < 3; ++column) augmented[row][column] = input[row][column];
+        augmented[row][3] = rhs[row];
     }
-    for (i = 0; i < 3; ++i) x[i] = a[i][3];
+    for (k = 0; k < 3; ++k) {
+        selected = k;
+        for (row = k + 1; row < 3; ++row) {
+            if (fabs(augmented[row][k]) > fabs(augmented[selected][k])) selected = row;
+        }
+        if (fabs(augmented[selected][k]) < 1e-15) return 0;
+        if (selected != k) {
+            for (column = k; column < 4; ++column) {
+                temporary = augmented[k][column];
+                augmented[k][column] = augmented[selected][column];
+                augmented[selected][column] = temporary;
+            }
+        }
+        pivot = augmented[k][k];
+        for (column = k; column < 4; ++column) augmented[k][column] /= pivot;
+        for (row = 0; row < 3; ++row) {
+            if (row != k) {
+                temporary = augmented[row][k];
+                for (column = k; column < 4; ++column) augmented[row][column] -= temporary * augmented[k][column];
+            }
+        }
+    }
+    for (row = 0; row < 3; ++row) result[row] = augmented[row][3];
+    return finite_n(result, 3);
+}
+
+static double min_eigenvalue3(double input[3][3]) {
+    double matrix[3][3], maximum, angle, c, s, app, aqq, apq, akp, akq;
+    size_t iteration, p, q, k;
+    memcpy(matrix, input, sizeof(matrix));
+    for (iteration = 0; iteration < 24; ++iteration) {
+        p = 0; q = 1; maximum = fabs(matrix[0][1]);
+        if (fabs(matrix[0][2]) > maximum) { p = 0; q = 2; maximum = fabs(matrix[0][2]); }
+        if (fabs(matrix[1][2]) > maximum) { p = 1; q = 2; maximum = fabs(matrix[1][2]); }
+        if (maximum < 1e-15) break;
+        angle = 0.5 * atan2(2.0 * matrix[p][q], matrix[q][q] - matrix[p][p]);
+        c = cos(angle); s = sin(angle); app = matrix[p][p]; aqq = matrix[q][q]; apq = matrix[p][q];
+        matrix[p][p] = c*c*app - 2.0*c*s*apq + s*s*aqq;
+        matrix[q][q] = s*s*app + 2.0*c*s*apq + c*c*aqq;
+        matrix[p][q] = 0.0; matrix[q][p] = 0.0;
+        for (k = 0; k < 3; ++k) {
+            if (k != p && k != q) {
+                akp = matrix[k][p]; akq = matrix[k][q];
+                matrix[k][p] = c*akp - s*akq; matrix[p][k] = matrix[k][p];
+                matrix[k][q] = s*akp + c*akq; matrix[q][k] = matrix[k][q];
+            }
+        }
+    }
+    return fmax(0.0, fmin(matrix[0][0], fmin(matrix[1][1], matrix[2][2])));
+}
+
+static void translational_matrix(const oa_jacobian *jacobian, double matrix[3][OA_DOF]) {
+    size_t row, i;
+    for (row = 0; row < 3; ++row) {
+        for (i = 0; i < OA_DOF; ++i) matrix[row][i] = jacobian->value[row][i];
+    }
+}
+
+static double singular_value(double jacobian[3][OA_DOF], const double weights[OA_DOF], uint32_t active) {
+    double gram[3][3] = {{0.0}};
+    size_t row, column, i;
+    for (row = 0; row < 3; ++row) {
+        for (column = 0; column < 3; ++column) {
+            for (i = 0; i < OA_DOF; ++i) {
+                if (!(active & (UINT32_C(1) << i))) gram[row][column] += jacobian[row][i] * jacobian[column][i] / weights[i];
+            }
+        }
+    }
+    return sqrt(min_eigenvalue3(gram));
+}
+
+static oa_status compute_step(double jacobian[3][OA_DOF], const double error[3], const double q[OA_DOF],
+                              const oa_ik_options *options, uint32_t active, double step[OA_DOF], double *sigma) {
+    double system[3][3] = {{0.0}}, inverse[OA_DOF][3] = {{0.0}};
+    double rhs[3], solution[3], lambda, posture_gain, task, secondary;
+    size_t row, column, i, k;
+    *sigma = singular_value(jacobian, options->posture_weight, active);
+    for (row = 0; row < 3; ++row) {
+        for (column = 0; column < 3; ++column) {
+            for (i = 0; i < OA_DOF; ++i) {
+                if (!(active & (UINT32_C(1) << i))) system[row][column] += jacobian[row][i] * jacobian[column][i] / options->posture_weight[i];
+            }
+        }
+    }
+    lambda = options->damping_min;
+    if (*sigma < 0.03) lambda += (options->damping_max - options->damping_min) * (0.03 - *sigma) / 0.03;
+    if (lambda > options->damping_max) lambda = options->damping_max;
+    for (row = 0; row < 3; ++row) system[row][row] += lambda * lambda;
+    for (i = 0; i < OA_DOF; ++i) {
+        step[i] = 0.0;
+        if (!(active & (UINT32_C(1) << i))) {
+            for (row = 0; row < 3; ++row) rhs[row] = jacobian[row][i] / options->posture_weight[i];
+            if (!solve3(system, rhs, solution)) return OA_ESINGULAR;
+            for (row = 0; row < 3; ++row) inverse[i][row] = solution[row];
+        }
+    }
+    posture_gain = 0.1 * sqrt(norm_squared3(error));
+    for (i = 0; i < OA_DOF; ++i) {
+        if (!(active & (UINT32_C(1) << i))) {
+            task = 0.0;
+            for (row = 0; row < 3; ++row) task += inverse[i][row] * error[row];
+            secondary = posture_gain * (options->posture[i] - q[i]);
+            for (k = 0; k < OA_DOF; ++k) {
+                if (!(active & (UINT32_C(1) << k))) {
+                    for (row = 0; row < 3; ++row) {
+                        secondary -= inverse[i][row] * jacobian[row][k] * posture_gain * (options->posture[k] - q[k]);
+                    }
+                }
+            }
+            step[i] = task + secondary;
+        }
+    }
+    return finite_n(step, OA_DOF) ? OA_OK : OA_ENONFINITE;
+}
+
+static int feasible(const oa_model *model, const oa_ik_options *options, const double q[OA_DOF]) {
+    size_t i;
+    for (i = 0; i < OA_DOF; ++i) {
+        const double lower = model->lower[i] + options->limit_margin_rad;
+        const double upper = model->upper[i] - options->limit_margin_rad;
+        if (!isfinite(q[i]) || q[i] < lower || q[i] > upper) return 0;
+    }
     return 1;
 }
-static double min_eigen_symmetric3(const double in[3][3]) {
-    double a[3][3], max, c, s, t, app, aqq, apq; size_t it, p, q, k;
-    memcpy(a, in, sizeof(a));
-    for (it=0; it<20; ++it) {
-        p=0;q=1;max=fabs(a[0][1]); if(fabs(a[0][2])>max){p=0;q=2;max=fabs(a[0][2]);} if(fabs(a[1][2])>max){p=1;q=2;max=fabs(a[1][2]);}
-        if(max < 1e-14) break;
-        t = 0.5 * atan2(2.0*a[p][q], a[q][q]-a[p][p]); c=cos(t);s=sin(t); app=a[p][p];aqq=a[q][q];apq=a[p][q];
-        a[p][p]=c*c*app-2*c*s*apq+s*s*aqq; a[q][q]=s*s*app+2*c*s*apq+c*c*aqq; a[p][q]=a[q][p]=0.0;
-        for(k=0;k<3;++k) if(k!=p && k!=q){ double akp=a[k][p], akq=a[k][q]; a[k][p]=a[p][k]=c*akp-s*akq; a[k][q]=a[q][k]=s*akp+c*akq; }
-    }
-    return fmax(0.0, fmin(a[0][0], fmin(a[1][1],a[2][2])));
-}
-static double merit(const double e[3], const double q[OA_DOF], const oa_ik_options *o) {
-    double v=e[0]*e[0]+e[1]*e[1]+e[2]*e[2]; size_t i;
-    for(i=0;i<OA_DOF;++i) { double d=q[i]-o->posture[i]; v += 1e-6*o->posture_weight[i]*d*d; }
-    return v;
-}
 
-oa_status oa_ik_position(const oa_model *m, const double target[3], const oa_ik_options *o, oa_ik_diagnostics *out) {
-    double q[OA_DOF], p[3], e[3], y[3], j[3][OA_DOF], a[3][3], pinv[OA_DOF][3], step[OA_DOF], nullv[OA_DOF], candidate[OA_DOF];
-    uint32_t iter, active = 0; size_t i,k,r,c; oa_fk_result fk; oa_jacobian jac; oa_status st = OA_ENOCONVERGENCE; double sigma=0.0;
-    if (!m || !target || !o || !out || o->abi_version != OA_MODEL_ABI_VERSION || o->struct_size < sizeof(*o)) return OA_EINVAL;
-    memset(out, 0, sizeof(*out)); out->collision_checked = 0;
-    if (!finite_n(target,3) || !finite_n(o->seed,OA_DOF) || !finite_n(o->posture,OA_DOF) || !finite_n(o->posture_weight,OA_DOF) ||
-        !isfinite(o->position_tolerance_m) || !isfinite(o->max_joint_step_rad) || !isfinite(o->damping_min) || !isfinite(o->damping_max) || !isfinite(o->limit_margin_rad)) return OA_ENONFINITE;
-    if (o->max_iterations == 0 || o->position_tolerance_m <= 0.0 || o->max_joint_step_rad <= 0.0 || o->damping_min < 0.0 || o->damping_max < o->damping_min || o->limit_margin_rad < 0.0) return OA_EINVAL;
-    for(i=0;i<OA_DOF;++i) { if(o->posture_weight[i] <= 0.0 || o->limit_margin_rad*2.0 >= m->upper[i]-m->lower[i]) return OA_EINVAL; q[i]=fmin(m->upper[i]-o->limit_margin_rad, fmax(m->lower[i]+o->limit_margin_rad,o->seed[i])); }
-    for(iter=0; iter<o->max_iterations; ++iter) {
-        st=oa_fk(m,q,&fk); if(st!=OA_OK) break; pos(&fk.hand_tcp,p); for(r=0;r<3;++r)e[r]=target[r]-p[r];
-        if(norm3(e) <= o->position_tolerance_m) { st=OA_OK; break; }
-        st=oa_geometric_jacobian(m,q,&jac); if(st!=OA_OK) break;
-        memset(a,0,sizeof(a)); for(r=0;r<3;++r) for(i=0;i<OA_DOF;++i) { j[r][i]=jac.value[r][i]; if(!(active&(1u<<i))) for(c=0;c<3;++c)a[r][c]+=j[r][i]*j[c][i]/o->posture_weight[i]; }
-        sigma=sqrt(min_eigen_symmetric3(a)); { double lambda=o->damping_min; if(sigma < 0.03) lambda=o->damping_min+(o->damping_max-o->damping_min)*(0.03-sigma)/0.03; if(lambda>o->damping_max)lambda=o->damping_max; for(r=0;r<3;++r)a[r][r]+=lambda*lambda; }
-        if(!solve3(a,e,y)) { st=OA_ESINGULAR; break; }
-        memset(step,0,sizeof(step)); memset(pinv,0,sizeof(pinv));
-        for(i=0;i<OA_DOF;++i) if(!(active&(1u<<i))) for(r=0;r<3;++r) { double b[3]={j[r][i]/o->posture_weight[i],0,0}; double sol[3]; b[0]=j[0][i]/o->posture_weight[i]; b[1]=j[1][i]/o->posture_weight[i]; b[2]=j[2][i]/o->posture_weight[i]; if(!solve3(a,b,sol)){st=OA_ESINGULAR;goto done;} pinv[i][r]=sol[r]; }
-        { double posture_gain = 0.1 * norm3(e);
-          for(i=0;i<OA_DOF;++i) if(!(active&(1u<<i))) { double task=0.0, post=posture_gain*(o->posture[i]-q[i]); for(r=0;r<3;++r) task+=pinv[i][r]*e[r]; nullv[i]=post; for(k=0;k<OA_DOF;++k) if(!(active&(1u<<k))) for(r=0;r<3;++r) nullv[i]-=pinv[i][r]*j[r][k]*(posture_gain*(o->posture[k]-q[k])); step[i]=task+nullv[i]; }
-        }
-        { double maxstep=0.0, alpha=1.0, old; for(i=0;i<OA_DOF;++i) if(fabs(step[i])>maxstep)maxstep=fabs(step[i]); if(maxstep>o->max_joint_step_rad)alpha=o->max_joint_step_rad/maxstep; for(i=0;i<OA_DOF;++i) if(!(active&(1u<<i)) && fabs(step[i])>1e-14) { double bound=step[i]>0.0 ? (m->upper[i]-o->limit_margin_rad-q[i])/step[i] : (m->lower[i]+o->limit_margin_rad-q[i])/step[i]; if(bound>=0.0 && bound<alpha) alpha=bound; }
-          if(alpha < 1e-10) { for(i=0;i<OA_DOF;++i) if(!(active&(1u<<i)) && ((step[i]>0.0 && q[i]>=m->upper[i]-o->limit_margin_rad-1e-10)||(step[i]<0.0 && q[i]<=m->lower[i]+o->limit_margin_rad+1e-10))) active|=(1u<<i); if(active==0x7fu){st=OA_ESTAGNATED_AT_BOUNDS;break;} continue; }
-          old=merit(e,q,o); for(;;) { double ce[3]; for(i=0;i<OA_DOF;++i)candidate[i]=q[i]+alpha*step[i]; oa_fk(m,candidate,&fk); pos(&fk.hand_tcp,p); for(r=0;r<3;++r)ce[r]=target[r]-p[r]; if(merit(ce,candidate,o)<old || alpha<1e-5) { memcpy(q,candidate,sizeof(q)); if(alpha<1e-5)st=OA_ENOCONVERGENCE; break; } alpha*=0.5; }
-        }
+oa_status oa_ik_position(const oa_model *model, const double target[3], const oa_ik_options *options,
+                         oa_ik_diagnostics *out) {
+    double q[OA_DOF] = {0.0}, error[3], tip[3], jacobian[3][OA_DOF], step[OA_DOF], candidate[OA_DOF];
+    double old_error, candidate_error, sigma = 0.0, alpha, maximum_step, available, ratio, lower, upper;
+    oa_fk_result fk;
+    oa_jacobian geometric;
+    oa_status status = OA_ENOCONVERGENCE;
+    uint32_t iteration, active = 0, next_active, pass;
+    size_t row, i;
+    int accepted;
+
+    diagnostics_init(out, OA_EINVAL);
+    if (!out || !model || !target || !options) return diagnostics_fail(out, OA_EINVAL);
+    if (options->abi_version != OA_MODEL_ABI_VERSION || options->struct_size < OA_IK_OPTIONS_REQUIRED_SIZE) return diagnostics_fail(out, OA_EINVAL);
+    if (!finite_n(target, 3) || !finite_n(options->seed, OA_DOF) || !finite_n(options->posture, OA_DOF)
+        || !finite_n(options->posture_weight, OA_DOF) || !isfinite(options->position_tolerance_m)
+        || !isfinite(options->max_joint_step_rad) || !isfinite(options->damping_min)
+        || !isfinite(options->damping_max) || !isfinite(options->limit_margin_rad)) return diagnostics_fail(out, OA_ENONFINITE);
+    for (row = 0; row < 3; ++row) if (fabs(target[row]) > OA_NUMERIC_POSITION_MAX) return diagnostics_fail(out, OA_EINVAL);
+    if (options->max_iterations == 0 || options->position_tolerance_m < 1e-12 || options->position_tolerance_m > 1.0
+        || options->max_joint_step_rad < 1e-12 || options->max_joint_step_rad > 3.141592653589793
+        || options->damping_min < 0.0 || options->damping_max < options->damping_min || options->damping_max > 1.0
+        || options->limit_margin_rad < 0.0) return diagnostics_fail(out, OA_EINVAL);
+    for (i = 0; i < OA_DOF; ++i) {
+        if (fabs(options->seed[i]) > OA_NUMERIC_POSTURE_MAX || fabs(options->posture[i]) > OA_NUMERIC_POSTURE_MAX
+            || options->posture_weight[i] < OA_WEIGHT_MIN || options->posture_weight[i] > OA_WEIGHT_MAX) return diagnostics_fail(out, OA_EINVAL);
+        lower = model->lower[i] + options->limit_margin_rad;
+        upper = model->upper[i] - options->limit_margin_rad;
+        if (lower > upper) return diagnostics_fail(out, OA_EBOUNDS);
+        q[i] = fmin(upper, fmax(lower, options->seed[i]));
     }
-done:
-    oa_fk(m,q,&fk); pos(&fk.hand_tcp,out->achieved_position_m); out->achieved_hand_tcp=fk.hand_tcp; for(r=0;r<3;++r)e[r]=target[r]-out->achieved_position_m[r]; out->position_error_m=norm3(e); out->iterations=iter; out->active_limit_mask=active; out->min_singular_value=sigma; memcpy(out->q,q,sizeof(q)); if(out->position_error_m<=o->position_tolerance_m) st=OA_OK; else if(st==OA_OK) st=OA_ENOCONVERGENCE; if(st==OA_ENOCONVERGENCE && iter==o->max_iterations) st=OA_EBUDGET; out->status=st; return st;
+
+    for (iteration = 0; iteration < options->max_iterations; ++iteration) {
+        status = oa_fk(model, q, &fk);
+        if (status != OA_OK) break;
+        position(&fk.hand_tcp, tip);
+        for (row = 0; row < 3; ++row) error[row] = target[row] - tip[row];
+        old_error = norm_squared3(error);
+        status = oa_geometric_jacobian(model, q, &geometric);
+        if (status != OA_OK) break;
+        translational_matrix(&geometric, jacobian);
+        sigma = singular_value(jacobian, options->posture_weight, 0);
+        if (old_error <= options->position_tolerance_m * options->position_tolerance_m) {
+            status = OA_OK;
+            break;
+        }
+
+        active = 0;
+        for (pass = 0; pass <= OA_DOF; ++pass) {
+            status = compute_step(jacobian, error, q, options, active, step, &sigma);
+            if (status != OA_OK) break;
+            next_active = active;
+            for (i = 0; i < OA_DOF; ++i) {
+                lower = model->lower[i] + options->limit_margin_rad;
+                upper = model->upper[i] - options->limit_margin_rad;
+                if ((q[i] <= lower && step[i] < 0.0) || (q[i] >= upper && step[i] > 0.0)) next_active |= UINT32_C(1) << i;
+            }
+            if (next_active == active) break;
+            active = next_active;
+        }
+        if (status != OA_OK) break;
+        if (active == UINT32_C(0x7f)) { status = OA_ESTAGNATED_AT_BOUNDS; break; }
+
+        maximum_step = 0.0;
+        for (i = 0; i < OA_DOF; ++i) maximum_step = fmax(maximum_step, fabs(step[i]));
+        if (maximum_step < 1e-15) { status = active ? OA_ESTAGNATED_AT_BOUNDS : OA_ENOCONVERGENCE; break; }
+        alpha = fmin(1.0, options->max_joint_step_rad / maximum_step);
+        for (i = 0; i < OA_DOF; ++i) {
+            lower = model->lower[i] + options->limit_margin_rad;
+            upper = model->upper[i] - options->limit_margin_rad;
+            if (step[i] > 0.0) available = upper - q[i];
+            else if (step[i] < 0.0) available = q[i] - lower;
+            else continue;
+            if (available < 0.0) { status = OA_EBOUNDS; break; }
+            ratio = available / fabs(step[i]);
+            alpha = fmin(alpha, ratio);
+        }
+        if (status != OA_OK) break;
+        if (alpha < OA_ALPHA_MIN) { status = active ? OA_ESTAGNATED_AT_BOUNDS : OA_ENOCONVERGENCE; break; }
+
+        accepted = 0;
+        while (alpha >= OA_ALPHA_MIN) {
+            for (i = 0; i < OA_DOF; ++i) {
+                lower = model->lower[i] + options->limit_margin_rad;
+                upper = model->upper[i] - options->limit_margin_rad;
+                candidate[i] = fmin(upper, fmax(lower, q[i] + alpha * step[i]));
+            }
+            status = oa_fk(model, candidate, &fk);
+            if (status != OA_OK) break;
+            position(&fk.hand_tcp, tip);
+            for (row = 0; row < 3; ++row) error[row] = target[row] - tip[row];
+            candidate_error = norm_squared3(error);
+            if (isfinite(candidate_error) && candidate_error < old_error) {
+                memcpy(q, candidate, sizeof(q));
+                accepted = 1;
+                break;
+            }
+            alpha *= 0.5;
+        }
+        if (status != OA_OK) break;
+        if (!accepted) { status = active ? OA_ESTAGNATED_AT_BOUNDS : OA_ENOCONVERGENCE; break; }
+    }
+
+    if (iteration == options->max_iterations) status = OA_EBUDGET;
+    if (oa_fk(model, q, &fk) == OA_OK) {
+        out->achieved_hand_tcp = fk.hand_tcp;
+        position(&fk.hand_tcp, out->achieved_position_m);
+        for (row = 0; row < 3; ++row) error[row] = target[row] - out->achieved_position_m[row];
+        out->position_error_m = sqrt(norm_squared3(error));
+    } else {
+        status = OA_ENONFINITE;
+    }
+    memcpy(out->q, q, sizeof(q));
+    out->iterations = iteration;
+    out->active_limit_mask = active;
+    out->min_singular_value = isfinite(sigma) ? sigma : 0.0;
+    if (out->position_error_m <= options->position_tolerance_m && feasible(model, options, q)) status = OA_OK;
+    else if (status == OA_OK) status = OA_EBOUNDS;
+    out->status = status;
+    return status;
 }

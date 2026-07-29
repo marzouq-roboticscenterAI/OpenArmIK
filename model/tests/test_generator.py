@@ -4,11 +4,14 @@ import subprocess
 import sys
 import tempfile
 
-generator, description_root, expected = map(pathlib.Path, sys.argv[1:])
+generator, root, expected_data, expected_urdf, xacro = map(pathlib.Path, sys.argv[1:6])
+pythonpath, ament_prefix = sys.argv[6:8]
 with tempfile.TemporaryDirectory() as directory:
-    generated = pathlib.Path(directory) / "model.inc"
-    subprocess.run([sys.executable, str(generator), str(description_root), str(generated)], check=True)
-    if generated.read_bytes() != expected.read_bytes():
-        raise SystemExit("generated model differs from checked-in immutable data")
-    if "0.186" not in generated.read_text():
-        raise SystemExit("current hand_tcp offset regressed to stale zero-offset example")
+    data = pathlib.Path(directory) / "model.inc"
+    urdf = pathlib.Path(directory) / "model.urdf"
+    subprocess.run([sys.executable, str(generator), str(root), str(data), "--urdf-output", str(urdf),
+                    "--xacro", str(xacro), "--pythonpath", pythonpath, "--ament-prefix", ament_prefix], check=True)
+    if data.read_bytes() != expected_data.read_bytes():
+        raise SystemExit("regenerated model data differs")
+    if urdf.read_bytes() != expected_urdf.read_bytes():
+        raise SystemExit("regenerated flattened URDF differs")

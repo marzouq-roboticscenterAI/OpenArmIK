@@ -1,0 +1,6 @@
+OpenArm bimanual model data is derived from openarm_description.
+Copyright 2025-2026 Enactic, Inc.
+
+The generated model data was modified into a dependency-free C representation.
+Upstream source: https://github.com/enactic/openarm_description
+Pinned revision: 6c7b720f1ba48e8bafa3a3dc752c45f397b42221

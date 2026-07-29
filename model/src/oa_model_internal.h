@@ -8,6 +8,7 @@ struct oa_model {
     const char *id;
     const char *provenance;
     const char *data_sha256;
+    const char *flattened_urdf_sha256;
     const char *source_sha256;
     const char *joint_name[OA_DOF];
     const char *tip_frame;
