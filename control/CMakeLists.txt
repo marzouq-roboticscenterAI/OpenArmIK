@@ -5,6 +5,11 @@ include(GNUInstallDirs)
 
 option(OA_CONTROL_BUILD_TESTS "Build the compiled control tests" ON)
 option(OA_CONTROL_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(OA_CONTROL_TSAN "Enable ThreadSanitizer" OFF)
+
+if(OA_CONTROL_SANITIZERS AND OA_CONTROL_TSAN)
+    message(FATAL_ERROR "OA_CONTROL_SANITIZERS and OA_CONTROL_TSAN are mutually exclusive")
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -39,6 +44,11 @@ if(OA_CONTROL_SANITIZERS)
         -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(openarm_control PUBLIC -fsanitize=address,undefined)
 endif()
+if(OA_CONTROL_TSAN)
+    target_compile_options(openarm_control PRIVATE
+        -fsanitize=thread -fno-omit-frame-pointer)
+    target_link_options(openarm_control PUBLIC -fsanitize=thread)
+endif()
 
 install(TARGETS openarm_control
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -48,8 +58,9 @@ install(FILES include/openarm_control.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 include(CTest)
 if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
+    find_package(Threads REQUIRED)
     add_executable(openarm_control_tests tests/test_control.cpp)
-    target_link_libraries(openarm_control_tests PRIVATE openarm_control)
+    target_link_libraries(openarm_control_tests PRIVATE openarm_control Threads::Threads)
     target_compile_options(openarm_control_tests PRIVATE
         -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2)
     add_test(NAME openarm_control_tests COMMAND openarm_control_tests)

@@ -59,6 +59,7 @@ bool inverse(const std::uint32_t side, const std::array<double, 3> &target,
     std::copy(std::begin(diagnostics.achieved_position_m),
               std::end(diagnostics.achieved_position_m), out.achieved.begin());
     out.residual = diagnostics.position_error_m;
+    out.min_singular_value = diagnostics.min_singular_value;
     out.collision_checked = diagnostics.collision_checked != 0U;
     return true;
 }

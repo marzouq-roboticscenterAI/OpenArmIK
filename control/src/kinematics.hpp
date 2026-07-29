@@ -20,6 +20,7 @@ struct IkResult {
     JointVector q{};
     std::array<double, 3> achieved{};
     double residual{};
+    double min_singular_value{};
     bool collision_checked{};
 };
 

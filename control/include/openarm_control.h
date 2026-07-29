@@ -18,6 +18,13 @@ typedef struct oa_motion_plan oa_motion_plan;
 typedef uint32_t oa_status;
 typedef uint32_t oa_side;
 
+/* Calls on one controller are internally serialized. oa_controller_destroy may
+ * overlap calls already in progress: it removes the handle from the public
+ * registry, waits for the active call, and tombstones the token. Calls begun
+ * afterward return OA_EINVAL. The pointer must not be used after destroy
+ * returns. Manifest and plan handles are immutable but their destroy calls must
+ * not overlap another call that uses the same handle. */
+
 #define OA_LEFT UINT32_C(0)
 #define OA_RIGHT UINT32_C(1)
 
@@ -62,6 +69,10 @@ typedef uint32_t oa_side;
 #define OA_EVENT_STOPPED UINT32_C(5)
 #define OA_EVENT_FAULTED UINT32_C(6)
 #define OA_EVENT_DISARMED UINT32_C(7)
+#define OA_EVENT_QUEUED UINT32_C(8)
+#define OA_EVENT_SETTLING UINT32_C(9)
+#define OA_EVENT_ABORTED UINT32_C(10)
+#define OA_EVENT_ESTOP UINT32_C(11)
 
 #define OA_PLAN_JOINT UINT32_C(1)
 #define OA_PLAN_PAIRED_TCP UINT32_C(2)
@@ -173,6 +184,8 @@ typedef struct oa_paired_tcp_move {
     double acceleration_scale;
     double jerk_scale;
     double tcp_tol_m;
+    double max_branch_step_rad;
+    double min_singular_value;
     uint64_t collision_scene_revision;
 } oa_paired_tcp_move;
 
@@ -204,6 +217,7 @@ typedef struct oa_controller_options {
     uint64_t cycle_ns;
     uint64_t feedback_timeout_ns;
     uint64_t max_cross_bus_skew_ns;
+    uint64_t collision_scene_revision;
 } oa_controller_options;
 
 typedef struct oa_verify_report {
@@ -262,7 +276,18 @@ typedef struct oa_sim_fault {
     uint32_t freeze_mask;
     uint32_t drop_mask;
     uint32_t fault_mask;
+    uint32_t fault_status;
+    uint32_t command_fail_mask;
+    uint64_t feedback_delay_ns;
 } oa_sim_fault;
+
+typedef struct oa_sim_state {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    oa_side side;
+    double q[7];
+    double dq[7];
+} oa_sim_state;
 
 oa_status oa_manifest_create(const oa_manifest_config *config, oa_manifest **out);
 /* Stage A uses the compiled config builder. Text/digest loading is reserved. */
@@ -297,6 +322,15 @@ oa_status oa_controller_execute(oa_controller *controller,
 oa_status oa_controller_advance(oa_controller *controller, uint64_t monotonic_ns);
 oa_status oa_controller_sim_set_fault(oa_controller *controller,
                                       const oa_sim_fault *fault);
+oa_status oa_controller_sim_set_state(oa_controller *controller,
+                                      const oa_sim_state *state);
+oa_status oa_controller_heartbeat(oa_controller *controller, uint64_t command_id,
+                                  uint64_t producer_deadline_ns);
+oa_status oa_controller_set_interlock(oa_controller *controller,
+                                      uint32_t estop_active,
+                                      uint32_t deadman_active);
+oa_status oa_controller_set_collision_scene_revision(oa_controller *controller,
+                                                      uint64_t revision);
 oa_status oa_controller_stop(oa_controller *controller, uint32_t stop_kind);
 oa_status oa_controller_disarm(oa_controller *controller, uint64_t deadline_ns);
 oa_status oa_controller_reset_fault(oa_controller *controller,

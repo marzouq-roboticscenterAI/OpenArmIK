@@ -82,3 +82,34 @@ This is only Stage A. It does not claim physical detection, calibration, CAN
 timing, collision safety, or movement. SocketCAN writes, motor register changes,
 saved-zero commands, automatic/manual calibration, and commissioning belong to
 the separately gated later stages described in `controller_design_final.md`.
+
+## Independent-review corrections
+
+The findings preserved in `control_core_review.md` were corrected after the
+initial commit:
+
+- commanded references no longer become measurements; a bounded dynamic plant
+  lags them, creates real DaMiao-layout quantized frames, and decoded encoder
+  feedback alone updates snapshots and completion;
+- fault codes 8--14 persist independently of enable state and gate challenge,
+  arm, planning, and execution;
+- plans bind a unique controller, verification epoch, scene revision, measured
+  sequence, and start q, with a second start-pose check at a queued start;
+- controller calls use a serialized, pinned registry slot and destruction safely
+  overlaps active calls without dereferencing or recycling stale tokens;
+- snapshots represent one complete generation, not a freshness-window mixture;
+  missing members, cross-bus skew, or partial command send fault both arms;
+- paired TCP planning uses 17 predecessor-seeded Cartesian waypoints and rejects
+  branch jumps, singularity-policy failures, intermediate residual/limit/span
+  failures, and scene changes;
+- ESTOP, reset-to-closed full reverification, producer heartbeat expiry, actual
+  deadline event waiting, and queued/settling/aborted events are implemented;
+- manifest validation inverse-maps both legal interval endpoints into PMAX.
+
+Fresh corrective verification passed 2/2 tests under Release/Werror,
+ASan/UBSan, and ThreadSanitizer. The expanded C++ suite adds successful-output
+canaries, real plant-lag proof, every fault status at arming gates,
+cross-controller replay, queued start drift, immediate incomplete generation,
+skew, partial send, branch/singularity/scene rejection, heartbeat loss and
+renewal, ESTOP/reverify, event overflow, blocking event wakeup, concurrent
+snapshot/event/advance, and destroy overlap.

@@ -5,9 +5,14 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <stdexcept>
+#include <unordered_map>
+#include <vector>
 
 using openarm::control::Controller;
 using openarm::control::Manifest;
@@ -15,7 +20,6 @@ using openarm::control::MotionPlan;
 
 namespace {
 constexpr std::uint64_t kManifestMagic = UINT64_C(0x4f414d414e494631);
-constexpr std::uint64_t kControllerMagic = UINT64_C(0x4f414354524c5631);
 constexpr std::uint64_t kPlanMagic = UINT64_C(0x4f41504c414e5631);
 
 template <typename T>
@@ -44,14 +48,63 @@ struct oa_manifest {
 };
 
 struct oa_controller {
-    std::uint64_t magic{kControllerMagic};
-    std::unique_ptr<Controller> impl;
+    std::uint8_t opaque{};
 };
 
 struct oa_motion_plan {
     std::uint64_t magic{kPlanMagic};
     std::unique_ptr<MotionPlan> impl;
 };
+
+namespace {
+struct ControllerSlot {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::unique_ptr<Controller> impl;
+    bool closing{};
+};
+
+struct ControllerRegistry {
+    std::mutex mutex;
+    std::unordered_map<const oa_controller *, std::shared_ptr<ControllerSlot>> active;
+    /* Tokens are tombstoned until process exit so stale pointers can never alias
+     * a newly allocated controller. Calls overlapping destroy only use the map. */
+    std::vector<std::unique_ptr<oa_controller>> tokens;
+};
+
+ControllerRegistry &controller_registry() {
+    static ControllerRegistry registry;
+    return registry;
+}
+
+std::shared_ptr<ControllerSlot> pin_controller(const oa_controller *controller) {
+    if (controller == nullptr) {
+        return {};
+    }
+    auto &registry = controller_registry();
+    const std::lock_guard<std::mutex> lock(registry.mutex);
+    const auto found = registry.active.find(controller);
+    return found == registry.active.end() ? std::shared_ptr<ControllerSlot>{} : found->second;
+}
+
+template <typename Callable>
+oa_status with_controller(oa_controller *controller, Callable &&callable) noexcept {
+    return contained([&]() -> oa_status {
+        const auto slot = pin_controller(controller);
+        if (!slot) {
+            return OA_EINVAL;
+        }
+        std::unique_lock<std::mutex> lock(slot->mutex);
+        if (slot->closing || !slot->impl) {
+            return OA_ESTATE;
+        }
+        const oa_status status = callable(*slot->impl);
+        lock.unlock();
+        slot->changed.notify_all();
+        return status;
+    });
+}
+}  // namespace
 
 extern "C" oa_status oa_manifest_create(const oa_manifest_config *config,
                                          oa_manifest **out) {
@@ -93,24 +146,31 @@ extern "C" oa_status oa_controller_create(const oa_manifest *manifest,
         return OA_EINVAL;
     }
     return contained([&]() -> oa_status {
-        auto handle = std::make_unique<oa_controller>();
-        handle->impl = std::make_unique<Controller>(manifest->impl, *options);
-        *out = handle.release();
+        auto token = std::make_unique<oa_controller>();
+        auto slot = std::make_shared<ControllerSlot>();
+        slot->impl = std::make_unique<Controller>(manifest->impl, *options);
+        oa_controller *const handle = token.get();
+        auto &registry = controller_registry();
+        {
+            const std::lock_guard<std::mutex> lock(registry.mutex);
+            registry.active.emplace(handle, slot);
+            registry.tokens.push_back(std::move(token));
+        }
+        *out = handle;
         return OA_OK;
     });
 }
 
 extern "C" oa_status oa_controller_open_and_verify(oa_controller *controller,
                                                      oa_verify_report *out) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl || !valid_record(out)) {
+    if (!valid_record(out)) {
         return out != nullptr && out->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI : OA_EINVAL;
     }
-    return contained([&]() -> oa_status {
+    return with_controller(controller, [&](Controller &impl) -> oa_status {
         oa_verify_report temporary{};
         temporary.struct_size = sizeof(temporary);
         temporary.abi_version = OA_CONTROL_ABI_V1;
-        const oa_status status = controller->impl->open_and_verify(temporary);
+        const oa_status status = impl.open_and_verify(temporary);
         *out = temporary;
         return status;
     });
@@ -118,15 +178,14 @@ extern "C" oa_status oa_controller_open_and_verify(oa_controller *controller,
 
 extern "C" oa_status oa_controller_snapshot(oa_controller *controller,
                                              oa_snapshot *out) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl || !valid_record(out)) {
+    if (!valid_record(out)) {
         return out != nullptr && out->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI : OA_EINVAL;
     }
-    return contained([&]() -> oa_status {
+    return with_controller(controller, [&](Controller &impl) -> oa_status {
         oa_snapshot temporary{};
         temporary.struct_size = sizeof(temporary);
         temporary.abi_version = OA_CONTROL_ABI_V1;
-        const oa_status status = controller->impl->snapshot(temporary);
+        const oa_status status = impl.snapshot(temporary);
         if (status == OA_OK) {
             *out = temporary;
         }
@@ -137,16 +196,15 @@ extern "C" oa_status oa_controller_snapshot(oa_controller *controller,
 extern "C" oa_status oa_controller_get_kinematics(
     oa_controller *controller, const oa_side side,
     const std::uint64_t required_feedback_seq, oa_arm_kinematics *out) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl || !valid_record(out)) {
+    if (!valid_record(out)) {
         return out != nullptr && out->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI : OA_EINVAL;
     }
-    return contained([&]() -> oa_status {
+    return with_controller(controller, [&](Controller &impl) -> oa_status {
         oa_arm_kinematics temporary{};
         temporary.struct_size = sizeof(temporary);
         temporary.abi_version = OA_CONTROL_ABI_V1;
         const oa_status status =
-            controller->impl->kinematics(side, required_feedback_seq, temporary);
+            impl.kinematics(side, required_feedback_seq, temporary);
         if (status == OA_OK) {
             *out = temporary;
         }
@@ -156,15 +214,14 @@ extern "C" oa_status oa_controller_get_kinematics(
 
 extern "C" oa_status oa_controller_get_arm_challenge(oa_controller *controller,
                                                        oa_arm_challenge *out) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl || !valid_record(out)) {
+    if (!valid_record(out)) {
         return out != nullptr && out->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI : OA_EINVAL;
     }
-    return contained([&]() -> oa_status {
+    return with_controller(controller, [&](Controller &impl) -> oa_status {
         oa_arm_challenge temporary{};
         temporary.struct_size = sizeof(temporary);
         temporary.abi_version = OA_CONTROL_ABI_V1;
-        const oa_status status = controller->impl->challenge(temporary);
+        const oa_status status = impl.challenge(temporary);
         if (status == OA_OK) {
             *out = temporary;
         }
@@ -174,25 +231,23 @@ extern "C" oa_status oa_controller_get_arm_challenge(oa_controller *controller,
 
 extern "C" oa_status oa_controller_arm(oa_controller *controller,
                                         const oa_arm_challenge *challenge) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl || !valid_record(challenge)) {
+    if (!valid_record(challenge)) {
         return challenge != nullptr && challenge->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI
                                                                                     : OA_EINVAL;
     }
-    return contained([&]() { return controller->impl->arm(*challenge); });
+    return with_controller(controller, [&](Controller &impl) { return impl.arm(*challenge); });
 }
 
 extern "C" oa_status oa_controller_plan_joint(oa_controller *controller,
                                                 const oa_joint_move *request,
                                                 oa_motion_plan **out) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl || !valid_record(request) || out == nullptr) {
+    if (!valid_record(request) || out == nullptr) {
         return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI
                                                                                : OA_EINVAL;
     }
-    return contained([&]() -> oa_status {
+    return with_controller(controller, [&](Controller &impl) -> oa_status {
         std::unique_ptr<MotionPlan> plan;
-        const oa_status status = controller->impl->plan_joint(*request, plan);
+        const oa_status status = impl.plan_joint(*request, plan);
         if (status != OA_OK) {
             return status;
         }
@@ -206,14 +261,13 @@ extern "C" oa_status oa_controller_plan_joint(oa_controller *controller,
 extern "C" oa_status oa_controller_plan_paired_tcp(
     oa_controller *controller, const oa_paired_tcp_move *request,
     oa_motion_plan **out) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl || !valid_record(request) || out == nullptr) {
+    if (!valid_record(request) || out == nullptr) {
         return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI
                                                                                : OA_EINVAL;
     }
-    return contained([&]() -> oa_status {
+    return with_controller(controller, [&](Controller &impl) -> oa_status {
         std::unique_ptr<MotionPlan> plan;
-        const oa_status status = controller->impl->plan_paired(*request, plan);
+        const oa_status status = impl.plan_paired(*request, plan);
         if (status != OA_OK) {
             return status;
         }
@@ -258,15 +312,14 @@ extern "C" oa_status oa_controller_execute(oa_controller *controller,
                                              const oa_motion_plan *plan,
                                              const oa_execute_request *request,
                                              std::uint64_t *out_command_id) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl || plan == nullptr || plan->magic != kPlanMagic ||
+    if (plan == nullptr || plan->magic != kPlanMagic ||
         !plan->impl || !valid_record(request) || out_command_id == nullptr) {
         return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI
                                                                                : OA_EINVAL;
     }
-    return contained([&]() -> oa_status {
+    return with_controller(controller, [&](Controller &impl) -> oa_status {
         std::uint64_t temporary = 0U;
-        const oa_status status = controller->impl->execute(*plan->impl, *request, temporary);
+        const oa_status status = impl.execute(*plan->impl, *request, temporary);
         if (status == OA_OK) {
             *out_command_id = temporary;
         }
@@ -276,68 +329,112 @@ extern "C" oa_status oa_controller_execute(oa_controller *controller,
 
 extern "C" oa_status oa_controller_advance(oa_controller *controller,
                                              const std::uint64_t monotonic_ns) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl) {
-        return OA_EINVAL;
-    }
-    return contained([&]() { return controller->impl->advance(monotonic_ns); });
+    return with_controller(controller,
+                           [&](Controller &impl) { return impl.advance(monotonic_ns); });
 }
 
 extern "C" oa_status oa_controller_sim_set_fault(oa_controller *controller,
                                                    const oa_sim_fault *fault) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl || !valid_record(fault)) {
+    if (!valid_record(fault)) {
         return fault != nullptr && fault->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI
                                                                            : OA_EINVAL;
     }
-    return contained([&]() { return controller->impl->set_sim_fault(*fault); });
+    return with_controller(controller,
+                           [&](Controller &impl) { return impl.set_sim_fault(*fault); });
+}
+
+extern "C" oa_status oa_controller_sim_set_state(oa_controller *controller,
+                                                   const oa_sim_state *state) {
+    if (!valid_record(state)) {
+        return state != nullptr && state->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI
+                                                                           : OA_EINVAL;
+    }
+    return with_controller(controller,
+                           [&](Controller &impl) { return impl.set_sim_state(*state); });
+}
+
+extern "C" oa_status oa_controller_heartbeat(oa_controller *controller,
+                                               const std::uint64_t command_id,
+                                               const std::uint64_t producer_deadline_ns) {
+    return with_controller(controller, [&](Controller &impl) {
+        return impl.heartbeat(command_id, producer_deadline_ns);
+    });
+}
+
+extern "C" oa_status oa_controller_set_interlock(oa_controller *controller,
+                                                   const std::uint32_t estop_active,
+                                                   const std::uint32_t deadman_active) {
+    if (estop_active > 1U || deadman_active > 1U) {
+        return OA_EINVAL;
+    }
+    return with_controller(controller, [&](Controller &impl) {
+        return impl.set_interlock(estop_active != 0U, deadman_active != 0U);
+    });
+}
+
+extern "C" oa_status oa_controller_set_collision_scene_revision(
+    oa_controller *controller, const std::uint64_t revision) {
+    return with_controller(controller, [&](Controller &impl) {
+        return impl.set_collision_scene_revision(revision);
+    });
 }
 
 extern "C" oa_status oa_controller_stop(oa_controller *controller,
                                           const std::uint32_t stop_kind) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl) {
-        return OA_EINVAL;
-    }
-    return contained([&]() { return controller->impl->stop(stop_kind); });
+    return with_controller(controller,
+                           [&](Controller &impl) { return impl.stop(stop_kind); });
 }
 
 extern "C" oa_status oa_controller_disarm(oa_controller *controller,
                                             const std::uint64_t deadline_ns) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl) {
-        return OA_EINVAL;
-    }
-    return contained([&]() { return controller->impl->disarm(deadline_ns); });
+    return with_controller(controller,
+                           [&](Controller &impl) { return impl.disarm(deadline_ns); });
 }
 
 extern "C" oa_status oa_controller_reset_fault(oa_controller *controller,
                                                  const oa_reset_request *request) {
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl || !valid_record(request)) {
+    if (!valid_record(request)) {
         return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI
                                                                                : OA_EINVAL;
     }
-    return contained([&]() { return controller->impl->reset(*request); });
+    return with_controller(controller,
+                           [&](Controller &impl) { return impl.reset(*request); });
 }
 
 extern "C" oa_status oa_controller_poll_event(oa_controller *controller,
                                                 const std::uint64_t deadline_ns,
                                                 oa_event *out) {
-    (void)deadline_ns;
-    if (controller == nullptr || controller->magic != kControllerMagic ||
-        !controller->impl || !valid_record(out)) {
+    if (!valid_record(out)) {
         return out != nullptr && out->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI : OA_EINVAL;
     }
     return contained([&]() -> oa_status {
-        oa_event temporary{};
-        temporary.struct_size = sizeof(temporary);
-        temporary.abi_version = OA_CONTROL_ABI_V1;
-        const oa_status status = controller->impl->poll_event(temporary);
-        if (status == OA_OK) {
-            *out = temporary;
+        const auto slot = pin_controller(controller);
+        if (!slot) {
+            return OA_EINVAL;
         }
-        return status;
+        std::unique_lock<std::mutex> lock(slot->mutex);
+        for (;;) {
+            if (slot->closing || !slot->impl) {
+                return OA_ESTATE;
+            }
+            oa_event temporary{};
+            temporary.struct_size = sizeof(temporary);
+            temporary.abi_version = OA_CONTROL_ABI_V1;
+            const oa_status status = slot->impl->poll_event(temporary);
+            if (status == OA_OK) {
+                *out = temporary;
+                return OA_OK;
+            }
+            if (deadline_ns == 0U) {
+                return OA_ETIMEOUT;
+            }
+            const auto deadline = std::chrono::steady_clock::time_point(
+                std::chrono::nanoseconds(deadline_ns));
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return OA_ETIMEOUT;
+            }
+            slot->changed.wait_until(lock, deadline);
+        }
     });
 }
 
@@ -349,11 +446,27 @@ extern "C" void oa_motion_plan_destroy(oa_motion_plan *plan) {
 }
 
 extern "C" void oa_controller_destroy(oa_controller *controller) {
-    if (controller != nullptr && controller->magic == kControllerMagic) {
-        if (controller->impl) {
-            (void)controller->impl->disarm(UINT64_MAX);
-        }
-        controller->magic = 0U;
-        delete controller;
+    if (controller == nullptr) {
+        return;
     }
+    std::shared_ptr<ControllerSlot> slot;
+    auto &registry = controller_registry();
+    {
+        const std::lock_guard<std::mutex> lock(registry.mutex);
+        const auto found = registry.active.find(controller);
+        if (found == registry.active.end()) {
+            return;
+        }
+        slot = found->second;
+        registry.active.erase(found);
+    }
+    {
+        const std::lock_guard<std::mutex> lock(slot->mutex);
+        slot->closing = true;
+        if (slot->impl) {
+            (void)slot->impl->disarm(UINT64_MAX);
+            slot->impl.reset();
+        }
+    }
+    slot->changed.notify_all();
 }

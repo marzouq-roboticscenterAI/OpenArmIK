@@ -2,6 +2,7 @@
 #include "control_core.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -57,6 +58,19 @@ double smoothstep7_derivative(const double u) noexcept {
 bool valid_scale(const double value) noexcept {
     return finite(value) && value > 0.0 && value <= 1.0;
 }
+
+std::uint32_t encode_field(const double value, const double span,
+                           const std::uint32_t maximum) noexcept {
+    const double unit = (std::clamp(value, -span, span) + span) / (2.0 * span);
+    return static_cast<std::uint32_t>(std::llround(unit * static_cast<double>(maximum)));
+}
+
+double decode_field(const std::uint32_t value, const double span,
+                    const std::uint32_t maximum) noexcept {
+    return static_cast<double>(value) / static_cast<double>(maximum) * (2.0 * span) - span;
+}
+
+std::atomic<std::uint64_t> next_controller_instance{1U};
 
 }  // namespace
 
@@ -116,6 +130,10 @@ Manifest::Manifest(const oa_manifest_config &config) : config_(config) {
                 motor.upper_rad > model_upper + 1.0e-12 ||
                 motor.q_offset_rad < -motor.pmax_rad ||
                 motor.q_offset_rad > motor.pmax_rad ||
+                std::abs((motor.lower_rad - motor.q_offset_rad) / motor.q_scale) >
+                    motor.pmax_rad + 1.0e-12 ||
+                std::abs((motor.upper_rad - motor.q_offset_rad) / motor.q_scale) >
+                    motor.pmax_rad + 1.0e-12 ||
                 !send_ids.insert(motor.send_id).second ||
                 !receive_ids.insert(motor.receive_id).second ||
                 !serials.insert(motor.serial).second) {
@@ -129,34 +147,96 @@ Manifest::Manifest(const oa_manifest_config &config) : config_(config) {
 }
 
 DamiaoMotorSimulator::DamiaoMotorSimulator(const oa_motor_config &config) : config_(config) {
-    measured_.raw_q = -config_.q_offset_rad / config_.q_scale;
+    plant_raw_q_ = -config_.q_offset_rad / config_.q_scale;
+    command_raw_q_ = plant_raw_q_;
 }
 
 void DamiaoMotorSimulator::set_enabled(const bool enabled) noexcept {
-    measured_.status = enabled ? 1U : 0U;
+    enabled_ = enabled;
 }
 
-void DamiaoMotorSimulator::set_fault(const bool fault) noexcept {
-    if (fault) {
-        measured_.status = 8U;
-    } else if (measured_.status >= 8U) {
-        measured_.status = 0U;
-    }
+void DamiaoMotorSimulator::set_fault(const std::uint8_t status) noexcept {
+    fault_status_ = status;
 }
 
-void DamiaoMotorSimulator::update(const double q_model, const double dq_model,
-                                  const std::uint64_t now_ns, const bool frozen,
-                                  const bool dropped) noexcept {
+void DamiaoMotorSimulator::command(const double q_model, const double dq_model) noexcept {
+    command_raw_q_ = (q_model - config_.q_offset_rad) / config_.q_scale;
+    command_raw_dq_ = dq_model / config_.q_scale;
+}
+
+bool DamiaoMotorSimulator::step(const double dt_s, const std::uint64_t feedback_ns,
+                                const bool frozen, const bool dropped) noexcept {
     if (dropped) {
-        return;
+        return false;
     }
     if (!frozen) {
-        measured_.raw_q = (q_model - config_.q_offset_rad) / config_.q_scale;
-        measured_.raw_dq = dq_model / config_.q_scale;
-        measured_.raw_tau = 0.0;
+        const double max_velocity = config_.max_velocity_rad_s;
+        const double max_acceleration = config_.max_acceleration_rad_s2;
+        const double position_error = command_raw_q_ - plant_raw_q_;
+        const double desired_velocity =
+            std::clamp(command_raw_dq_ + 8.0 * position_error, -max_velocity, max_velocity);
+        const double acceleration =
+            std::clamp((desired_velocity - plant_raw_dq_) / 0.08,
+                       -max_acceleration, max_acceleration);
+        const double previous_error = position_error;
+        plant_raw_dq_ = std::clamp(plant_raw_dq_ + acceleration * dt_s,
+                                   -max_velocity, max_velocity);
+        plant_raw_q_ += plant_raw_dq_ * dt_s;
+        const double remaining_error = command_raw_q_ - plant_raw_q_;
+        if (previous_error * remaining_error < 0.0 &&
+            std::abs(command_raw_dq_) < 1.0e-9) {
+            plant_raw_q_ = command_raw_q_;
+            plant_raw_dq_ = 0.0;
+        }
+        if (std::abs(remaining_error) < 5.0e-5 &&
+            std::abs(command_raw_dq_) < 1.0e-9 && std::abs(plant_raw_dq_) < 1.0e-3) {
+            plant_raw_q_ = command_raw_q_;
+            plant_raw_dq_ = 0.0;
+        }
     }
-    measured_.t_ns = now_ns;
+    const std::uint32_t q_field = encode_field(plant_raw_q_, config_.pmax_rad, 65535U);
+    const std::uint32_t dq_field = encode_field(plant_raw_dq_, config_.vmax_rad_s, 4095U);
+    const std::uint32_t tau_field = encode_field(0.0, config_.tmax_nm, 4095U);
+    const std::uint8_t status = fault_status_ != 0U ? fault_status_ : (enabled_ ? 1U : 0U);
+    feedback_frame_.data[0] = static_cast<std::uint8_t>(
+        (static_cast<std::uint32_t>(status) << 4U) | (config_.embedded_motor_id & 0x0fU));
+    feedback_frame_.data[1] = static_cast<std::uint8_t>((q_field >> 8U) & 0xffU);
+    feedback_frame_.data[2] = static_cast<std::uint8_t>(q_field & 0xffU);
+    feedback_frame_.data[3] = static_cast<std::uint8_t>((dq_field >> 4U) & 0xffU);
+    feedback_frame_.data[4] = static_cast<std::uint8_t>(((dq_field & 0x0fU) << 4U) |
+                                                        ((tau_field >> 8U) & 0x0fU));
+    feedback_frame_.data[5] = static_cast<std::uint8_t>(tau_field & 0xffU);
+    feedback_frame_.data[6] = 25U;
+    feedback_frame_.data[7] = 25U;
+    feedback_frame_.t_ns = feedback_ns;
+
+    measured_.status = static_cast<std::uint8_t>(feedback_frame_.data[0] >> 4U);
+    const std::uint32_t decoded_q =
+        (static_cast<std::uint32_t>(feedback_frame_.data[1]) << 8U) |
+        feedback_frame_.data[2];
+    const std::uint32_t decoded_dq =
+        (static_cast<std::uint32_t>(feedback_frame_.data[3]) << 4U) |
+        (static_cast<std::uint32_t>(feedback_frame_.data[4]) >> 4U);
+    const std::uint32_t decoded_tau =
+        ((static_cast<std::uint32_t>(feedback_frame_.data[4]) & 0x0fU) << 8U) |
+        feedback_frame_.data[5];
+    measured_.raw_q = decode_field(decoded_q, config_.pmax_rad, 65535U);
+    measured_.raw_dq = decode_field(decoded_dq, config_.vmax_rad_s, 4095U);
+    measured_.raw_tau = decode_field(decoded_tau, config_.tmax_nm, 4095U);
+    measured_.mos_c = feedback_frame_.data[6];
+    measured_.coil_c = feedback_frame_.data[7];
+    measured_.t_ns = feedback_frame_.t_ns;
     measured_.valid = true;
+    return true;
+}
+
+void DamiaoMotorSimulator::force_state(const double q_model, const double dq_model,
+                                       const std::uint64_t feedback_ns) noexcept {
+    plant_raw_q_ = (q_model - config_.q_offset_rad) / config_.q_scale;
+    plant_raw_dq_ = dq_model / config_.q_scale;
+    command_raw_q_ = plant_raw_q_;
+    command_raw_dq_ = plant_raw_dq_;
+    (void)step(0.0, feedback_ns, true, false);
 }
 
 double DamiaoMotorSimulator::mapped_q() const noexcept {
@@ -183,32 +263,62 @@ void ArmRuntime::set_enabled(const bool enabled) noexcept {
     }
 }
 
-void ArmRuntime::set_fault_mask(const std::uint32_t mask) noexcept {
+void ArmRuntime::set_fault_mask(const std::uint32_t mask,
+                                const std::uint8_t status) noexcept {
     for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
-        motor_[joint].set_fault((mask & (1U << joint)) != 0U);
+        motor_[joint].set_fault((mask & (1U << joint)) != 0U ? status : 0U);
     }
 }
 
 void ArmRuntime::set_injection(const std::uint32_t freeze_mask,
                                const std::uint32_t drop_mask,
-                               const std::uint32_t fault_mask) noexcept {
+                               const std::uint32_t fault_mask,
+                               const std::uint8_t fault_status,
+                               const std::uint32_t command_fail_mask,
+                               const std::uint64_t feedback_delay_ns) noexcept {
     freeze_mask_ = freeze_mask & kAllJoints;
     drop_mask_ = drop_mask & kAllJoints;
     fault_mask_ = fault_mask & kAllJoints;
-    set_fault_mask(fault_mask_);
+    command_fail_mask_ = command_fail_mask & kAllJoints;
+    feedback_delay_ns_ = feedback_delay_ns;
+    set_fault_mask(fault_mask_, fault_mask_ == 0U ? 0U : fault_status);
 }
 
-void ArmRuntime::sample(const JointVector &q_reference, const JointVector &dq_reference,
-                        const std::uint64_t now_ns) noexcept {
-    for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
-        motor_[joint].update(q_reference[joint], dq_reference[joint], now_ns,
-                             (freeze_mask_ & (1U << joint)) != 0U,
-                             (drop_mask_ & (1U << joint)) != 0U);
+bool ArmRuntime::command_and_step(const JointVector &q_reference,
+                                  const JointVector &dq_reference,
+                                  const std::uint64_t now_ns,
+                                  const double dt_s) noexcept {
+    if (command_fail_mask_ != 0U) {
+        generation_mask_ = 0U;
+        return false;
     }
-    if (drop_mask_ == 0U) {
+    generation_mask_ = 0U;
+    const std::uint64_t feedback_ns =
+        feedback_delay_ns_ > now_ns ? 0U : now_ns - feedback_delay_ns_;
+    for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
+        motor_[joint].command(q_reference[joint], dq_reference[joint]);
+        if (motor_[joint].step(dt_s, feedback_ns,
+                               (freeze_mask_ & (1U << joint)) != 0U,
+                               (drop_mask_ & (1U << joint)) != 0U)) {
+            generation_mask_ |= 1U << joint;
+        }
+    }
+    generation_timestamp_ = feedback_ns;
+    if (generation_mask_ == kAllJoints) {
         ++feedback_seq_;
     }
     transport_.record_complete_cycle();
+    return true;
+}
+
+void ArmRuntime::force_state(const JointVector &q, const JointVector &dq,
+                             const std::uint64_t now_ns) noexcept {
+    generation_mask_ = kAllJoints;
+    generation_timestamp_ = now_ns;
+    for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
+        motor_[joint].force_state(q[joint], dq[joint], now_ns);
+    }
+    ++feedback_seq_;
 }
 
 oa_arm_snapshot ArmRuntime::snapshot(const std::uint64_t now_ns,
@@ -220,7 +330,8 @@ oa_arm_snapshot ArmRuntime::snapshot(const std::uint64_t now_ns,
     out.expected_mask = kAllJoints;
     for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
         const auto &measured = motor_[joint].measured();
-        const bool fresh = measured.valid && now_ns >= measured.t_ns &&
+        const bool in_generation = (generation_mask_ & (1U << joint)) != 0U;
+        const bool fresh = in_generation && measured.valid && now_ns >= measured.t_ns &&
                            now_ns - measured.t_ns <= timeout_ns;
         if (fresh) {
             out.fresh_mask |= 1U << joint;
@@ -264,10 +375,26 @@ bool ArmRuntime::complete_fresh(const std::uint64_t now_ns,
     return state.fresh_mask == state.expected_mask;
 }
 
+bool ArmRuntime::fault_free(const std::uint64_t now_ns,
+                            const std::uint64_t timeout_ns) const noexcept {
+    return snapshot(now_ns, timeout_ns).fault_mask == 0U;
+}
+
+bool ArmRuntime::all_disabled(const std::uint64_t now_ns,
+                              const std::uint64_t timeout_ns) const noexcept {
+    const auto state = snapshot(now_ns, timeout_ns);
+    if (state.fresh_mask != kAllJoints || state.fault_mask != 0U) {
+        return false;
+    }
+    return std::all_of(std::begin(state.status), std::end(state.status),
+                       [](const std::uint8_t status) { return status == 0U; });
+}
+
 Controller::Controller(std::shared_ptr<const Manifest> manifest,
                        const oa_controller_options &options)
     : manifest_(std::move(manifest)), options_(options),
-      arm_{ArmRuntime(manifest_->config().arm[0]), ArmRuntime(manifest_->config().arm[1])} {
+      arm_{ArmRuntime(manifest_->config().arm[0]), ArmRuntime(manifest_->config().arm[1])},
+      instance_id_(next_controller_instance.fetch_add(1U)) {
     if (options_.backend != OA_BACKEND_VIRTUAL && options_.backend != OA_BACKEND_PHYSICAL) {
         throw std::invalid_argument("invalid backend");
     }
@@ -282,6 +409,10 @@ Controller::Controller(std::shared_ptr<const Manifest> manifest,
     if (options_.backend == OA_BACKEND_PHYSICAL &&
         options_.collision_policy == OA_COLLISION_VIRTUAL_UNCHECKED) {
         throw std::invalid_argument("unchecked collision policy is virtual-only");
+    }
+    if (options_.collision_policy == OA_COLLISION_VIRTUAL_UNCHECKED &&
+        options_.collision_scene_revision == 0U) {
+        throw std::invalid_argument("virtual collision scene revision is required");
     }
 }
 
@@ -299,8 +430,9 @@ oa_status Controller::open_and_verify(oa_verify_report &out) noexcept {
     }
     const JointVector zero{};
     for (auto &runtime : arm_) {
+        const JointVector verified_q = verify_epoch_ == 0U ? zero : runtime.measured_q();
         runtime.set_enabled(false);
-        runtime.sample(zero, zero, now_ns_);
+        runtime.force_state(verified_q, zero, now_ns_);
     }
     ++verify_epoch_;
     lifecycle_ = OA_LIFECYCLE_DISARMED;
@@ -360,7 +492,11 @@ oa_status Controller::challenge(oa_arm_challenge &out) noexcept {
     if (lifecycle_ != OA_LIFECYCLE_DISARMED && !reset_challenge) {
         return OA_ESTATE;
     }
-    if (!reset_challenge && !fresh()) {
+    if (!reset_challenge && (!fresh() || !healthy() || !disabled())) {
+        if (!healthy()) {
+            latch_fault(OA_EFAULT);
+            return OA_EFAULT;
+        }
         return OA_ESTALE;
     }
     outstanding_nonce_ = ++nonce_counter_;
@@ -384,10 +520,14 @@ oa_status Controller::arm(const oa_arm_challenge &challenge_record) noexcept {
     if (!fresh()) {
         return OA_ESTALE;
     }
+    if (!healthy() || !disabled() || !deadman_active_) {
+        latch_fault(!deadman_active_ ? OA_EESTOP : OA_EFAULT);
+        return !deadman_active_ ? OA_EESTOP : OA_EFAULT;
+    }
     lifecycle_ = OA_LIFECYCLE_ARMING;
     for (auto &runtime : arm_) {
         runtime.set_enabled(true);
-        runtime.sample(runtime.measured_q(), JointVector{}, now_ns_);
+        runtime.force_state(runtime.measured_q(), JointVector{}, now_ns_);
     }
     outstanding_nonce_ = 0U;
     lifecycle_ = OA_LIFECYCLE_ARMED_IDLE;
@@ -408,6 +548,10 @@ oa_status Controller::plan_joint(const oa_joint_move &request,
     if (!fresh()) {
         return OA_ESTALE;
     }
+    if (!healthy()) {
+        latch_fault(OA_EFAULT);
+        return OA_EFAULT;
+    }
     if (!collision_allowed()) {
         return OA_ECOLLISION;
     }
@@ -421,7 +565,9 @@ oa_status Controller::plan_joint(const oa_joint_move &request,
         return OA_EINVAL;
     }
     const auto &motor = manifest_->config().arm[request.side].motor[request.joint];
-    if (request.target_rad < motor.lower_rad || request.target_rad > motor.upper_rad) {
+    const double raw_target = (request.target_rad - motor.q_offset_rad) / motor.q_scale;
+    if (request.target_rad < motor.lower_rad || request.target_rad > motor.upper_rad ||
+        std::abs(raw_target) > motor.pmax_rad) {
         return OA_ELIMIT;
     }
     auto plan = std::make_unique<MotionPlan>();
@@ -429,7 +575,9 @@ oa_status Controller::plan_joint(const oa_joint_move &request,
     plan->active_arm_mask = 1U << request.side;
     plan->manifest_revision = manifest_->config().manifest_revision;
     plan->model_revision = manifest_->config().model_revision;
-    plan->collision_scene_revision = 0U;
+    plan->collision_scene_revision = options_.collision_scene_revision;
+    plan->controller_instance = instance_id_;
+    plan->verify_epoch = verify_epoch_;
     plan->expiry_ns = request.expiry_ns;
     for (std::size_t side = 0; side < 2U; ++side) {
         plan->seed_seq[side] = arm_[side].feedback_sequence();
@@ -444,6 +592,13 @@ oa_status Controller::plan_joint(const oa_joint_move &request,
                                              request.acceleration_scale,
                                              request.jerk_scale,
                                              plan->active_arm_mask);
+    plan->waypoint_count = 2U;
+    plan->waypoint_time_ns[0] = 0U;
+    plan->waypoint_time_ns[1] = plan->duration_ns;
+    for (std::size_t side = 0; side < 2U; ++side) {
+        plan->waypoint_q[side][0] = plan->start_q[side];
+        plan->waypoint_q[side][1] = plan->target_q[side];
+    }
     out = std::move(plan);
     return OA_OK;
 }
@@ -456,6 +611,10 @@ oa_status Controller::plan_paired(const oa_paired_tcp_move &request,
     if (!fresh()) {
         return OA_ESTALE;
     }
+    if (!healthy()) {
+        latch_fault(OA_EFAULT);
+        return OA_EFAULT;
+    }
     if (!collision_allowed()) {
         return OA_ECOLLISION;
     }
@@ -464,7 +623,10 @@ oa_status Controller::plan_paired(const oa_paired_tcp_move &request,
         request.required_feedback_seq[1] != arm_[1].feedback_sequence() ||
         !valid_scale(request.velocity_scale) || !valid_scale(request.acceleration_scale) ||
         !valid_scale(request.jerk_scale) || !finite(request.tcp_tol_m) ||
-        request.tcp_tol_m <= 0.0 || request.collision_scene_revision == 0U) {
+        request.tcp_tol_m <= 0.0 || !finite(request.max_branch_step_rad) ||
+        request.max_branch_step_rad <= 0.0 || !finite(request.min_singular_value) ||
+        request.min_singular_value < 0.0 ||
+        request.collision_scene_revision != options_.collision_scene_revision) {
         return OA_EINVAL;
     }
     auto plan = std::make_unique<MotionPlan>();
@@ -473,7 +635,10 @@ oa_status Controller::plan_paired(const oa_paired_tcp_move &request,
     plan->manifest_revision = manifest_->config().manifest_revision;
     plan->model_revision = manifest_->config().model_revision;
     plan->collision_scene_revision = request.collision_scene_revision;
+    plan->controller_instance = instance_id_;
+    plan->verify_epoch = verify_epoch_;
     plan->expiry_ns = request.expiry_ns;
+    plan->waypoint_count = 17U;
     for (std::size_t side = 0; side < 2U; ++side) {
         plan->seed_seq[side] = arm_[side].feedback_sequence();
         plan->start_q[side] = arm_[side].measured_q();
@@ -484,30 +649,69 @@ oa_status Controller::plan_paired(const oa_paired_tcp_move &request,
                 return OA_EINVAL;
             }
         }
-        IkResult ik{};
-        if (!inverse(static_cast<std::uint32_t>(side), plan->target_tcp[side],
-                     plan->start_q[side], ik)) {
-            return OA_EUNREACHABLE;
-        }
-        plan->target_q[side] = ik.q;
-        plan->achieved_tcp[side] = ik.achieved;
-        plan->tcp_residual[side] = ik.residual;
         plan->tcp_tolerance[side] = request.tcp_tol_m;
-        if (ik.residual > request.tcp_tol_m) {
-            return OA_EUNREACHABLE;
+        plan->joint_position_tolerance[side] = 5.0e-4;
+        plan->joint_velocity_tolerance[side] = 2.0e-2;
+        KinematicResult start_fk{};
+        if (!forward(static_cast<std::uint32_t>(side), plan->start_q[side], start_fk)) {
+            return OA_EFAULT;
         }
-        for (std::size_t joint = 0; joint < 7U; ++joint) {
-            const auto &motor = manifest_->config().arm[side].motor[joint];
-            if (ik.q[joint] < motor.lower_rad || ik.q[joint] > motor.upper_rad) {
-                return OA_ELIMIT;
+        plan->waypoint_q[side][0] = plan->start_q[side];
+        JointVector predecessor = plan->start_q[side];
+        for (std::size_t waypoint = 1U; waypoint < plan->waypoint_count; ++waypoint) {
+            const double fraction = static_cast<double>(waypoint) /
+                                    static_cast<double>(plan->waypoint_count - 1U);
+            std::array<double, 3> waypoint_tcp{};
+            for (std::size_t axis = 0; axis < 3U; ++axis) {
+                waypoint_tcp[axis] = start_fk.tcp_xyz[axis] +
+                                     fraction * (plan->target_tcp[side][axis] -
+                                                 start_fk.tcp_xyz[axis]);
+            }
+            IkResult ik{};
+            if (!inverse(static_cast<std::uint32_t>(side), waypoint_tcp,
+                         predecessor, ik) || ik.residual > request.tcp_tol_m ||
+                ik.min_singular_value < request.min_singular_value) {
+                return OA_EUNREACHABLE;
+            }
+            for (std::size_t joint = 0; joint < 7U; ++joint) {
+                const auto &motor = manifest_->config().arm[side].motor[joint];
+                const double raw = (ik.q[joint] - motor.q_offset_rad) / motor.q_scale;
+                if (ik.q[joint] < motor.lower_rad || ik.q[joint] > motor.upper_rad ||
+                    std::abs(raw) > motor.pmax_rad ||
+                    std::abs(ik.q[joint] - predecessor[joint]) >
+                        request.max_branch_step_rad) {
+                    return OA_EUNREACHABLE;
+                }
+            }
+            plan->waypoint_q[side][waypoint] = ik.q;
+            predecessor = ik.q;
+            if (waypoint + 1U == plan->waypoint_count) {
+                plan->target_q[side] = ik.q;
+                plan->achieved_tcp[side] = ik.achieved;
+                plan->tcp_residual[side] = ik.residual;
             }
         }
     }
     plan->collision_checked = false;
-    plan->duration_ns = trajectory_duration(plan->start_q, plan->target_q,
-                                             request.velocity_scale,
-                                             request.acceleration_scale,
-                                             request.jerk_scale, 0x3U);
+    plan->waypoint_time_ns[0] = 0U;
+    for (std::size_t waypoint = 1U; waypoint < plan->waypoint_count; ++waypoint) {
+        std::array<JointVector, 2> from{};
+        std::array<JointVector, 2> to{};
+        for (std::size_t side = 0; side < 2U; ++side) {
+            from[side] = plan->waypoint_q[side][waypoint - 1U];
+            to[side] = plan->waypoint_q[side][waypoint];
+        }
+        const std::uint64_t segment = trajectory_duration(
+            from, to, request.velocity_scale, request.acceleration_scale,
+            request.jerk_scale, 0x3U);
+        if (segment > std::numeric_limits<std::uint64_t>::max() -
+                          plan->waypoint_time_ns[waypoint - 1U]) {
+            return OA_EUNREACHABLE;
+        }
+        plan->waypoint_time_ns[waypoint] =
+            plan->waypoint_time_ns[waypoint - 1U] + segment;
+    }
+    plan->duration_ns = plan->waypoint_time_ns[plan->waypoint_count - 1U];
     out = std::move(plan);
     return OA_OK;
 }
@@ -550,15 +754,23 @@ oa_status Controller::execute(const MotionPlan &plan, const oa_execute_request &
     if (!fresh()) {
         return OA_ESTALE;
     }
+    if (!healthy()) {
+        latch_fault(OA_EFAULT);
+        return OA_EFAULT;
+    }
+    if (plan.controller_instance != instance_id_ || plan.verify_epoch != verify_epoch_) {
+        return OA_EIDENTITY;
+    }
     if (plan.manifest_revision != manifest_->config().manifest_revision ||
         plan.model_revision != manifest_->config().model_revision ||
+        plan.collision_scene_revision != options_.collision_scene_revision ||
         plan.seed_seq[0] != arm_[0].feedback_sequence() ||
-        plan.seed_seq[1] != arm_[1].feedback_sequence()) {
+        plan.seed_seq[1] != arm_[1].feedback_sequence() || !start_pose_matches(plan)) {
         return OA_ESTALE;
     }
     const std::uint64_t start_ns = request.start_ns == 0U ? now_ns_ : request.start_ns;
     if (start_ns < now_ns_ || request.expiry_ns <= start_ns ||
-        request.expiry_ns > plan.expiry_ns || request.producer_deadline_ns < request.expiry_ns ||
+        request.expiry_ns > plan.expiry_ns || request.producer_deadline_ns <= now_ns_ ||
         (request.stop_kind != OA_STOP_DISABLE && request.stop_kind != OA_STOP_CONTROLLED) ||
         plan.duration_ns > request.expiry_ns - start_ns) {
         return OA_EINVAL;
@@ -569,9 +781,12 @@ oa_status Controller::execute(const MotionPlan &plan, const oa_execute_request &
     command_expiry_ns_ = request.expiry_ns;
     producer_deadline_ns_ = request.producer_deadline_ns;
     settle_cycles_ = 0U;
+    active_stop_kind_ = request.stop_kind;
+    command_started_ = start_ns == now_ns_;
+    settling_published_ = false;
     lifecycle_ = OA_LIFECYCLE_EXECUTING;
     command_id = command_id_;
-    publish(OA_EVENT_STARTED, OA_OK, command_id_);
+    publish(command_started_ ? OA_EVENT_STARTED : OA_EVENT_QUEUED, OA_OK, command_id_);
     return OA_OK;
 }
 
@@ -579,6 +794,7 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
     if (monotonic_ns < now_ns_) {
         return OA_EINVAL;
     }
+    const std::uint64_t previous_ns = now_ns_;
     now_ns_ = monotonic_ns;
     if (lifecycle_ != OA_LIFECYCLE_ARMED_IDLE && lifecycle_ != OA_LIFECYCLE_EXECUTING &&
         lifecycle_ != OA_LIFECYCLE_DISARMED) {
@@ -596,33 +812,69 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
             latch_fault(OA_ETIMEOUT);
             return OA_ETIMEOUT;
         }
+        if (!healthy()) {
+            latch_fault(OA_EFAULT);
+            return OA_EFAULT;
+        }
+        if (!command_started_ && now_ns_ >= command_start_ns_) {
+            if (!fresh() || !start_pose_matches(*executing_)) {
+                latch_fault(OA_ESTALE);
+                return OA_ESTALE;
+            }
+            command_started_ = true;
+            publish(OA_EVENT_STARTED, OA_OK, command_id_);
+        }
         const std::uint64_t elapsed = now_ns_ <= command_start_ns_ ? 0U : now_ns_ - command_start_ns_;
-        const double u = executing_->duration_ns == 0U
+        std::size_t segment = 1U;
+        while (segment + 1U < executing_->waypoint_count &&
+               elapsed > executing_->waypoint_time_ns[segment]) {
+            ++segment;
+        }
+        const std::uint64_t segment_start = executing_->waypoint_time_ns[segment - 1U];
+        const std::uint64_t segment_end = executing_->waypoint_time_ns[segment];
+        const std::uint64_t segment_duration = segment_end - segment_start;
+        const std::uint64_t segment_elapsed =
+            elapsed <= segment_start ? 0U : std::min(elapsed - segment_start, segment_duration);
+        const double u = segment_duration == 0U
                              ? 1.0
-                             : static_cast<double>(elapsed) /
-                                   static_cast<double>(executing_->duration_ns);
+                             : static_cast<double>(segment_elapsed) /
+                                   static_cast<double>(segment_duration);
         const double position_scale = smoothstep7(u);
-        const double velocity_scale =
-            elapsed >= executing_->duration_ns
-                ? 0.0
-                : smoothstep7_derivative(u) * 1.0e9 /
-                      static_cast<double>(executing_->duration_ns);
+        const double velocity_scale = segment_elapsed >= segment_duration
+                                          ? 0.0
+                                          : smoothstep7_derivative(u) * 1.0e9 /
+                                                static_cast<double>(segment_duration);
         for (std::size_t side = 0; side < 2U; ++side) {
             for (std::size_t joint = 0; joint < 7U; ++joint) {
-                const double delta = executing_->target_q[side][joint] -
-                                     executing_->start_q[side][joint];
-                q_reference[side][joint] = executing_->start_q[side][joint] +
+                const double from = executing_->waypoint_q[side][segment - 1U][joint];
+                const double delta = executing_->waypoint_q[side][segment][joint] - from;
+                q_reference[side][joint] = from +
                                            delta * position_scale;
                 dq_reference[side][joint] = delta * velocity_scale;
             }
         }
     }
+    const double dt_s = static_cast<double>(now_ns_ - previous_ns) * 1.0e-9;
     for (std::size_t side = 0; side < 2U; ++side) {
-        arm_[side].sample(q_reference[side], dq_reference[side], now_ns_);
+        if (!arm_[side].command_and_step(q_reference[side], dq_reference[side],
+                                         now_ns_, dt_s)) {
+            latch_fault(OA_ECAN);
+            return OA_ECAN;
+        }
     }
-    if (!fresh()) {
+    if (!arm_[0].complete_fresh(now_ns_, options_.feedback_timeout_ns) ||
+        !arm_[1].complete_fresh(now_ns_, options_.feedback_timeout_ns)) {
         latch_fault(OA_ESTALE);
         return OA_ESTALE;
+    }
+    const std::uint64_t skew = arm_[0].generation_timestamp() > arm_[1].generation_timestamp()
+                                   ? arm_[0].generation_timestamp() -
+                                         arm_[1].generation_timestamp()
+                                   : arm_[1].generation_timestamp() -
+                                         arm_[0].generation_timestamp();
+    if (skew > options_.max_cross_bus_skew_ns) {
+        latch_fault(OA_ECAN);
+        return OA_ECAN;
     }
     for (std::size_t side = 0; side < 2U; ++side) {
         if (arm_[side].snapshot(now_ns_, options_.feedback_timeout_ns).fault_mask != 0U) {
@@ -633,6 +885,10 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
     if (lifecycle_ == OA_LIFECYCLE_EXECUTING &&
         now_ns_ >= command_start_ns_ + executing_->duration_ns) {
         if (measured_at_goal()) {
+            if (!settling_published_) {
+                publish(OA_EVENT_SETTLING, OA_OK, command_id_);
+                settling_published_ = true;
+            }
             ++settle_cycles_;
             if (settle_cycles_ >= 3U) {
                 const auto completed_id = command_id_;
@@ -642,6 +898,10 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
                 publish(OA_EVENT_COMPLETED, OA_OK, completed_id);
             }
         } else {
+            if (!settling_published_) {
+                publish(OA_EVENT_SETTLING, OA_OK, command_id_);
+                settling_published_ = true;
+            }
             settle_cycles_ = 0U;
         }
     }
@@ -688,10 +948,92 @@ oa_status Controller::set_sim_fault(const oa_sim_fault &fault) noexcept {
         return OA_EUNSUPPORTED;
     }
     if (fault.side > OA_RIGHT || (fault.freeze_mask & ~kAllJoints) != 0U ||
-        (fault.drop_mask & ~kAllJoints) != 0U || (fault.fault_mask & ~kAllJoints) != 0U) {
+        (fault.drop_mask & ~kAllJoints) != 0U || (fault.fault_mask & ~kAllJoints) != 0U ||
+        (fault.command_fail_mask & ~kAllJoints) != 0U ||
+        (fault.fault_mask != 0U && fault.fault_status != 0U &&
+         (fault.fault_status < 8U || fault.fault_status > 14U))) {
         return OA_EINVAL;
     }
-    arm_[fault.side].set_injection(fault.freeze_mask, fault.drop_mask, fault.fault_mask);
+    const std::uint8_t fault_status = fault.fault_status == 0U
+                                          ? 8U
+                                          : static_cast<std::uint8_t>(fault.fault_status);
+    arm_[fault.side].set_injection(fault.freeze_mask, fault.drop_mask,
+                                   fault.fault_mask,
+                                   fault_status,
+                                   fault.command_fail_mask,
+                                   fault.feedback_delay_ns);
+    if (fault.fault_mask != 0U) {
+        arm_[fault.side].force_state(arm_[fault.side].measured_q(),
+                                     arm_[fault.side].measured_dq(), now_ns_);
+    }
+    return OA_OK;
+}
+
+oa_status Controller::set_sim_state(const oa_sim_state &state) noexcept {
+    if (options_.backend != OA_BACKEND_VIRTUAL) {
+        return OA_EUNSUPPORTED;
+    }
+    if (state.side > OA_RIGHT) {
+        return OA_EINVAL;
+    }
+    JointVector q{};
+    JointVector dq{};
+    for (std::size_t joint = 0; joint < 7U; ++joint) {
+        const auto &motor = manifest_->config().arm[state.side].motor[joint];
+        const double raw = (state.q[joint] - motor.q_offset_rad) / motor.q_scale;
+        if (!finite(state.q[joint]) || !finite(state.dq[joint]) ||
+            state.q[joint] < motor.lower_rad || state.q[joint] > motor.upper_rad ||
+            std::abs(raw) > motor.pmax_rad ||
+            std::abs(state.dq[joint]) > motor.max_velocity_rad_s) {
+            return OA_ELIMIT;
+        }
+        q[joint] = state.q[joint];
+        dq[joint] = state.dq[joint];
+    }
+    arm_[state.side].force_state(q, dq, now_ns_);
+    return OA_OK;
+}
+
+oa_status Controller::heartbeat(const std::uint64_t command_id,
+                                const std::uint64_t producer_deadline_ns) noexcept {
+    if (lifecycle_ != OA_LIFECYCLE_EXECUTING || command_id == 0U ||
+        command_id != command_id_) {
+        return OA_ESTATE;
+    }
+    if (producer_deadline_ns <= now_ns_) {
+        latch_fault(OA_ESTALE);
+        return OA_ESTALE;
+    }
+    producer_deadline_ns_ = producer_deadline_ns;
+    return OA_OK;
+}
+
+oa_status Controller::set_interlock(const bool estop_active,
+                                    const bool deadman_active) noexcept {
+    deadman_active_ = deadman_active;
+    if (estop_active || !deadman_active) {
+        const auto failed_id = command_id_;
+        executing_.reset();
+        command_id_ = 0U;
+        for (auto &runtime : arm_) {
+            runtime.set_enabled(false);
+        }
+        lifecycle_ = OA_LIFECYCLE_ESTOP;
+        outstanding_nonce_ = ++nonce_counter_;
+        publish(OA_EVENT_ESTOP, OA_EESTOP, failed_id);
+        return OA_EESTOP;
+    }
+    return OA_OK;
+}
+
+oa_status Controller::set_collision_scene_revision(const std::uint64_t revision) noexcept {
+    if (options_.backend != OA_BACKEND_VIRTUAL || revision == 0U) {
+        return revision == 0U ? OA_EINVAL : OA_EUNSUPPORTED;
+    }
+    if (lifecycle_ == OA_LIFECYCLE_EXECUTING) {
+        return OA_EBUSY;
+    }
+    options_.collision_scene_revision = revision;
     return OA_OK;
 }
 
@@ -704,6 +1046,9 @@ oa_status Controller::stop(const std::uint32_t stop_kind) noexcept {
     }
     lifecycle_ = OA_LIFECYCLE_STOPPING;
     const auto stopped_id = command_id_;
+    if (executing_) {
+        publish(OA_EVENT_ABORTED, OA_OK, stopped_id);
+    }
     executing_.reset();
     command_id_ = 0U;
     if (stop_kind == OA_STOP_DISABLE) {
@@ -730,7 +1075,7 @@ oa_status Controller::disarm(const std::uint64_t deadline_ns) noexcept {
     command_id_ = 0U;
     for (auto &runtime : arm_) {
         runtime.set_enabled(false);
-        runtime.sample(runtime.measured_q(), JointVector{}, now_ns_);
+        runtime.force_state(runtime.measured_q(), JointVector{}, now_ns_);
     }
     lifecycle_ = OA_LIFECYCLE_DISARMED;
     publish(OA_EVENT_DISARMED, OA_OK, 0U);
@@ -746,13 +1091,12 @@ oa_status Controller::reset(const oa_reset_request &request) noexcept {
         return OA_EIDENTITY;
     }
     for (auto &runtime : arm_) {
-        runtime.set_injection(0U, 0U, 0U);
+        runtime.set_injection(0U, 0U, 0U, 0U, 0U, 0U);
         runtime.set_enabled(false);
-        runtime.sample(runtime.measured_q(), JointVector{}, now_ns_);
     }
     ++verify_epoch_;
     outstanding_nonce_ = 0U;
-    lifecycle_ = OA_LIFECYCLE_DISARMED;
+    lifecycle_ = OA_LIFECYCLE_CLOSED;
     return OA_OK;
 }
 
@@ -806,8 +1150,37 @@ void Controller::latch_fault(const oa_status cause) noexcept {
 }
 
 bool Controller::fresh() const noexcept {
-    return arm_[0].complete_fresh(now_ns_, options_.feedback_timeout_ns) &&
-           arm_[1].complete_fresh(now_ns_, options_.feedback_timeout_ns);
+    if (!arm_[0].complete_fresh(now_ns_, options_.feedback_timeout_ns) ||
+        !arm_[1].complete_fresh(now_ns_, options_.feedback_timeout_ns)) {
+        return false;
+    }
+    const std::uint64_t left = arm_[0].generation_timestamp();
+    const std::uint64_t right = arm_[1].generation_timestamp();
+    const std::uint64_t skew = left > right ? left - right : right - left;
+    return skew <= options_.max_cross_bus_skew_ns;
+}
+
+bool Controller::healthy() const noexcept {
+    return arm_[0].fault_free(now_ns_, options_.feedback_timeout_ns) &&
+           arm_[1].fault_free(now_ns_, options_.feedback_timeout_ns);
+}
+
+bool Controller::disabled() const noexcept {
+    return arm_[0].all_disabled(now_ns_, options_.feedback_timeout_ns) &&
+           arm_[1].all_disabled(now_ns_, options_.feedback_timeout_ns);
+}
+
+bool Controller::start_pose_matches(const MotionPlan &plan) const noexcept {
+    constexpr double kStartDriftRad = 1.0e-3;
+    for (std::size_t side = 0; side < 2U; ++side) {
+        const auto q = arm_[side].measured_q();
+        for (std::size_t joint = 0; joint < 7U; ++joint) {
+            if (std::abs(q[joint] - plan.start_q[side][joint]) > kStartDriftRad) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 }  // namespace openarm::control
