@@ -6,6 +6,23 @@ coherent `oa_snapshot` encoder feedback, including measured position, velocity,
 effort, and conservative measurement timestamps. It publishes no TF and no
 finger state. `robot_state_publisher` is the launch's only TF authority.
 
+The RViz launch gives that publisher the derived
+`openarm_v10_bimanual_stage_a_visualization.urdf`. Because Stage A has no
+motor-8 feedback, this description fixes all four finger joints at their
+canonical `q=0 m` closed transforms as an **unmeasured visualization
+convention**. It does not report a gripper measurement. The four invalid
+upstream finger inertials are omitted so RViz does not invent equivalent
+inertia geometry. The canonical dynamic `openarm_v10_bimanual.urdf`, its model
+digest, arm kinematics, hand/TCP frames, meshes, and collision geometry remain
+unchanged.
+
+The derived description defines visualization-launch TF and must not be used as
+a dynamics, calibrated gripper, MoveIt, or collision-safety model. When a
+future version adds authoritative motor-8 state to the existing sole
+`/joint_states` publisher, the launch must return to movable/mimic finger joints
+and publish only the two measured source joints; `robot_state_publisher` should
+continue deriving the mimic transforms.
+
 The production command interfaces are the reliable actions
 `/openarm_ik/move_joint` and `/openarm_ik/move_paired_tcp` from
 `openarm_control_msgs`. Paired goals name `left_tcp_m` and `right_tcp_m` and are

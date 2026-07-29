@@ -1,0 +1,1141 @@
+-- The C compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Configuring done (0.1s)
+-- Generating done (0.0s)
+-- Build files have been written to: /var/tmp/openarmik-finger-viz-build/native_build/can
+[ 40%] Building C object CMakeFiles/openarm_can.dir/src/openarm_can.c.o
+[ 40%] Building C object CMakeFiles/openarm_can.dir/src/openarm_can_linux.c.o
+[ 60%] Linking C static library libopenarm_can.a
+[ 60%] Built target openarm_can
+[ 80%] Building C object CMakeFiles/openarm_can_tests.dir/tests/test_openarm_can.c.o
+[100%] Linking C executable openarm_can_tests
+[100%] Built target openarm_can_tests
+Test project /var/tmp/openarmik-finger-viz-build/native_build/can
+    Start 1: openarm_can_tests
+1/1 Test #1: openarm_can_tests ................   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.00 sec
+-- Install configuration: "Release"
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/libopenarm_can.a
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/include/openarm_can.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/OpenArmCan/OpenArmCanTargets.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/OpenArmCan/OpenArmCanTargets-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/OpenArmCan/OpenArmCanConfig.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/OpenArmCan/OpenArmCanConfigVersion.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_can/openarm_canConfig.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_can/openarm_canConfigVersion.cmake
+-- The C compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Found Python3: /usr/bin/python3 (found version "3.14.4") found components: Interpreter
+-- Configuring done (0.2s)
+-- Generating done (0.0s)
+-- Build files have been written to: /var/tmp/openarmik-finger-viz-build/native_build/model
+[ 12%] Building C object CMakeFiles/openarm_model.dir/src/openarm_model.c.o
+[ 25%] Linking C static library libopenarm_model.a
+[ 25%] Built target openarm_model
+[ 37%] Building C object CMakeFiles/oa_model_tests.dir/tests/test_model.c.o
+[ 50%] Building C object CMakeFiles/oa_model_reference_driver.dir/tests/reference_driver.c.o
+[ 62%] Building C object CMakeFiles/oa_model_abi_v1_canary.dir/tests/abi_v1_canary.c.o
+[ 75%] Linking C executable oa_model_abi_v1_canary
+[ 87%] Linking C executable oa_model_reference_driver
+[ 87%] Built target oa_model_reference_driver
+[ 87%] Built target oa_model_abi_v1_canary
+[100%] Linking C executable oa_model_tests
+[100%] Built target oa_model_tests
+Test project /var/tmp/openarmik-finger-viz-build/native_build/model
+    Start 1: oa_model_tests
+1/4 Test #1: oa_model_tests ...................   Passed    0.09 sec
+    Start 2: oa_model_abi_v1_canary
+2/4 Test #2: oa_model_abi_v1_canary ...........   Passed    0.00 sec
+    Start 3: oa_model_python_reference
+3/4 Test #3: oa_model_python_reference ........   Passed    0.11 sec
+    Start 4: oa_model_generator_determinism
+4/4 Test #4: oa_model_generator_determinism ...   Passed    1.47 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   1.68 sec
+-- Install configuration: "Release"
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/libopenarm_model.a
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/include
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/include/openarm_model.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/share/openarm_model/openarm_v10_bimanual.urdf
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/share/openarm_model/LICENSE.txt
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/share/openarm_model/NOTICE
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_model/openarm_modelTargets.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_model/openarm_modelTargets-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_model/openarm_modelConfig.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_model/openarm_modelConfigVersion.cmake
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Configuring done (0.3s)
+-- Generating done (0.0s)
+-- Build files have been written to: /var/tmp/openarmik-finger-viz-build/native_build/commission
+[ 20%] Building CXX object CMakeFiles/openarm_commission_test.dir/src/calibration_session.cpp.o
+[ 20%] Building CXX object CMakeFiles/openarm_commission_test.dir/src/c_api.cpp.o
+[ 30%] Building CXX object CMakeFiles/openarm_commission.dir/src/c_api.cpp.o
+[ 40%] Building CXX object CMakeFiles/openarm_commission.dir/src/calibration_session.cpp.o
+[ 50%] Linking CXX static library libopenarm_commission.a
+[ 50%] Built target openarm_commission
+[ 60%] Building C object CMakeFiles/openarm_commission_c11_consumer.dir/tests/c11_consumer.c.o
+[ 70%] Linking CXX static library libopenarm_commission_test.a
+[ 80%] Linking CXX executable openarm_commission_c11_consumer
+[ 80%] Built target openarm_commission_test
+[ 90%] Building CXX object CMakeFiles/openarm_commission_tests.dir/tests/test_commission.cpp.o
+[ 90%] Built target openarm_commission_c11_consumer
+[100%] Linking CXX executable openarm_commission_tests
+[100%] Built target openarm_commission_tests
+Test project /var/tmp/openarmik-finger-viz-build/native_build/commission
+    Start 1: openarm_commission_tests
+1/2 Test #1: openarm_commission_tests ..........   Passed    0.02 sec
+    Start 2: openarm_commission_c11_consumer
+2/2 Test #2: openarm_commission_c11_consumer ...   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   0.03 sec
+-- Install configuration: "Release"
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/libopenarm_commission.a
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/include/openarm_commission.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_commission/openarm_commissionTargets.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_commission/openarm_commissionTargets-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_commission/openarm_commissionConfig.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_commission/openarm_commissionConfigVersion.cmake
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Configuring done (0.3s)
+-- Generating done (0.0s)
+-- Build files have been written to: /var/tmp/openarmik-finger-viz-build/native_build/transport
+[ 12%] Building CXX object CMakeFiles/openarm_transport.dir/src/c_api.cpp.o
+[ 25%] Building CXX object CMakeFiles/openarm_transport.dir/src/socketcan_backend.cpp.o
+[ 37%] Building CXX object CMakeFiles/openarm_transport.dir/src/transport.cpp.o
+[ 50%] Linking CXX static library libopenarm_transport.a
+[ 50%] Built target openarm_transport
+[ 62%] Building C object CMakeFiles/openarm_transport_c11_consumer.dir/tests/c11_consumer.c.o
+[ 75%] Building CXX object CMakeFiles/openarm_transport_tests.dir/tests/test_transport.cpp.o
+[ 87%] Linking CXX executable openarm_transport_c11_consumer
+[ 87%] Built target openarm_transport_c11_consumer
+[100%] Linking CXX executable openarm_transport_tests
+[100%] Built target openarm_transport_tests
+Test project /var/tmp/openarmik-finger-viz-build/native_build/transport
+    Start 1: openarm_transport_tests
+1/3 Test #1: openarm_transport_tests ..............   Passed    0.00 sec
+    Start 2: openarm_transport_c11_consumer
+2/3 Test #2: openarm_transport_c11_consumer .......   Passed    0.00 sec
+    Start 3: openarm_transport_install_consumer
+3/3 Test #3: openarm_transport_install_consumer ...   Passed    0.40 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   0.41 sec
+-- Install configuration: "Release"
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/libopenarm_transport.a
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/include/openarm_transport.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/OpenArmTransport/OpenArmTransportTargets.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/OpenArmTransport/OpenArmTransportTargets-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/OpenArmTransport/OpenArmTransportConfig.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/OpenArmTransport/OpenArmTransportConfigVersion.cmake
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Performing Test oa_model_control_legacy_c11_compiles
+-- Performing Test oa_model_control_legacy_c11_compiles - Failed
+-- Performing Test oa_model_control_legacy_cxx17_compiles
+-- Performing Test oa_model_control_legacy_cxx17_compiles - Failed
+-- Performing Test oa_control_model_legacy_c11_compiles
+-- Performing Test oa_control_model_legacy_c11_compiles - Failed
+-- Performing Test oa_control_model_legacy_cxx17_compiles
+-- Performing Test oa_control_model_legacy_cxx17_compiles - Failed
+-- Performing Test oa_model_late_optout_legacy_c11_compiles
+-- Performing Test oa_model_late_optout_legacy_c11_compiles - Failed
+-- Performing Test oa_model_late_optout_legacy_cxx17_compiles
+-- Performing Test oa_model_late_optout_legacy_cxx17_compiles - Failed
+-- Performing Test oa_control_late_optout_legacy_c11_compiles
+-- Performing Test oa_control_late_optout_legacy_c11_compiles - Failed
+-- Performing Test oa_control_late_optout_legacy_cxx17_compiles
+-- Performing Test oa_control_late_optout_legacy_cxx17_compiles - Failed
+-- Configuring done (0.5s)
+-- Generating done (0.1s)
+-- Build files have been written to: /var/tmp/openarmik-finger-viz-build/native_build/control
+[  2%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_model_c_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_model_c_legacy.c.o
+[  2%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_model_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_model_cxx_canonical.cpp.o
+[  3%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_transport_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_transport_cxx_canonical.cpp.o
+[  5%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_transport_c_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_transport_c_legacy.c.o
+[  5%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_model_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_model_cxx_legacy.cpp.o
+[  6%] Building CXX object CMakeFiles/openarm_control.dir/src/c_api.cpp.o
+[  8%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_transport_c_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_transport_c_canonical.c.o
+[  8%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_commission_c_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_commission_c_canonical.c.o
+[  9%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_control_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_control_cxx_legacy.cpp.o
+[ 10%] Building CXX object CMakeFiles/openarm_control.dir/src/kinematics.cpp.o
+[ 11%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_control_c_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_control_c_legacy.c.o
+[ 12%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_commission_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_commission_cxx_canonical.cpp.o
+[ 13%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_control_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_control_cxx_canonical.cpp.o
+[ 14%] Building CXX object CMakeFiles/openarm_control.dir/src/control_core.cpp.o
+[ 15%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_can_c_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_can_c_legacy.c.o
+[ 16%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_commission_c_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_commission_c_legacy.c.o
+[ 18%] Building CXX object CMakeFiles/openarm_control.dir/src/standard_manifest.cpp.o
+[ 18%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_model_c_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_model_c_canonical.c.o
+[ 19%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_commission_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_commission_cxx_legacy.cpp.o
+[ 20%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_can_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_can_cxx_legacy.cpp.o
+[ 21%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_can_c_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_can_c_canonical.c.o
+[ 22%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_transport_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_transport_cxx_legacy.cpp.o
+[ 23%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_can_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_can_cxx_canonical.cpp.o
+[ 25%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_transport_c_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_transport_c_legacy.c.o
+[ 26%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_transport_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_transport_cxx_legacy.cpp.o
+[ 28%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_transport_c_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_transport_c_canonical.c.o
+[ 28%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_control_c_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_control_c_canonical.c.o
+[ 29%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_transport_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_transport_cxx_canonical.cpp.o
+[ 30%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_commission_c_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_commission_c_legacy.c.o
+[ 31%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_commission_c_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_commission_c_canonical.c.o
+[ 32%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_commission_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_commission_cxx_legacy.cpp.o
+[ 33%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_control_c_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_control_c_canonical.c.o
+[ 34%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_commission_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_commission_cxx_canonical.cpp.o
+[ 35%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_control_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_control_cxx_canonical.cpp.o
+[ 37%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_can_c_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_can_c_legacy.c.o
+[ 37%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_can_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_can_cxx_legacy.cpp.o
+[ 38%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_model_c_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_model_c_canonical.c.o
+[ 40%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_model_c_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_model_c_legacy.c.o
+[ 40%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_can_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_can_cxx_canonical.cpp.o
+[ 41%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_can_c_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_can_c_canonical.c.o
+[ 41%] Built target oa_headers_openarm_can_openarm_model_c_legacy
+[ 41%] Built target oa_headers_openarm_can_openarm_model_cxx_canonical
+[ 41%] Built target oa_headers_openarm_can_openarm_transport_cxx_canonical
+[ 42%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_model_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_model_cxx_legacy.cpp.o
+[ 42%] Built target oa_headers_openarm_can_openarm_transport_c_canonical
+[ 42%] Built target oa_headers_openarm_can_openarm_transport_c_legacy
+[ 42%] Built target oa_headers_openarm_can_openarm_commission_c_canonical
+[ 42%] Built target oa_headers_openarm_can_openarm_model_cxx_legacy
+[ 42%] Built target oa_headers_openarm_can_openarm_commission_cxx_canonical
+[ 42%] Built target oa_headers_openarm_can_openarm_control_c_legacy
+[ 42%] Built target oa_headers_openarm_can_openarm_control_cxx_canonical
+[ 42%] Built target oa_headers_openarm_model_openarm_can_c_legacy
+[ 42%] Built target oa_headers_openarm_model_openarm_can_cxx_legacy
+[ 42%] Built target oa_headers_openarm_can_openarm_control_cxx_legacy
+[ 42%] Built target oa_headers_openarm_can_openarm_transport_cxx_legacy
+[ 42%] Built target oa_headers_openarm_can_openarm_commission_cxx_legacy
+[ 42%] Built target oa_headers_openarm_model_openarm_transport_c_canonical
+[ 42%] Built target oa_headers_openarm_can_openarm_commission_c_legacy
+[ 42%] Built target oa_headers_openarm_can_openarm_control_c_canonical
+[ 42%] Built target oa_headers_openarm_model_openarm_transport_c_legacy
+[ 42%] Built target oa_headers_openarm_can_openarm_model_c_canonical
+[ 42%] Built target oa_headers_openarm_model_openarm_can_c_canonical
+[ 42%] Built target oa_headers_openarm_model_openarm_can_cxx_canonical
+[ 42%] Built target oa_headers_openarm_model_openarm_transport_cxx_legacy
+[ 42%] Built target oa_headers_openarm_model_openarm_transport_cxx_canonical
+[ 42%] Built target oa_headers_openarm_model_openarm_commission_cxx_legacy
+[ 42%] Built target oa_headers_openarm_model_openarm_commission_c_legacy
+[ 42%] Built target oa_headers_openarm_model_openarm_commission_c_canonical
+[ 42%] Built target oa_headers_openarm_transport_openarm_model_c_legacy
+[ 42%] Built target oa_headers_openarm_transport_openarm_can_c_canonical
+[ 42%] Built target oa_headers_openarm_model_openarm_control_c_canonical
+[ 42%] Built target oa_headers_openarm_transport_openarm_model_c_canonical
+[ 43%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_model_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_model_cxx_canonical.cpp.o
+[ 43%] Built target oa_headers_openarm_transport_openarm_can_c_legacy
+[ 43%] Built target oa_headers_openarm_model_openarm_control_cxx_canonical
+[ 43%] Built target oa_headers_openarm_transport_openarm_can_cxx_canonical
+[ 44%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_commission_c_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_commission_c_legacy.c.o
+[ 44%] Built target oa_headers_openarm_transport_openarm_can_cxx_legacy
+[ 44%] Built target oa_headers_openarm_model_openarm_commission_cxx_canonical
+[ 44%] Built target oa_headers_openarm_transport_openarm_model_cxx_legacy
+[ 46%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_commission_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_commission_cxx_canonical.cpp.o
+[ 46%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_control_c_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_control_c_canonical.c.o
+[ 47%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_control_c_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_control_c_legacy.c.o
+[ 48%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_commission_c_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_commission_c_canonical.c.o
+[ 53%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_control_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_control_cxx_canonical.cpp.o
+[ 53%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_commission_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_commission_cxx_legacy.cpp.o
+[ 53%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_can_c_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_can_c_legacy.c.o
+[ 53%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_control_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_control_cxx_legacy.cpp.o
+[ 53%] Built target oa_headers_openarm_transport_openarm_model_cxx_canonical
+[ 54%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_can_c_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_can_c_canonical.c.o
+[ 55%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_model_c_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_model_c_legacy.c.o
+[ 57%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_model_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_model_cxx_legacy.cpp.o
+[ 57%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_model_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_model_cxx_canonical.cpp.o
+[ 58%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_transport_c_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_transport_c_legacy.c.o
+[ 60%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_transport_c_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_transport_c_canonical.c.o
+[ 60%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_can_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_can_cxx_canonical.cpp.o
+[ 61%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_transport_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_transport_cxx_canonical.cpp.o
+[ 60%] Built target oa_headers_openarm_transport_openarm_commission_c_legacy
+[ 62%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_control_c_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_control_c_legacy.c.o
+[ 63%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_model_c_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_model_c_canonical.c.o
+[ 64%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_control_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_control_cxx_legacy.cpp.o
+[ 65%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_control_c_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_control_c_canonical.c.o
+[ 67%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_control_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_control_cxx_canonical.cpp.o
+[ 67%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_transport_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_transport_cxx_legacy.cpp.o
+[ 68%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_can_c_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_can_c_legacy.c.o
+[ 71%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_can_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_can_cxx_legacy.cpp.o
+[ 71%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_model_c_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_model_c_canonical.c.o
+[ 71%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_can_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_can_cxx_canonical.cpp.o
+[ 72%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_can_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_can_cxx_legacy.cpp.o
+[ 73%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_can_c_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_can_c_canonical.c.o
+[ 73%] Built target oa_headers_openarm_transport_openarm_control_c_legacy
+[ 75%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_transport_c_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_transport_c_legacy.c.o
+[ 75%] Built target oa_headers_openarm_commission_openarm_can_c_legacy
+[ 76%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_model_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_model_cxx_canonical.cpp.o
+[ 76%] Built target oa_headers_openarm_commission_openarm_model_cxx_canonical
+[ 76%] Built target oa_headers_openarm_transport_openarm_control_cxx_canonical
+[ 76%] Built target oa_headers_openarm_commission_openarm_model_c_legacy
+[ 76%] Built target oa_headers_openarm_transport_openarm_control_c_canonical
+[ 76%] Built target oa_headers_openarm_transport_openarm_control_cxx_legacy
+[ 77%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_transport_c_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_transport_c_canonical.c.o
+[ 78%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_transport_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_transport_cxx_legacy.cpp.o
+[ 78%] Built target oa_headers_openarm_commission_openarm_transport_c_canonical
+[ 78%] Built target oa_headers_openarm_commission_openarm_model_c_canonical
+[ 78%] Built target oa_headers_openarm_commission_openarm_model_cxx_legacy
+[ 79%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_transport_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_transport_cxx_canonical.cpp.o
+[ 79%] Built target oa_headers_openarm_transport_openarm_commission_cxx_legacy
+[ 79%] Built target oa_headers_openarm_commission_openarm_control_c_legacy
+[ 79%] Built target oa_headers_openarm_transport_openarm_commission_cxx_canonical
+[ 79%] Built target oa_headers_openarm_commission_openarm_control_cxx_legacy
+[ 79%] Built target oa_headers_openarm_commission_openarm_control_cxx_canonical
+[ 79%] Built target oa_headers_openarm_commission_openarm_can_c_canonical
+[ 80%] Building C object CMakeFiles/openarm_legacy_control_status.dir/tests/legacy_control_status.c.o
+[ 80%] Built target oa_headers_openarm_commission_openarm_can_cxx_canonical
+[ 82%] Building C object CMakeFiles/openarm_public_headers_c11.dir/tests/public_headers_c11.c.o
+[ 82%] Building C object CMakeFiles/openarm_legacy_model_status.dir/tests/legacy_model_status.c.o
+[ 83%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_commission_c_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_commission_c_canonical.c.o
+[ 84%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_commission_c_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_commission_c_legacy.c.o
+[ 84%] Built target oa_headers_openarm_control_openarm_model_c_canonical
+[ 84%] Built target oa_headers_openarm_commission_openarm_control_c_canonical
+[ 84%] Built target oa_headers_openarm_commission_openarm_can_cxx_legacy
+[ 84%] Built target oa_headers_openarm_control_openarm_can_c_legacy
+[ 84%] Built target oa_headers_openarm_commission_openarm_transport_c_legacy
+[ 84%] Built target oa_headers_openarm_commission_openarm_transport_cxx_canonical
+[ 84%] Built target oa_headers_openarm_control_openarm_can_c_canonical
+[ 84%] Built target oa_headers_openarm_control_openarm_can_cxx_legacy
+[ 84%] Built target oa_headers_openarm_transport_openarm_commission_c_canonical
+[ 85%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_commission_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_commission_cxx_canonical.cpp.o
+[ 85%] Built target oa_headers_openarm_commission_openarm_transport_cxx_legacy
+[ 86%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_commission_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_commission_cxx_legacy.cpp.o
+[ 87%] Building CXX object CMakeFiles/openarm_public_headers_cxx17.dir/tests/public_headers_cxx17.cpp.o
+[ 87%] Built target oa_headers_openarm_control_openarm_model_cxx_canonical
+[ 87%] Built target oa_headers_openarm_control_openarm_transport_c_canonical
+[ 87%] Built target oa_headers_openarm_control_openarm_can_cxx_canonical
+[ 87%] Built target oa_headers_openarm_control_openarm_transport_c_legacy
+[ 87%] Built target openarm_legacy_model_status
+[ 87%] Built target openarm_legacy_control_status
+[ 87%] Built target oa_headers_openarm_control_openarm_transport_cxx_legacy
+[ 87%] Built target oa_headers_openarm_control_openarm_commission_c_canonical
+[ 87%] Built target oa_headers_openarm_control_openarm_transport_cxx_canonical
+[ 88%] Building CXX object CMakeFiles/openarm_control_test.dir/src/control_core.cpp.o
+[ 89%] Building CXX object CMakeFiles/openarm_control_test.dir/src/c_api.cpp.o
+[ 91%] Building CXX object CMakeFiles/openarm_control_test.dir/src/kinematics.cpp.o
+[ 91%] Built target oa_headers_openarm_control_openarm_commission_c_legacy
+[ 91%] Building CXX object CMakeFiles/openarm_control_test.dir/src/standard_manifest.cpp.o
+[ 91%] Built target openarm_public_headers_c11
+[ 91%] Built target oa_headers_openarm_control_openarm_commission_cxx_canonical
+[ 91%] Built target oa_headers_openarm_control_openarm_commission_cxx_legacy
+[ 91%] Built target openarm_public_headers_cxx17
+[ 92%] Linking CXX static library libopenarm_control.a
+[ 92%] Built target openarm_control
+[ 93%] Building C object CMakeFiles/openarm_control_v1_original_abi.dir/tests/v1_original_abi_consumer.c.o
+[ 94%] Building C object CMakeFiles/openarm_control_c11_abi.dir/tests/c11_abi_consumer.c.o
+[ 95%] Linking CXX executable openarm_control_c11_abi
+[ 96%] Linking CXX static library libopenarm_control_test.a
+[ 97%] Linking CXX executable openarm_control_v1_original_abi
+[ 97%] Built target openarm_control_test
+[ 98%] Building CXX object CMakeFiles/openarm_control_tests.dir/tests/test_control.cpp.o
+[ 98%] Built target openarm_control_c11_abi
+[ 98%] Built target openarm_control_v1_original_abi
+[100%] Linking CXX executable openarm_control_tests
+[100%] Built target openarm_control_tests
+Test project /var/tmp/openarmik-finger-viz-build/native_build/control
+    Start 1: openarm_control_tests
+1/4 Test #1: openarm_control_tests .....................   Passed    0.02 sec
+    Start 2: openarm_control_c11_abi
+2/4 Test #2: openarm_control_c11_abi ...................   Passed    0.00 sec
+    Start 3: openarm_control_v1_original_abi
+3/4 Test #3: openarm_control_v1_original_abi ...........   Passed    0.00 sec
+    Start 4: openarm_public_headers_install_consumer
+4/4 Test #4: openarm_public_headers_install_consumer ...   Passed    0.48 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   0.50 sec
+-- Install configuration: "Release"
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/libopenarm_control.a
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/include/openarm_control.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_control/openarm_controlTargets.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_control/openarm_controlTargets-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_control/openarm_controlConfig.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/lib/cmake/openarm_control/openarm_controlConfigVersion.cmake
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Configuring done (0.3s)
+-- Generating done (0.0s)
+-- Build files have been written to: /var/tmp/openarmik-finger-viz-build/native_build/installed_native_consumer
+[ 25%] Building C object CMakeFiles/openarm_installed_c11.dir/all_headers.c.o
+[ 50%] Building CXX object CMakeFiles/openarm_installed_cxx17.dir/all_headers.cpp.o
+[ 75%] Linking CXX executable openarm_installed_c11
+[100%] Linking CXX executable openarm_installed_cxx17
+[100%] Built target openarm_installed_c11
+[100%] Built target openarm_installed_cxx17
+Starting >>> openarm_control_msgs
+Starting >>> openarm_description
+CMake Deprecation Warning at CMakeLists.txt:15 (cmake_minimum_required):
+  Compatibility with CMake < 3.10 will be removed from a future version of
+  CMake.
+
+  Update the VERSION argument <min> value.  Or, use the <min>...<max> syntax
+  to tell CMake that the project requires at least <min> but has been updated
+  to work with policies introduced by <max> or earlier.
+
+
+-- The C compiler identification is GNU 15.2.0
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found ament_cmake: 2.8.7 (/opt/ros/lyrical/share/ament_cmake/cmake)
+-- Found ament_cmake: 2.8.7 (/opt/ros/lyrical/share/ament_cmake/cmake)
+-- Found builtin_interfaces: 2.4.5 (/opt/ros/lyrical/share/builtin_interfaces/cmake)
+-- Found ament_lint_auto: 0.20.6 (/opt/ros/lyrical/share/ament_lint_auto/cmake)
+-- Found rosidl_generator_c: 5.2.1 (/opt/ros/lyrical/share/rosidl_generator_c/cmake)
+-- Found rosidl_generator_cpp: 5.2.1 (/opt/ros/lyrical/share/rosidl_generator_cpp/cmake)
+-- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+-- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+-- Found geometry_msgs: 5.9.2 (/opt/ros/lyrical/share/geometry_msgs/cmake)
+-- Found rosidl_default_generators: 1.8.1 (/opt/ros/lyrical/share/rosidl_default_generators/cmake)
+-- Found rosidl_adapter: 5.2.1 (/opt/ros/lyrical/share/rosidl_adapter/cmake)
+-- Found unique_identifier_msgs: 2.8.1 (/opt/ros/lyrical/share/unique_identifier_msgs/cmake)
+-- Added test 'flake8' to check Python code syntax and style conventions
+-- Configured 'flake8' exclude dirs and/or files:
+-- Added test 'lint_cmake' to check CMake code style
+-- Added test 'pep257' to check Python code against some of the docstring style conventions in PEP 257
+-- Added test 'xmllint' to check XML markup files
+-- Configuring done (0.5s)
+-- Generating done (0.0s)
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    OPENARM_IK_ROS_COVERAGE
+
+
+-- Build files have been written to: /var/tmp/openarmik-finger-viz-build/build/openarm_description
+-- Install configuration: "Release"
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/sensor
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/sensor/zed
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/sensor/zed/urdf_wrapper
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/sensor/zed/urdf_wrapper/openarm_zed_wrapper.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/utils
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/utils/openarm_v20_utils.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/utils/openarm_v20_sensor.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/utils/openarm_v20_robot.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/utils/openarm_v20_ee.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/utils/openarm_v20_arm.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/ros2_control
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/ros2_control/openarm.ros2_control.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/ros2_control/openarm.bimanual.ros2_control.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/openarm_v20.urdf.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/example
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/urdf/example/v2.urdf
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/body
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/body/visual
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/body/visual/body_link0.stl
+-- Found Python3: /usr/bin/python3 (found version "3.14.4") found components: Interpreter
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/body/visual/body_link0.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/body/meta.md
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/body/collision
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/body/collision/body_link0_symp.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link6.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link5.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link4.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link3.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link2.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/link1.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/visual/base_link.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/meta.md
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/splited
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/splited/link5
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/splited/link5/link5_02.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/splited/link5/link5_01.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/splited/link5/link5_00.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link6.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link5.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link4.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link3.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link2.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/link1.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/meshes/arm/collision/base_link.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/robot_presets
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/robot_presets/right_arm_with_pinch_gripper.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/robot_presets/right_arm.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/robot_presets/left_arm_with_pinch_gripper.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/robot_presets/left_arm.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/robot_presets/default_bimanual.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/meta.md
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/body
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/body/struct
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/body/struct/topology.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/body/struct/reference_points.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/body/meta.md
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/body/link
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/body/link/visuals.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/body/link/collisions.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/body/inertials
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/body/inertials/nominal.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/struct
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/struct/topology.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/struct/reference_points.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/struct/name_mapping.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/meta.md
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/link
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/link/visuals.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/link/collisions.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/joint
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/joint/joint_origins.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/joint/joint_limits.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/joint/joint_axes.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/inertials
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/inertials/nominal.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/control
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/control/friction.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v2.0/config/arm/control/control_gains.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/ros2_control
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/ros2_control/openarm.ros2_control.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/ros2_control/openarm.bimanual.ros2_control.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/robot
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/robot/openarm_robot.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/openarm_v10.urdf.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/example
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/example/v1.urdf
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/ee
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/ee/pinch_gripper
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/ee/pinch_gripper/openarm_v20_pinch_gripper.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/ee/parallel_link
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/ee/parallel_link/openarm_parallel_gripper.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/ee/openarm_ee_macro.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/ee/ee_dispatcher.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/body
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/body/openarm_body_macro.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/body/openarm_body.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/arm
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/arm/openarm_macro.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/urdf/arm/openarm_arm.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/body
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/body/visual
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/body/visual/body_link0.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/body/visual/body_link0.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/body/collision
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/body/collision/body_link0_symp.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link7.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link7.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link6.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link6.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link5.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link5.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link4.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link4.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link3.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link3.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link2.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link2.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link1.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link1.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link0.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/visual/link0.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/collision
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/collision/link7_symp.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/collision/link6_symp.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/collision/link5_symp.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/collision/link4_symp.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/collision/link3_symp.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/collision/link2_symp.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/collision/link1_symp.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/mesh/arm/collision/link0_symp.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config/body
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config/body/kinematics_link.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config/body/kinematics.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config/body/inertials.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config/arm
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config/arm/kinematics_offset.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config/arm/kinematics_link.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config/arm/kinematics.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config/arm/joint_limits.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config/arm/inertials.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/robot/openarm_v1.0/config/arm/control_gains.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/urdf
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/urdf/pinch_gripper_standalone.urdf.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/visual
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/visual/finger_outer.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/visual/finger_inner.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/visual/ee_base_link.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_outter
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_outter/finger_outter_02.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_outter/finger_outter_01.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_outter/finger_outter_00.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_outer
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_outer/finger_outer_03.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_outer/finger_outer_02.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_outer/finger_outer_01.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_outer/finger_outer_00.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_inner
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_inner/finger_inner_03.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_inner/finger_inner_02.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_inner/finger_inner_01.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/splited/finger_inner/finger_inner_00.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/finger_outer.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/finger_inner.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/meshes/collision/ee_base_link.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/struct
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/struct/topology.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/struct/reference_points.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/struct/name_mapping.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/old
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/old/kinematics_link.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/old/kinematics.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/old/joint_limits.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/old/inertials.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/link
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/link/visuals.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/link/collisions.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/joint
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/joint/joint_origins.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/joint/joint_mimics.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/joint/joint_limits.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/joint/joint_axes.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/inertials
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/pinch_gripper/config/inertials/nominal.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/urdf
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/urdf/parallel_link_standalone.urdf.xacro
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/meshes
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/meshes/visual
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/meshes/visual/hand.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/meshes/visual/finger.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/meshes/visual/finger.dae
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/meshes/collision
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/meshes/collision/hand.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/meshes/collision/finger.stl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/config
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/config/kinematics_link.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/config/kinematics.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/config/joint_limits.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/end_effector/parallel_link/config/inertials.yaml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/assets/__init__.py
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/launch
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/launch/display_openarm.launch.py
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/rviz
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/rviz/bimanual.rviz
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/rviz/arm_only.rviz
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/ament_index/resource_index/package_run_dependencies/openarm_description
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/ament_index/resource_index/parent_prefix_path/openarm_description
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/environment/ament_prefix_path.sh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/environment/ament_prefix_path.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/environment/path.sh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/environment/path.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/local_setup.bash
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/local_setup.fish
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/local_setup.sh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/local_setup.zsh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/local_setup.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/package.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/ament_index/resource_index/packages/openarm_description
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/cmake/openarm_descriptionConfig.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/cmake/openarm_descriptionConfig-version.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/package.xml
+--- stderr: openarm_description
+CMake Deprecation Warning at CMakeLists.txt:15 (cmake_minimum_required):
+  Compatibility with CMake < 3.10 will be removed from a future version of
+  CMake.
+
+  Update the VERSION argument <min> value.  Or, use the <min>...<max> syntax
+  to tell CMake that the project requires at least <min> but has been updated
+  to work with policies introduced by <max> or earlier.
+
+
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    OPENARM_IK_ROS_COVERAGE
+
+
+---
+Finished <<< openarm_description [0.71s]
+-- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+-- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+-- Found Python3: /usr/bin/python3 (found version "3.14.4") found components: Interpreter Development NumPy Development.Module Development.Embed
+-- Found Python3: /usr/bin/python3 (found version "3.14.4") found components: Interpreter
+-- Configuring done (1.9s)
+-- Generating done (0.0s)
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    OPENARM_IK_ROS_COVERAGE
+
+
+-- Build files have been written to: /var/tmp/openarmik-finger-viz-build/build/openarm_control_msgs
+[  2%] Generating type hashes for ROS interfaces
+[  4%] Generating Rust code for ROS interfaces
+[  4%] Built target openarm_control_msgs__rosidl_generator_type_description
+[  6%] Generating C code for ROS interfaces
+[  8%] Generating C++ code for ROS interfaces
+[  8%] Built target openarm_control_msgs__rs
+[  8%] Built target openarm_control_msgs__cpp
+[ 13%] Building C object CMakeFiles/openarm_control_msgs__rosidl_generator_c.dir/rosidl_generator_c/openarm_control_msgs/action/detail/move_joint__description.c.o
+[ 13%] Building C object CMakeFiles/openarm_control_msgs__rosidl_generator_c.dir/rosidl_generator_c/openarm_control_msgs/action/detail/move_joint__type_support.c.o
+[ 20%] Building C object CMakeFiles/openarm_control_msgs__rosidl_generator_c.dir/rosidl_generator_c/openarm_control_msgs/action/detail/move_paired_tcp__type_support.c.o
+[ 20%] Building C object CMakeFiles/openarm_control_msgs__rosidl_generator_c.dir/rosidl_generator_c/openarm_control_msgs/action/detail/move_paired_tcp__functions.c.o
+[ 20%] Building C object CMakeFiles/openarm_control_msgs__rosidl_generator_c.dir/rosidl_generator_c/openarm_control_msgs/action/detail/move_paired_tcp__description.c.o
+[ 22%] Building C object CMakeFiles/openarm_control_msgs__rosidl_generator_c.dir/rosidl_generator_c/openarm_control_msgs/action/detail/move_joint__functions.c.o
+[ 24%] Linking C shared library libopenarm_control_msgs__rosidl_generator_c.so
+[ 24%] Built target openarm_control_msgs__rosidl_generator_c
+[ 31%] Generating C++ type support for eProsima Fast-RTPS
+[ 31%] Generating C type support for eProsima Fast-RTPS
+[ 31%] Generating C type support dispatch for ROS interfaces
+[ 37%] Generating C introspection for ROS interfaces
+[ 37%] Generating C++ type support dispatch for ROS interfaces
+[ 37%] Generating C++ introspection for ROS interfaces
+[ 40%] Building CXX object CMakeFiles/openarm_control_msgs__rosidl_typesupport_c.dir/rosidl_typesupport_c/openarm_control_msgs/action/move_joint__type_support.cpp.o
+[ 42%] Building CXX object CMakeFiles/openarm_control_msgs__rosidl_typesupport_c.dir/rosidl_typesupport_c/openarm_control_msgs/action/move_paired_tcp__type_support.cpp.o
+[ 44%] Building CXX object CMakeFiles/openarm_control_msgs__rosidl_typesupport_cpp.dir/rosidl_typesupport_cpp/openarm_control_msgs/action/move_paired_tcp__type_support.cpp.o
+[ 46%] Building CXX object CMakeFiles/openarm_control_msgs__rosidl_typesupport_cpp.dir/rosidl_typesupport_cpp/openarm_control_msgs/action/move_joint__type_support.cpp.o
+[ 48%] Linking CXX shared library libopenarm_control_msgs__rosidl_typesupport_c.so
+[ 48%] Built target openarm_control_msgs__rosidl_typesupport_c
+[ 51%] Building CXX object CMakeFiles/openarm_control_msgs__rosidl_typesupport_introspection_cpp.dir/rosidl_typesupport_introspection_cpp/openarm_control_msgs/action/detail/move_joint__type_support.cpp.o
+[ 53%] Building CXX object CMakeFiles/openarm_control_msgs__rosidl_typesupport_introspection_cpp.dir/rosidl_typesupport_introspection_cpp/openarm_control_msgs/action/detail/move_paired_tcp__type_support.cpp.o
+[ 55%] Building C object CMakeFiles/openarm_control_msgs__rosidl_typesupport_introspection_c.dir/rosidl_typesupport_introspection_c/openarm_control_msgs/action/detail/move_paired_tcp__type_support.c.o
+[ 57%] Building C object CMakeFiles/openarm_control_msgs__rosidl_typesupport_introspection_c.dir/rosidl_typesupport_introspection_c/openarm_control_msgs/action/detail/move_joint__type_support.c.o
+[ 60%] Linking C shared library libopenarm_control_msgs__rosidl_typesupport_introspection_c.so
+[ 60%] Built target openarm_control_msgs__rosidl_typesupport_introspection_c
+[ 64%] Building CXX object CMakeFiles/openarm_control_msgs__rosidl_typesupport_fastrtps_cpp.dir/rosidl_typesupport_fastrtps_cpp/openarm_control_msgs/action/detail/dds_fastrtps/move_joint__type_support.cpp.o
+[ 64%] Building CXX object CMakeFiles/openarm_control_msgs__rosidl_typesupport_fastrtps_cpp.dir/rosidl_typesupport_fastrtps_cpp/openarm_control_msgs/action/detail/dds_fastrtps/move_paired_tcp__type_support.cpp.o
+[ 68%] Building CXX object CMakeFiles/openarm_control_msgs__rosidl_typesupport_fastrtps_c.dir/rosidl_typesupport_fastrtps_c/openarm_control_msgs/action/detail/move_paired_tcp__type_support_c.cpp.o
+[ 68%] Building CXX object CMakeFiles/openarm_control_msgs__rosidl_typesupport_fastrtps_c.dir/rosidl_typesupport_fastrtps_c/openarm_control_msgs/action/detail/move_joint__type_support_c.cpp.o
+[ 71%] Linking CXX shared library libopenarm_control_msgs__rosidl_typesupport_cpp.so
+[ 71%] Built target openarm_control_msgs__rosidl_typesupport_cpp
+[ 73%] Linking CXX shared library libopenarm_control_msgs__rosidl_typesupport_introspection_cpp.so
+[ 73%] Built target openarm_control_msgs__rosidl_typesupport_introspection_cpp
+[ 75%] Linking CXX shared library libopenarm_control_msgs__rosidl_typesupport_fastrtps_c.so
+[ 75%] Built target openarm_control_msgs__rosidl_typesupport_fastrtps_c
+[ 77%] Linking CXX shared library libopenarm_control_msgs__rosidl_typesupport_fastrtps_cpp.so
+[ 77%] Built target openarm_control_msgs__rosidl_typesupport_fastrtps_cpp
+[ 77%] Built target openarm_control_msgs
+[ 80%] Generating Python code for ROS interfaces
+[ 80%] Built target openarm_control_msgs__py
+[ 82%] Building C object CMakeFiles/openarm_control_msgs__rosidl_generator_py.dir/rosidl_generator_py/openarm_control_msgs/action/_move_joint_s.c.o
+[ 84%] Building C object CMakeFiles/openarm_control_msgs__rosidl_generator_py.dir/rosidl_generator_py/openarm_control_msgs/action/_move_paired_tcp_s.c.o
+[ 84%] Built target ament_cmake_python_sync_openarm_control_msgs
+running egg_info
+creating openarm_control_msgs.egg-info
+writing openarm_control_msgs.egg-info/PKG-INFO
+writing dependency_links to openarm_control_msgs.egg-info/dependency_links.txt
+writing top-level names to openarm_control_msgs.egg-info/top_level.txt
+writing manifest file 'openarm_control_msgs.egg-info/SOURCES.txt'
+reading manifest file 'openarm_control_msgs.egg-info/SOURCES.txt'
+writing manifest file 'openarm_control_msgs.egg-info/SOURCES.txt'
+[ 84%] Built target ament_cmake_python_build_openarm_control_msgs_egg
+[ 86%] Linking C shared library libopenarm_control_msgs__rosidl_generator_py.so
+[ 86%] Built target openarm_control_msgs__rosidl_generator_py
+[ 91%] Building C object CMakeFiles/openarm_control_msgs_s__rosidl_typesupport_c.dir/rosidl_generator_py/openarm_control_msgs/_openarm_control_msgs_s.ep.rosidl_typesupport_c.c.o
+[ 91%] Building C object CMakeFiles/openarm_control_msgs_s__rosidl_typesupport_fastrtps_c.dir/rosidl_generator_py/openarm_control_msgs/_openarm_control_msgs_s.ep.rosidl_typesupport_fastrtps_c.c.o
+[ 93%] Building C object CMakeFiles/openarm_control_msgs_s__rosidl_typesupport_introspection_c.dir/rosidl_generator_py/openarm_control_msgs/_openarm_control_msgs_s.ep.rosidl_typesupport_introspection_c.c.o
+[ 97%] Linking C shared module rosidl_generator_py/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_c.so
+[ 97%] Linking C shared module rosidl_generator_py/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_introspection_c.so
+[100%] Linking C shared module rosidl_generator_py/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_fastrtps_c.so
+[100%] Built target openarm_control_msgs_s__rosidl_typesupport_c
+[100%] Built target openarm_control_msgs_s__rosidl_typesupport_fastrtps_c
+[100%] Built target openarm_control_msgs_s__rosidl_typesupport_introspection_c
+-- Install configuration: "Release"
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/ament_index/resource_index/rosidl_interfaces/openarm_control_msgs
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/action/MoveJoint.json
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/action/MovePairedTcp.json
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/msg
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/msg/rosidl_generator_c__visibility_control.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/move_joint.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/move_paired_tcp.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__type_support.c
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__type_support.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__description.c
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__functions.c
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__struct.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__type_support.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__functions.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__type_support.c
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__description.c
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__functions.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__struct.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__functions.c
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/environment/library_path.sh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/environment/library_path.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_generator_c.so
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_generator_c.so" to ""
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/msg
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/msg/rosidl_typesupport_fastrtps_c__visibility_control.h
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__rosidl_typesupport_fastrtps_c.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__rosidl_typesupport_fastrtps_c.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_fastrtps_c.so
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_fastrtps_c.so" to ""
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/msg
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/msg/rosidl_generator_cpp__visibility_control.hpp
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/move_joint.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/move_paired_tcp.hpp
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__struct.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__traits.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__type_support.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__struct.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__type_support.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__builder.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__traits.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__builder.hpp
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/msg
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/msg/rosidl_typesupport_fastrtps_cpp__visibility_control.h
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__rosidl_typesupport_fastrtps_cpp.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__rosidl_typesupport_fastrtps_cpp.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/dds_fastrtps
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_fastrtps_cpp.so
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_fastrtps_cpp.so" to ""
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/msg
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/msg/rosidl_typesupport_introspection_c__visibility_control.h
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__type_support.c
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__type_support.c
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__rosidl_typesupport_introspection_c.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__rosidl_typesupport_introspection_c.h
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_introspection_c.so
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_introspection_c.so" to ""
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_c.so
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_c.so" to ""
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__type_support.cpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_paired_tcp__rosidl_typesupport_introspection_cpp.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__type_support.cpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/include/openarm_control_msgs/openarm_control_msgs/action/detail/move_joint__rosidl_typesupport_introspection_cpp.hpp
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_introspection_cpp.so
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_introspection_cpp.so" to ""
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_cpp.so
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_typesupport_cpp.so" to ""
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/environment/pythonpath.sh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/environment/pythonpath.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_fastrtps_c.so
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_fastrtps_c.so" to ""
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_introspection_c.so
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_introspection_c.so" to ""
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_c.so
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_c.so" to ""
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_generator_py.so
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/libopenarm_control_msgs__rosidl_generator_py.so" to ""
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/ament_index/resource_index/rust_packages/openarm_control_msgs
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/rust
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/rust/Cargo.toml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/rust/build.rs
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/rust/src
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/rust/src/action.rs
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/rust/src/action
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/rust/src/action/rmw.rs
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/rust/src/lib.rs
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/action/MoveJoint.idl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/action/MovePairedTcp.idl
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/action/MoveJoint.action
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/action/MovePairedTcp.action
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/ament_index/resource_index/package_run_dependencies/openarm_control_msgs
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/ament_index/resource_index/parent_prefix_path/openarm_control_msgs
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/environment/ament_prefix_path.sh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/environment/ament_prefix_path.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/environment/path.sh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/environment/path.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/local_setup.bash
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/local_setup.fish
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/local_setup.sh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/local_setup.zsh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/local_setup.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/package.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/ament_index/resource_index/packages/openarm_control_msgs
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/export_openarm_control_msgs__rosidl_generator_cExport.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/export_openarm_control_msgs__rosidl_generator_cExport-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/export_openarm_control_msgs__rosidl_typesupport_fastrtps_cExport.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/export_openarm_control_msgs__rosidl_typesupport_fastrtps_cExport-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/export_openarm_control_msgs__rosidl_generator_cppExport.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/export_openarm_control_msgs__rosidl_typesupport_fastrtps_cppExport.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/export_openarm_control_msgs__rosidl_typesupport_fastrtps_cppExport-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/openarm_control_msgs__rosidl_typesupport_introspection_cExport.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/openarm_control_msgs__rosidl_typesupport_introspection_cExport-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/openarm_control_msgs__rosidl_typesupport_cExport.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/openarm_control_msgs__rosidl_typesupport_cExport-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/openarm_control_msgs__rosidl_typesupport_introspection_cppExport.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/openarm_control_msgs__rosidl_typesupport_introspection_cppExport-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/openarm_control_msgs__rosidl_typesupport_cppExport.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/openarm_control_msgs__rosidl_typesupport_cppExport-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/export_openarm_control_msgs__rosidl_generator_pyExport.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/export_openarm_control_msgs__rosidl_generator_pyExport-release.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs-0.1.0-py3.14.egg-info
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs-0.1.0-py3.14.egg-info/SOURCES.txt
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs-0.1.0-py3.14.egg-info/dependency_links.txt
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs-0.1.0-py3.14.egg-info/top_level.txt
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs-0.1.0-py3.14.egg-info/PKG-INFO
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_fastrtps_c.so
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_c.so
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/__init__.py
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/py.typed
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/_openarm_control_msgs_s.ep.rosidl_typesupport_introspection_c.c
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/_openarm_control_msgs_s.ep.rosidl_typesupport_fastrtps_c.c
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/openarm_control_msgs_s__rosidl_typesupport_introspection_c.so
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/action
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/action/__init__.py
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/action/_move_joint.py
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/action/_move_paired_tcp_s.c
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/action/_move_joint_s.c
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/action/_move_paired_tcp.py
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/_openarm_control_msgs_s.ep.rosidl_typesupport_c.c
+Listing '/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs'...
+Compiling '/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/__init__.py'...
+Listing '/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/action'...
+Compiling '/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/action/__init__.py'...
+Compiling '/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/action/_move_joint.py'...
+Compiling '/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/lib/python3.14/site-packages/openarm_control_msgs/action/_move_paired_tcp.py'...
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/rosidl_cmake-extras.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/ament_cmake_export_dependencies-extras.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/ament_cmake_export_include_directories-extras.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/ament_cmake_export_libraries-extras.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/ament_cmake_export_targets-extras.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/rosidl_cmake_export_typesupport_targets-extras.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/rosidl_cmake_export_typesupport_libraries-extras.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/rosidl_cmake_aggregate_target-extras.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/openarm_control_msgsConfig.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake/openarm_control_msgsConfig-version.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/package.xml
+--- stderr: openarm_control_msgs
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    OPENARM_IK_ROS_COVERAGE
+
+
+---
+Finished <<< openarm_control_msgs [6.51s]
+Starting >>> openarm_ik_ros
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found ament_cmake: 2.8.7 (/opt/ros/lyrical/share/ament_cmake/cmake)
+-- Found diagnostic_msgs: 5.9.2 (/opt/ros/lyrical/share/diagnostic_msgs/cmake)
+-- Found rosidl_generator_c: 5.2.1 (/opt/ros/lyrical/share/rosidl_generator_c/cmake)
+-- Found rosidl_generator_cpp: 5.2.1 (/opt/ros/lyrical/share/rosidl_generator_cpp/cmake)
+-- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+-- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+-- Found geometry_msgs: 5.9.2 (/opt/ros/lyrical/share/geometry_msgs/cmake)
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Found openarm_control_msgs: 0.1.0 (/var/tmp/openarmik-finger-viz-build/install/openarm_control_msgs/share/openarm_control_msgs/cmake)
+-- Found openarm_description: 1.0.0 (/var/tmp/openarmik-finger-viz-build/install/openarm_description/share/openarm_description/cmake)
+-- Found rclcpp: 32.0.0 (/opt/ros/lyrical/share/rclcpp/cmake)
+-- Found rmw_implementation_cmake: 7.10.1 (/opt/ros/lyrical/share/rmw_implementation_cmake/cmake)
+-- Found rmw_fastrtps_cpp: 9.4.8 (/opt/ros/lyrical/share/rmw_fastrtps_cpp/cmake)
+-- Using RMW implementation 'rmw_fastrtps_cpp' as default
+-- Found rclcpp_action: 32.0.0 (/opt/ros/lyrical/share/rclcpp_action/cmake)
+-- Found sensor_msgs: 5.9.2 (/opt/ros/lyrical/share/sensor_msgs/cmake)
+-- Found tf2: 0.45.7 (/opt/ros/lyrical/share/tf2/cmake)
+-- Found tf2_geometry_msgs: 0.45.7 (/opt/ros/lyrical/share/tf2_geometry_msgs/cmake)
+-- Found X11: /usr/include
+-- Looking for XOpenDisplay in /usr/lib/x86_64-linux-gnu/libX11.so;/usr/lib/x86_64-linux-gnu/libXext.so
+-- Looking for XOpenDisplay in /usr/lib/x86_64-linux-gnu/libX11.so;/usr/lib/x86_64-linux-gnu/libXext.so - found
+-- Looking for gethostbyname
+-- Looking for gethostbyname - found
+-- Looking for connect
+-- Looking for connect - found
+-- Looking for remove
+-- Looking for remove - found
+-- Looking for shmat
+-- Looking for shmat - found
+-- Looking for IceConnectionNumber in ICE
+-- Looking for IceConnectionNumber in ICE - found
+-- Found ament_cmake_gtest: 2.8.7 (/opt/ros/lyrical/share/ament_cmake_gtest/cmake)
+-- Found Python3: /usr/bin/python3 (found version "3.14.4") found components: Interpreter
+-- Found GTest: /usr/lib/x86_64-linux-gnu/cmake/GTest/GTestConfig.cmake (found version "1.17.0")
+-- Configuring done (1.6s)
+-- Generating done (0.0s)
+-- Build files have been written to: /var/tmp/openarmik-finger-viz-build/build/openarm_ik_ros
+[ 18%] Deriving the Stage-A visualization-only URDF
+[ 18%] Building CXX object CMakeFiles/openarm_virtual_control_session.dir/src/virtual_control_session.cpp.o
+[ 27%] Building CXX object CMakeFiles/close_rviz_window.dir/src/close_rviz_window.cpp.o
+[ 36%] Building CXX object CMakeFiles/openarm_control_cli.dir/src/openarm_control_cli.cpp.o
+[ 36%] Built target openarm_stage_a_visualization_urdf
+[ 45%] Linking CXX executable close_rviz_window
+[ 45%] Built target close_rviz_window
+[ 54%] Linking CXX static library libopenarm_virtual_control_session.a
+[ 54%] Built target openarm_virtual_control_session
+[ 63%] Building CXX object CMakeFiles/test_virtual_control_session.dir/test/test_virtual_control_session.cpp.o
+[ 72%] Building CXX object CMakeFiles/openarm_ik_ros_node.dir/src/openarm_ik_ros_node.cpp.o
+[ 81%] Linking CXX executable test_virtual_control_session
+[ 81%] Built target test_virtual_control_session
+[ 90%] Linking CXX executable openarm_control_cli
+[ 90%] Built target openarm_control_cli
+[100%] Linking CXX executable openarm_ik_ros_node
+[100%] Built target openarm_ik_ros_node
+-- Install configuration: "Release"
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_ik_ros_node
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_ik_ros_node" to ""
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_control_cli
+-- Set non-toolchain portion of runtime path of "/var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_control_cli" to ""
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/lib/openarm_ik_ros/close_rviz_window
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/launch
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/launch/openarm_ik_rviz.launch.py
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/rviz
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/rviz/openarm_ik.rviz
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/package.xml
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/README.md
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/urdf/openarm_v10_bimanual.urdf
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/urdf/openarm_v10_bimanual_stage_a_visualization.urdf
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/ament_index/resource_index/package_run_dependencies/openarm_ik_ros
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/ament_index/resource_index/parent_prefix_path/openarm_ik_ros
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/environment/ament_prefix_path.sh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/environment/ament_prefix_path.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/environment/path.sh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/environment/path.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/local_setup.bash
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/local_setup.fish
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/local_setup.sh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/local_setup.zsh
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/local_setup.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/package.dsv
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/ament_index/resource_index/packages/openarm_ik_ros
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/cmake/openarm_ik_rosConfig.cmake
+-- Installing: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/cmake/openarm_ik_rosConfig-version.cmake
+-- Up-to-date: /var/tmp/openarmik-finger-viz-build/install/openarm_ik_ros/share/openarm_ik_ros/package.xml
+Finished <<< openarm_ik_ros [17.1s]
+
+Summary: 3 packages finished [23.8s]
+  2 packages had stderr output: openarm_control_msgs openarm_description
+Test project /var/tmp/openarmik-finger-viz-build/build/openarm_ik_ros
+  Test  #1: test_virtual_control_session
+  Test  #2: test_no_can_linkage
+  Test  #3: test_generated_urdf
+  Test  #4: test_visualization_urdf
+  Test  #5: test_visualization_urdf_parser
+  Test  #6: test_invalid_expiry_parameter
+  Test  #7: test_ros_contract
+  Test  #8: test_active_sigint
+  Test  #9: test_close_rviz_window_help
+  Test #10: test_close_rviz_window_invalid_pid
+  Test #11: test_close_rviz_window_invalid_timeout
+
+Total Tests: 11
+OpenArm build complete. Source /var/tmp/openarmik-finger-viz-build/install/setup.bash

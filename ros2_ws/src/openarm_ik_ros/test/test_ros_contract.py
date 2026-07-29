@@ -10,11 +10,18 @@ from diagnostic_msgs.msg import DiagnosticArray
 from geometry_msgs.msg import Pose, PoseArray
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
+from tf2_ros import Buffer, TransformListener
 
 
 EXPECTED_NAMES = [
     *(f"openarm_left_joint{index}" for index in range(1, 8)),
     *(f"openarm_right_joint{index}" for index in range(1, 8)),
+]
+EXPECTED_WORLD_CHILDREN = [
+    "openarm_body_link0",
+    *(f"openarm_{side}_link{index}" for side in ("left", "right") for index in range(8)),
+    *(f"openarm_{side}_{suffix}" for side in ("left", "right")
+      for suffix in ("hand", "hand_tcp", "left_finger", "right_finger")),
 ]
 
 
@@ -33,7 +40,7 @@ def fields(message):
 
 def main():
     environment = os.environ.copy()
-    environment["ROS_DOMAIN_ID"] = str(100 + os.getpid() % 100)
+    environment.setdefault("ROS_DOMAIN_ID", str(100 + os.getpid() % 100))
     launch = subprocess.Popen(
         ["ros2", "launch", "openarm_ik_ros", "openarm_ik_rviz.launch.py", "rviz:=false"],
         stdout=subprocess.PIPE,
@@ -50,9 +57,13 @@ def main():
     qos = QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE)
     node.create_subscription(JointState, "/joint_states", states.append, qos)
     node.create_subscription(DiagnosticArray, "/openarm_ik/diagnostics", diagnostics.append, qos)
+    tf_listener = None
     try:
+        tf_buffer = Buffer(node=node)
+        tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
         wait_for(node, lambda: len(states) >= 3 and diagnostics)
         assert states[-1].name == EXPECTED_NAMES
+        assert not any("finger" in name for name in states[-1].name)
         assert len(states[-1].position) == 14
         assert len(states[-1].velocity) == 14
         assert len(states[-1].effort) == 14
@@ -60,6 +71,12 @@ def main():
         assert len(node.get_publishers_info_by_topic("/joint_states")) == 1
         assert len(node.get_publishers_info_by_topic("/tf")) == 1
         assert len(node.get_publishers_info_by_topic("/tf_static")) == 1
+        wait_for(
+            node,
+            lambda: all(tf_buffer.can_transform("world", frame, rclpy.time.Time())
+                        for frame in EXPECTED_WORLD_CHILDREN),
+        )
+        assert len(EXPECTED_WORLD_CHILDREN) == 25
         report = fields(diagnostics[-1])
         level = diagnostics[-1].status[0].level
         if isinstance(level, bytes):
@@ -105,7 +122,9 @@ def main():
             timeout=5.0,
             check=False,
         )
-        assert invalid_frame.returncode == 7
+        assert invalid_frame.returncode == 7, (
+            invalid_frame.returncode, invalid_frame.stdout, invalid_frame.stderr
+        )
         assert "transform_unavailable" in invalid_frame.stderr
 
         legacy = PoseArray()
@@ -186,6 +205,8 @@ def main():
         assert int(fields(diagnostics[-1])["left_feedback_seq"]) > before_sequence
         assert abs(states[-1].position[3] - 0.2) < 5e-4
     finally:
+        if tf_listener is not None:
+            del tf_listener
         node.destroy_node()
         rclpy.shutdown()
         started = time.monotonic()
