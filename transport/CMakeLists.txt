@@ -5,6 +5,8 @@ option(OA_TRANSPORT_ENABLE_SANITIZERS
        "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(OA_TRANSPORT_ENABLE_THREAD_SANITIZER
        "Enable ThreadSanitizer" OFF)
+option(OA_TRANSPORT_BUILD_VCAN_SMOKE
+       "Build and register the vcan0 smoke test" ON)
 
 if(OA_TRANSPORT_ENABLE_SANITIZERS AND OA_TRANSPORT_ENABLE_THREAD_SANITIZER)
     message(FATAL_ERROR "ASan/UBSan and TSan cannot be enabled together")
@@ -111,12 +113,14 @@ if(BUILD_TESTING)
     add_test(NAME openarm_transport_c11_consumer
              COMMAND openarm_transport_c11_consumer)
 
-    add_executable(openarm_transport_vcan_smoke tests/vcan_smoke.cpp)
-    target_link_libraries(openarm_transport_vcan_smoke PRIVATE openarm_transport)
-    oa_transport_strict_cxx(openarm_transport_vcan_smoke)
-    oa_transport_sanitizers(openarm_transport_vcan_smoke)
-    add_test(NAME openarm_transport_vcan_smoke
-             COMMAND openarm_transport_vcan_smoke)
+    if(OA_TRANSPORT_BUILD_VCAN_SMOKE)
+        add_executable(openarm_transport_vcan_smoke tests/vcan_smoke.cpp)
+        target_link_libraries(openarm_transport_vcan_smoke PRIVATE openarm_transport)
+        oa_transport_strict_cxx(openarm_transport_vcan_smoke)
+        oa_transport_sanitizers(openarm_transport_vcan_smoke)
+        add_test(NAME openarm_transport_vcan_smoke
+                 COMMAND openarm_transport_vcan_smoke)
+    endif()
 
     if(NOT OA_TRANSPORT_ENABLE_SANITIZERS AND
        NOT OA_TRANSPORT_ENABLE_THREAD_SANITIZER)

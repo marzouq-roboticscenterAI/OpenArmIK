@@ -2,7 +2,7 @@
 set -eo pipefail
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-OPENARM_IK_ROS_COVERAGE=1 "$root_dir/scripts/build.sh"
+OPENARM_IK_ROS_COVERAGE=1 "$root_dir/scripts/build.sh" --tests
 source /opt/ros/lyrical/setup.bash
 source "$root_dir/ros2_ws/install/setup.bash"
 set -u

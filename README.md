@@ -15,6 +15,10 @@ The repository also contains:
 - [can/README.md](can/README.md): the C11 DaMiao codec, commissioned-manifest
   validator, fresh-disabled probe, fake transport, and read-only SocketCAN
   interface discovery API.
+- [transport/README.md](transport/README.md): the query-only transport library.
+- [commission/README.md](commission/README.md): manual and supervised
+  commissioning building blocks.
+- [control/README.md](control/README.md): the virtual controller core.
 
 Automatic CAN discovery cannot establish physical joint identity, side, sign,
 zero, gearing, firmware, or a safe motor mapping. Consequently this revision
@@ -29,6 +33,22 @@ watchdog are installed.
 ./scripts/build.sh
 ./scripts/launch_rviz.sh
 ```
+
+The build command performs a clean Release build in dependency order (CAN,
+model, commission, transport, control, then ROS), installs everything under
+`ros2_ws/install`, and never uses sudo or configures an interface. To compile
+and run every registered hardware-free native CTest while verifying that all
+eight ROS tests are freshly registered, use:
+
+```bash
+./scripts/build.sh --tests
+```
+
+The transport `vcan0` smoke test is not registered in this hardware-free
+profile. Standalone transport builds retain that test by default. Use
+`--incremental` only when deliberately reusing prior output. A disposable build
+can be isolated with `--output-root /tmp/openarmik-build`; its setup file is
+then `/tmp/openarmik-build/install/setup.bash`.
 
 On this Wayland hybrid-GPU laptop the launcher uses Mesa software OpenGL with
 the XWayland/GLX backend required by this RViz/Ogre build. Hardware GLX remains
@@ -57,7 +77,7 @@ Results are structured `diagnostic_msgs/DiagnosticArray` messages on `/openarm_i
 
 RViz may report four unrealistic finger-inertia errors from the pinned canonical generated URDF. They are inherited model data; meshes and TF still load, and this adapter neither edits nor reinterprets that URDF.
 
-`model/` is installed as an ordinary CMake package (`openarm_model::openarm_model`); the ROS package finds that export instead of compiling monorepo-relative sources. `scripts/install_ros_dependencies.sh` is review-only unless explicitly passed `--apply`; it is never run automatically. After `scripts/build.sh`, test only the authored adapter with:
+`model/` is installed as an ordinary CMake package (`openarm_model::openarm_model`); the ROS package finds that export instead of compiling monorepo-relative sources. `scripts/install_ros_dependencies.sh` is review-only unless explicitly passed `--apply`; it is never run automatically. `./scripts/build.sh --tests` is the preferred hardware-free native test and ROS registration path. To explicitly execute the already-built authored adapter tests (which start ROS middleware):
 
 ```bash
 source /opt/ros/lyrical/setup.bash

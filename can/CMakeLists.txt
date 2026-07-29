@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(openarm_can_diagnostics VERSION 1.0.0 LANGUAGES C)
 
+include(GNUInstallDirs)
+
 option(OA_CAN_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 set(CMAKE_C_EXTENSIONS OFF)
 
@@ -8,7 +10,9 @@ add_library(openarm_can STATIC
     src/openarm_can.c
     src/openarm_can_linux.c
 )
-target_include_directories(openarm_can PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_include_directories(openarm_can PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(openarm_can PUBLIC c_std_11)
 set_target_properties(openarm_can PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
 
@@ -28,6 +32,12 @@ elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         target_link_options(openarm_can PRIVATE -fsanitize=address,undefined)
     endif()
 endif()
+
+install(TARGETS openarm_can
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES include/openarm_can.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 include(CTest)
 if(BUILD_TESTING)
