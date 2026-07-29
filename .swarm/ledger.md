@@ -52,6 +52,10 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
 - 2026-07-28: ROS reports 10/10 tests passing. Authored line coverage is 97.87%
   (`paired_transaction.cpp`) and 99.13% (`openarm_ik_ros_node.cpp`); every
   instrumented transaction branch executed.
+- 2026-07-28: Core C coverage is 99.65% of model lines and 96.88% of portable
+  CAN codec/probe lines. The Linux netlink unit is 60.73% because deterministic
+  tests exercise its parser but deliberately do not mock kernel socket failures;
+  a separate live read-only enumeration succeeded and found zero CAN interfaces.
 - 2026-07-28: Desktop RViz loaded the bimanual model with NVIDIA OpenGL 4.6.
   A paired target `(0.20, 0.30, 0.85)` / `(0.20, -0.30, 0.85)` committed with
   approximately `6.06e-8 m` residual on each TCP, and TF matched the target.
