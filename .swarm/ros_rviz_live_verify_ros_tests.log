@@ -1,0 +1,26 @@
+Test project /home/signalprocessing-dev/OpenArmIK/ros2_ws/build/openarm_ik_ros
+    Start 1: test_virtual_control_session
+1/9 Test #1: test_virtual_control_session .............   Passed   24.67 sec
+    Start 2: test_no_can_linkage
+2/9 Test #2: test_no_can_linkage ......................   Passed    1.18 sec
+    Start 3: test_generated_urdf
+3/9 Test #3: test_generated_urdf ......................   Passed    0.03 sec
+    Start 4: test_invalid_expiry_parameter
+4/9 Test #4: test_invalid_expiry_parameter ............   Passed    1.43 sec
+    Start 5: test_ros_contract
+5/9 Test #5: test_ros_contract ........................   Passed   31.57 sec
+    Start 6: test_active_sigint
+6/9 Test #6: test_active_sigint .......................   Passed   11.06 sec
+    Start 7: test_close_rviz_window_help
+7/9 Test #7: test_close_rviz_window_help ..............   Passed    0.00 sec
+    Start 8: test_close_rviz_window_invalid_pid
+8/9 Test #8: test_close_rviz_window_invalid_pid .......   Passed    0.00 sec
+    Start 9: test_close_rviz_window_invalid_timeout
+9/9 Test #9: test_close_rviz_window_invalid_timeout ...   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 9
+
+Label Time Summary:
+gtest    =  24.67 sec*proc (1 test)
+
+Total Test time (real) =  69.96 sec

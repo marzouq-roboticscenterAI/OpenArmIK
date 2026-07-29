@@ -1,0 +1,124 @@
+header:
+  stamp:
+    sec: 1785365965
+    nanosec: 765642520
+  frame_id: ''
+status:
+- level: "\x01"
+  name: openarm_ik_ros/virtual_control
+  message: virtual backend; collision unchecked
+  hardware_id: openarm_v10_virtual
+  values:
+  - key: backend
+    value: virtual
+  - key: capability_bits
+    value: '7'
+  - key: virtual_execution_enabled
+    value: 'true'
+  - key: physical_motion_authorized
+    value: 'false'
+  - key: collision_policy
+    value: virtual_unchecked
+  - key: collision_checked
+    value: 'false'
+  - key: orientation_constrained
+    value: 'false'
+  - key: state_source
+    value: oa_snapshot_encoder_feedback
+  - key: adapter_state
+    value: executing
+  - key: lifecycle
+    value: '5'
+  - key: executing
+    value: 'true'
+  - key: active_owner
+    value: 11112759323685b48b868402b6459397
+  - key: command_id
+    value: '1'
+  - key: left_plan_seed_feedback_seq
+    value: '13899'
+  - key: right_plan_seed_feedback_seq
+    value: '13899'
+  - key: plan_duration_ns
+    value: '1338716917'
+  - key: left_terminal_feedback_seq
+    value: '0'
+  - key: right_terminal_feedback_seq
+    value: '0'
+  - key: last_event
+    value: '3'
+  - key: last_cause
+    value: '0'
+  - key: manifest_revision
+    value: '41'
+  - key: model_revision
+    value: '7'
+  - key: collision_scene_revision
+    value: '1'
+  - key: verify_epoch
+    value: '1'
+  - key: left_expected_mask
+    value: '127'
+  - key: left_fresh_mask
+    value: '127'
+  - key: left_fault_mask
+    value: '0'
+  - key: right_expected_mask
+    value: '127'
+  - key: right_fresh_mask
+    value: '127'
+  - key: right_fault_mask
+    value: '0'
+  - key: left_feedback_seq
+    value: '13901'
+  - key: right_feedback_seq
+    value: '13901'
+  - key: left_feedback_t_ns
+    value: '69500261941'
+  - key: right_feedback_t_ns
+    value: '69500261941'
+  - key: left_feedback_age_ns
+    value: '0'
+  - key: right_feedback_age_ns
+    value: '0'
+  - key: pair_skew_ns
+    value: '0'
+  - key: last_action
+    value: move_joint
+  - key: last_goal_id
+    value: 11112759323685b48b868402b6459397
+  - key: request_stamp_ns
+    value: '1785365965651270513'
+  - key: committed
+    value: 'false'
+  - key: reason
+    value: accepted
+  - key: outcome
+    value: pending
+  - key: result_control_status
+    value: '0'
+  - key: result_command_id
+    value: '0'
+  - key: result_left_plan_seed_feedback_seq
+    value: '0'
+  - key: result_right_plan_seed_feedback_seq
+    value: '0'
+  - key: result_plan_duration_ns
+    value: '0'
+  - key: result_left_terminal_feedback_seq
+    value: '0'
+  - key: result_right_terminal_feedback_seq
+    value: '0'
+  - key: result_lifecycle
+    value: '0'
+  - key: result_event
+    value: '0'
+  - key: result_cause
+    value: '0'
+  - key: result_collision_checked
+    value: 'false'
+  - key: legacy_topic_deprecated
+    value: 'true'
+  - key: legacy_mapping
+    value: pose[0]=left,pose[1]=right
+---
