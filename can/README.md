@@ -91,3 +91,6 @@ cmake -S can -B build-can-sanitize -DCMAKE_BUILD_TYPE=Debug -DOA_CAN_ENABLE_SANI
 cmake --build build-can-sanitize --parallel
 ctest --test-dir build-can-sanitize --output-on-failure
 ```
+
+Installation exports the versioned `OpenArmCan` CMake package and its
+`OpenArm::Can` target.

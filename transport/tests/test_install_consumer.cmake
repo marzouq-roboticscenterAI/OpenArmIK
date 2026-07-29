@@ -13,7 +13,7 @@ execute_process(
     COMMAND "${CMAKE_COMMAND}"
         -S "${OA_SOURCE_DIR}/tests/install_consumer"
         -B "${consumer_build}"
-        "-DCMAKE_PREFIX_PATH=${prefix}"
+        "-DCMAKE_PREFIX_PATH=${prefix};${OA_CAN_PREFIX}"
     RESULT_VARIABLE configure_result)
 if(NOT configure_result EQUAL 0)
     message(FATAL_ERROR "installed consumer configure failed: ${configure_result}")

@@ -6,6 +6,10 @@ write path. The Stage-A backend is a deterministic DaMiao encoder simulator
 with an independent bounded-velocity/acceleration plant. Commands update only
 the plant reference; the lagging plant emits quantized eight-byte DaMiao
 feedback frames, and only decoded frames update measured state.
+`oa_sim_fault.feedback_delay_ns` delays complete immutable quantized feedback
+generations, including their values, capture timestamps, and sequence delivery.
+The allocation-free delay ring is bounded and fails closed on arithmetic or
+capacity overflow.
 The physical backend is deliberately present only as a fail-closed gate and
 returns `OA_CONTROL_EUNSUPPORTED` before verification or motion.
 
@@ -69,18 +73,31 @@ documented defaults exercised by the frozen-header compatibility executable.
 
 While armed, `advance` must be called at the configured positive cycle. Missed
 cycles latch timeout, equal timestamps generate neither feedback nor dwell, and
-completion requires three full cycle intervals of measured in-tolerance state.
+completion requires three full cycle intervals backed by distinct complete
+delivered generations of measured in-tolerance state.
 The execution request's controlled and disable stop policies produce distinct
 simulator stop states while physical execution remains hard-gated. Only
 complete, fresh, coherent, fault-free producer/cycle watchdog faults materialize
 a measured zero-velocity enabled hold for controlled-stop requests. Missing or
 skewed feedback, partial sends, and motor faults take priority and instead
 materialize a zero-velocity two-arm disable fallback.
+Explicit stops, disarm, E-stop, event-overflow faults, and watchdog or transport
+faults retire delayed history before atomically publishing their measured hold
+or disable generation. Reset-to-closed retires pending history without creating
+a measurement when verification has never completed.
+The event ring is fail-closed: a full-ring publication replaces the oldest event
+with `OA_EVENT_FAULTED`, disables the virtual plant coherently, and makes the
+triggering controller operation return `OA_EBUSY` without continuing execution.
 
 Build and test without Python:
 
 ```sh
-cmake -S control -B control/build -DCMAKE_BUILD_TYPE=Release
+cmake -S model -B model/build -DCMAKE_BUILD_TYPE=Release \
+  -DOA_MODEL_BUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX="$PWD/build/native-prefix"
+cmake --build model/build --parallel
+cmake --install model/build
+cmake -S control -B control/build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="$PWD/build/native-prefix"
 cmake --build control/build --parallel
 ctest --test-dir control/build --output-on-failure
 ```
@@ -89,7 +106,8 @@ Sanitizer verification:
 
 ```sh
 cmake -S control -B control/build-sanitize -DCMAKE_BUILD_TYPE=Debug \
-  -DOA_CONTROL_SANITIZERS=ON
+  -DOA_CONTROL_SANITIZERS=ON \
+  -DCMAKE_PREFIX_PATH="$PWD/build/native-prefix"
 cmake --build control/build-sanitize --parallel
 ctest --test-dir control/build-sanitize --output-on-failure
 ```

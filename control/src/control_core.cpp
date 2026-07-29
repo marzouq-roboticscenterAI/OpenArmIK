@@ -164,11 +164,9 @@ void DamiaoMotorSimulator::command(const double q_model, const double dq_model) 
     command_raw_dq_ = dq_model / config_.q_scale;
 }
 
-bool DamiaoMotorSimulator::step(const double dt_s, const std::uint64_t feedback_ns,
-                                const bool frozen, const bool dropped) noexcept {
-    if (dropped) {
-        return false;
-    }
+FeedbackFrame DamiaoMotorSimulator::capture(const double dt_s,
+                                            const std::uint64_t capture_ns,
+                                            const bool frozen) noexcept {
     if (!frozen) {
         const double max_velocity = config_.max_velocity_rad_s;
         const double max_acceleration = config_.max_acceleration_rad_s2;
@@ -198,36 +196,38 @@ bool DamiaoMotorSimulator::step(const double dt_s, const std::uint64_t feedback_
     const std::uint32_t dq_field = encode_field(plant_raw_dq_, config_.vmax_rad_s, 4095U);
     const std::uint32_t tau_field = encode_field(0.0, config_.tmax_nm, 4095U);
     const std::uint8_t status = fault_status_ != 0U ? fault_status_ : (enabled_ ? 1U : 0U);
-    feedback_frame_.data[0] = static_cast<std::uint8_t>(
+    FeedbackFrame frame{};
+    frame.data[0] = static_cast<std::uint8_t>(
         (static_cast<std::uint32_t>(status) << 4U) | (config_.embedded_motor_id & 0x0fU));
-    feedback_frame_.data[1] = static_cast<std::uint8_t>((q_field >> 8U) & 0xffU);
-    feedback_frame_.data[2] = static_cast<std::uint8_t>(q_field & 0xffU);
-    feedback_frame_.data[3] = static_cast<std::uint8_t>((dq_field >> 4U) & 0xffU);
-    feedback_frame_.data[4] = static_cast<std::uint8_t>(((dq_field & 0x0fU) << 4U) |
-                                                        ((tau_field >> 8U) & 0x0fU));
-    feedback_frame_.data[5] = static_cast<std::uint8_t>(tau_field & 0xffU);
-    feedback_frame_.data[6] = 25U;
-    feedback_frame_.data[7] = 25U;
-    feedback_frame_.t_ns = feedback_ns;
+    frame.data[1] = static_cast<std::uint8_t>((q_field >> 8U) & 0xffU);
+    frame.data[2] = static_cast<std::uint8_t>(q_field & 0xffU);
+    frame.data[3] = static_cast<std::uint8_t>((dq_field >> 4U) & 0xffU);
+    frame.data[4] = static_cast<std::uint8_t>(((dq_field & 0x0fU) << 4U) |
+                                             ((tau_field >> 8U) & 0x0fU));
+    frame.data[5] = static_cast<std::uint8_t>(tau_field & 0xffU);
+    frame.data[6] = 25U;
+    frame.data[7] = 25U;
+    frame.t_ns = capture_ns;
+    return frame;
+}
 
-    measured_.status = static_cast<std::uint8_t>(feedback_frame_.data[0] >> 4U);
+void DamiaoMotorSimulator::publish(const FeedbackFrame &frame) noexcept {
+    measured_.status = static_cast<std::uint8_t>(frame.data[0] >> 4U);
     const std::uint32_t decoded_q =
-        (static_cast<std::uint32_t>(feedback_frame_.data[1]) << 8U) |
-        feedback_frame_.data[2];
+        (static_cast<std::uint32_t>(frame.data[1]) << 8U) | frame.data[2];
     const std::uint32_t decoded_dq =
-        (static_cast<std::uint32_t>(feedback_frame_.data[3]) << 4U) |
-        (static_cast<std::uint32_t>(feedback_frame_.data[4]) >> 4U);
+        (static_cast<std::uint32_t>(frame.data[3]) << 4U) |
+        (static_cast<std::uint32_t>(frame.data[4]) >> 4U);
     const std::uint32_t decoded_tau =
-        ((static_cast<std::uint32_t>(feedback_frame_.data[4]) & 0x0fU) << 8U) |
-        feedback_frame_.data[5];
+        ((static_cast<std::uint32_t>(frame.data[4]) & 0x0fU) << 8U) |
+        frame.data[5];
     measured_.raw_q = decode_field(decoded_q, config_.pmax_rad, 65535U);
     measured_.raw_dq = decode_field(decoded_dq, config_.vmax_rad_s, 4095U);
     measured_.raw_tau = decode_field(decoded_tau, config_.tmax_nm, 4095U);
-    measured_.mos_c = feedback_frame_.data[6];
-    measured_.coil_c = feedback_frame_.data[7];
-    measured_.t_ns = feedback_frame_.t_ns;
+    measured_.mos_c = frame.data[6];
+    measured_.coil_c = frame.data[7];
+    measured_.t_ns = frame.t_ns;
     measured_.valid = true;
-    return true;
 }
 
 void DamiaoMotorSimulator::force_state(const double q_model, const double dq_model,
@@ -236,7 +236,7 @@ void DamiaoMotorSimulator::force_state(const double q_model, const double dq_mod
     plant_raw_dq_ = dq_model / config_.q_scale;
     command_raw_q_ = plant_raw_q_;
     command_raw_dq_ = plant_raw_dq_;
-    (void)step(0.0, feedback_ns, true, false);
+    publish(capture(0.0, feedback_ns, true));
 }
 
 double DamiaoMotorSimulator::mapped_q() const noexcept {
@@ -292,27 +292,77 @@ bool ArmRuntime::command_and_step(const JointVector &q_reference,
         generation_mask_ = 0U;
         return false;
     }
-    generation_mask_ = 0U;
-    const std::uint64_t feedback_ns =
-        feedback_delay_ns_ > now_ns ? 0U : now_ns - feedback_delay_ns_;
+    if (feedback_delay_ns_ > std::numeric_limits<std::uint64_t>::max() - now_ns) {
+        return false;
+    }
+    FeedbackGeneration generation{};
+    generation.capture_ns = now_ns;
+    generation.ready_ns = now_ns + feedback_delay_ns_;
+    generation.member_mask = kAllJoints & ~drop_mask_;
     for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
         motor_[joint].command(q_reference[joint], dq_reference[joint]);
-        if (motor_[joint].step(dt_s, feedback_ns,
-                               (freeze_mask_ & (1U << joint)) != 0U,
-                               (drop_mask_ & (1U << joint)) != 0U)) {
-            generation_mask_ |= 1U << joint;
-        }
+        generation.frame[joint] = motor_[joint].capture(
+            dt_s, now_ns, (freeze_mask_ & (1U << joint)) != 0U);
     }
-    generation_timestamp_ = feedback_ns;
-    if (generation_mask_ == kAllJoints) {
-        ++feedback_seq_;
+    if (!enqueue(std::move(generation)) || !publish_due(now_ns)) {
+        return false;
     }
     transport_.record_complete_cycle();
     return true;
 }
 
+bool ArmRuntime::enqueue(FeedbackGeneration generation) noexcept {
+    if (feedback_queue_count_ == feedback_queue_.size()) {
+        return false;
+    }
+    const std::size_t tail =
+        (feedback_queue_head_ + feedback_queue_count_) % feedback_queue_.size();
+    feedback_queue_[tail] = std::move(generation);
+    ++feedback_queue_count_;
+    return true;
+}
+
+bool ArmRuntime::publish_due(const std::uint64_t now_ns) noexcept {
+    while (feedback_queue_count_ != 0U) {
+        const FeedbackGeneration &generation = feedback_queue_[feedback_queue_head_];
+        if (generation.ready_ns > now_ns) {
+            break;
+        }
+        const std::uint32_t member_mask = generation.member_mask;
+        if (member_mask == kAllJoints) {
+            if (feedback_seq_ == std::numeric_limits<std::uint64_t>::max()) {
+                return false;
+            }
+            for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
+                motor_[joint].publish(generation.frame[joint]);
+            }
+            generation_mask_ = kAllJoints;
+            generation_timestamp_ = generation.capture_ns;
+            ++feedback_seq_;
+        } else {
+            generation_mask_ = member_mask;
+        }
+        feedback_queue_head_ = (feedback_queue_head_ + 1U) % feedback_queue_.size();
+        --feedback_queue_count_;
+        if (member_mask != kAllJoints) {
+            break;
+        }
+    }
+    return true;
+}
+
+void ArmRuntime::clear_queue() noexcept {
+    feedback_queue_head_ = 0U;
+    feedback_queue_count_ = 0U;
+}
+
+void ArmRuntime::retire_pending_feedback() noexcept {
+    clear_queue();
+}
+
 void ArmRuntime::force_state(const JointVector &q, const JointVector &dq,
                              const std::uint64_t now_ns) noexcept {
+    clear_queue();
     generation_mask_ = kAllJoints;
     generation_timestamp_ = now_ns;
     for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
@@ -325,9 +375,7 @@ void ArmRuntime::materialize_stop(const bool enabled_hold,
                                   const std::uint64_t now_ns) noexcept {
     const JointVector held_q = measured_q();
     set_enabled(enabled_hold);
-    for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
-        motor_[joint].force_state(held_q[joint], 0.0, now_ns);
-    }
+    force_state(held_q, JointVector{}, now_ns);
 }
 
 oa_arm_snapshot ArmRuntime::snapshot(const std::uint64_t now_ns,
@@ -449,8 +497,7 @@ oa_control_status Controller::open_and_verify(oa_verify_report &out) noexcept {
     out.verify_epoch = verify_epoch_;
     out.verified_mask = 0x3U;
     out.failure_mask = 0U;
-    publish(OA_EVENT_VERIFIED, OA_CONTROL_OK, 0U);
-    return OA_CONTROL_OK;
+    return publish(OA_EVENT_VERIFIED, OA_CONTROL_OK, 0U) ? OA_CONTROL_OK : OA_CONTROL_EBUSY;
 }
 
 oa_control_status Controller::snapshot(oa_snapshot &out) noexcept {
@@ -504,8 +551,7 @@ oa_control_status Controller::challenge(oa_arm_challenge &out) noexcept {
     }
     if (!reset_challenge && (!fresh() || !healthy() || !disabled())) {
         if (!healthy()) {
-            latch_fault(OA_CONTROL_EFAULT);
-            return OA_CONTROL_EFAULT;
+            return latch_fault(OA_CONTROL_EFAULT);
         }
         return OA_CONTROL_ESTALE;
     }
@@ -531,8 +577,7 @@ oa_control_status Controller::arm(const oa_arm_challenge &challenge_record) noex
         return OA_CONTROL_ESTALE;
     }
     if (!healthy() || !disabled() || !deadman_active_) {
-        latch_fault(!deadman_active_ ? OA_CONTROL_EESTOP : OA_CONTROL_EFAULT);
-        return !deadman_active_ ? OA_CONTROL_EESTOP : OA_CONTROL_EFAULT;
+        return latch_fault(!deadman_active_ ? OA_CONTROL_EESTOP : OA_CONTROL_EFAULT);
     }
     lifecycle_ = OA_LIFECYCLE_ARMING;
     for (auto &runtime : arm_) {
@@ -541,8 +586,7 @@ oa_control_status Controller::arm(const oa_arm_challenge &challenge_record) noex
     }
     outstanding_nonce_ = 0U;
     lifecycle_ = OA_LIFECYCLE_ARMED_IDLE;
-    publish(OA_EVENT_ARMED, OA_CONTROL_OK, 0U);
-    return OA_CONTROL_OK;
+    return publish(OA_EVENT_ARMED, OA_CONTROL_OK, 0U) ? OA_CONTROL_OK : OA_CONTROL_EBUSY;
 }
 
 bool Controller::collision_allowed() const noexcept {
@@ -559,8 +603,7 @@ oa_control_status Controller::plan_joint(const oa_joint_move &request,
         return OA_CONTROL_ESTALE;
     }
     if (!healthy()) {
-        latch_fault(OA_CONTROL_EFAULT);
-        return OA_CONTROL_EFAULT;
+        return latch_fault(OA_CONTROL_EFAULT);
     }
     if (!collision_allowed()) {
         return OA_CONTROL_ECOLLISION;
@@ -622,8 +665,7 @@ oa_control_status Controller::plan_paired(const oa_paired_tcp_move &request,
         return OA_CONTROL_ESTALE;
     }
     if (!healthy()) {
-        latch_fault(OA_CONTROL_EFAULT);
-        return OA_CONTROL_EFAULT;
+        return latch_fault(OA_CONTROL_EFAULT);
     }
     if (!collision_allowed()) {
         return OA_CONTROL_ECOLLISION;
@@ -765,8 +807,7 @@ oa_control_status Controller::execute(const MotionPlan &plan, const oa_execute_r
         return OA_CONTROL_ESTALE;
     }
     if (!healthy()) {
-        latch_fault(OA_CONTROL_EFAULT);
-        return OA_CONTROL_EFAULT;
+        return latch_fault(OA_CONTROL_EFAULT);
     }
     if (plan.controller_instance != instance_id_ || plan.verify_epoch != verify_epoch_) {
         return OA_CONTROL_EIDENTITY;
@@ -791,13 +832,15 @@ oa_control_status Controller::execute(const MotionPlan &plan, const oa_execute_r
     command_expiry_ns_ = request.expiry_ns;
     producer_deadline_ns_ = request.producer_deadline_ns;
     settle_start_ns_ = 0U;
+    settle_feedback_seq_ = {};
+    settle_feedback_intervals_ = 0U;
     active_stop_kind_ = request.stop_kind;
     command_started_ = start_ns == now_ns_;
     settling_published_ = false;
     lifecycle_ = OA_LIFECYCLE_EXECUTING;
     command_id = command_id_;
-    publish(command_started_ ? OA_EVENT_STARTED : OA_EVENT_QUEUED, OA_CONTROL_OK, command_id_);
-    return OA_CONTROL_OK;
+    return publish(command_started_ ? OA_EVENT_STARTED : OA_EVENT_QUEUED,
+                   OA_CONTROL_OK, command_id_) ? OA_CONTROL_OK : OA_CONTROL_EBUSY;
 }
 
 oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
@@ -821,17 +864,14 @@ oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept
     if (lifecycle_ == OA_LIFECYCLE_ARMED_IDLE ||
         lifecycle_ == OA_LIFECYCLE_EXECUTING) {
         if (!healthy()) {
-            latch_fault(OA_CONTROL_EFAULT);
-            return OA_CONTROL_EFAULT;
+            return latch_fault(OA_CONTROL_EFAULT);
         }
         const oa_control_status integrity = feedback_integrity();
         if (integrity != OA_CONTROL_OK) {
-            latch_fault(integrity);
-            return integrity;
+            return latch_fault(integrity);
         }
         if (now_ns_ - previous_ns > options_.cycle_ns) {
-            latch_fault(OA_CONTROL_ETIMEOUT, true);
-            return OA_CONTROL_ETIMEOUT;
+            return latch_fault(OA_CONTROL_ETIMEOUT, true);
         }
     }
 
@@ -839,24 +879,22 @@ oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept
     std::array<JointVector, 2> dq_reference{};
     if (lifecycle_ == OA_LIFECYCLE_EXECUTING) {
         if (now_ns_ > producer_deadline_ns_) {
-            latch_fault(OA_CONTROL_ESTALE, true);
-            return OA_CONTROL_ESTALE;
+            return latch_fault(OA_CONTROL_ESTALE, true);
         }
         if (now_ns_ > command_expiry_ns_) {
-            latch_fault(OA_CONTROL_ETIMEOUT, true);
-            return OA_CONTROL_ETIMEOUT;
+            return latch_fault(OA_CONTROL_ETIMEOUT, true);
         }
         if (!healthy()) {
-            latch_fault(OA_CONTROL_EFAULT);
-            return OA_CONTROL_EFAULT;
+            return latch_fault(OA_CONTROL_EFAULT);
         }
         if (!command_started_ && now_ns_ >= command_start_ns_) {
             if (!fresh() || !start_pose_matches(*executing_)) {
-                latch_fault(OA_CONTROL_ESTALE);
-                return OA_CONTROL_ESTALE;
+                return latch_fault(OA_CONTROL_ESTALE);
             }
             command_started_ = true;
-            publish(OA_EVENT_STARTED, OA_CONTROL_OK, command_id_);
+            if (!publish(OA_EVENT_STARTED, OA_CONTROL_OK, command_id_)) {
+                return OA_CONTROL_EBUSY;
+            }
         }
         const std::uint64_t elapsed = now_ns_ <= command_start_ns_ ? 0U : now_ns_ - command_start_ns_;
         std::size_t segment = 1U;
@@ -892,14 +930,12 @@ oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept
     for (std::size_t side = 0; side < 2U; ++side) {
         if (!arm_[side].command_and_step(q_reference[side], dq_reference[side],
                                          now_ns_, dt_s)) {
-            latch_fault(OA_CONTROL_ECAN);
-            return OA_CONTROL_ECAN;
+            return latch_fault(OA_CONTROL_ECAN);
         }
     }
     if (!arm_[0].complete_fresh(now_ns_, options_.feedback_timeout_ns) ||
         !arm_[1].complete_fresh(now_ns_, options_.feedback_timeout_ns)) {
-        latch_fault(OA_CONTROL_ESTALE);
-        return OA_CONTROL_ESTALE;
+        return latch_fault(OA_CONTROL_ESTALE);
     }
     const std::uint64_t skew = arm_[0].generation_timestamp() > arm_[1].generation_timestamp()
                                    ? arm_[0].generation_timestamp() -
@@ -907,38 +943,56 @@ oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept
                                    : arm_[1].generation_timestamp() -
                                          arm_[0].generation_timestamp();
     if (skew > options_.max_cross_bus_skew_ns) {
-        latch_fault(OA_CONTROL_ECAN);
-        return OA_CONTROL_ECAN;
+        return latch_fault(OA_CONTROL_ECAN);
     }
     for (std::size_t side = 0; side < 2U; ++side) {
         if (arm_[side].snapshot(now_ns_, options_.feedback_timeout_ns).fault_mask != 0U) {
-            latch_fault(OA_CONTROL_EFAULT);
-            return OA_CONTROL_EFAULT;
+            return latch_fault(OA_CONTROL_EFAULT);
         }
     }
     if (lifecycle_ == OA_LIFECYCLE_EXECUTING &&
         now_ns_ >= command_start_ns_ + executing_->duration_ns) {
         if (measured_at_goal()) {
             if (!settling_published_) {
-                publish(OA_EVENT_SETTLING, OA_CONTROL_OK, command_id_);
+                if (!publish(OA_EVENT_SETTLING, OA_CONTROL_OK, command_id_)) {
+                    return OA_CONTROL_EBUSY;
+                }
                 settling_published_ = true;
             }
             if (settle_start_ns_ == 0U) {
                 settle_start_ns_ = now_ns_;
+                settle_feedback_seq_ = {arm_[0].feedback_sequence(),
+                                        arm_[1].feedback_sequence()};
+                settle_feedback_intervals_ = 0U;
+            } else {
+                const std::array<std::uint64_t, 2> current_seq{
+                    arm_[0].feedback_sequence(), arm_[1].feedback_sequence()};
+                if (current_seq[0] != settle_feedback_seq_[0] &&
+                    current_seq[1] != settle_feedback_seq_[1]) {
+                    settle_feedback_seq_ = current_seq;
+                    ++settle_feedback_intervals_;
+                }
             }
-            if (now_ns_ - settle_start_ns_ >= options_.cycle_ns * 3U) {
+            if (settle_feedback_intervals_ >= 3U &&
+                now_ns_ - settle_start_ns_ >= options_.cycle_ns * 3U) {
                 const auto completed_id = command_id_;
                 executing_.reset();
                 command_id_ = 0U;
                 lifecycle_ = OA_LIFECYCLE_ARMED_IDLE;
-                publish(OA_EVENT_COMPLETED, OA_CONTROL_OK, completed_id);
+                if (!publish(OA_EVENT_COMPLETED, OA_CONTROL_OK, completed_id)) {
+                    return OA_CONTROL_EBUSY;
+                }
             }
         } else {
             if (!settling_published_) {
-                publish(OA_EVENT_SETTLING, OA_CONTROL_OK, command_id_);
+                if (!publish(OA_EVENT_SETTLING, OA_CONTROL_OK, command_id_)) {
+                    return OA_CONTROL_EBUSY;
+                }
                 settling_published_ = true;
             }
             settle_start_ns_ = 0U;
+            settle_feedback_seq_ = {};
+            settle_feedback_intervals_ = 0U;
         }
     }
     return OA_CONTROL_OK;
@@ -1037,8 +1091,7 @@ oa_control_status Controller::heartbeat(const std::uint64_t command_id,
         return OA_CONTROL_ESTATE;
     }
     if (producer_deadline_ns <= now_ns_) {
-        latch_fault(OA_CONTROL_ESTALE, true);
-        return OA_CONTROL_ESTALE;
+        return latch_fault(OA_CONTROL_ESTALE, true);
     }
     producer_deadline_ns_ = producer_deadline_ns;
     return OA_CONTROL_OK;
@@ -1051,13 +1104,18 @@ oa_control_status Controller::set_interlock(const bool estop_active,
         const auto failed_id = command_id_;
         executing_.reset();
         command_id_ = 0U;
-        for (auto &runtime : arm_) {
-            runtime.set_enabled(false);
+        if (lifecycle_ == OA_LIFECYCLE_CLOSED ||
+            lifecycle_ == OA_LIFECYCLE_VERIFYING) {
+            for (auto &runtime : arm_) {
+                runtime.set_enabled(false);
+                runtime.retire_pending_feedback();
+            }
+        } else {
+            materialize_stop(false);
         }
         lifecycle_ = OA_LIFECYCLE_ESTOP;
         outstanding_nonce_ = ++nonce_counter_;
-        publish(OA_EVENT_ESTOP, OA_CONTROL_EESTOP, failed_id);
-        return OA_CONTROL_EESTOP;
+        return publish(OA_EVENT_ESTOP, OA_CONTROL_EESTOP, failed_id) ? OA_CONTROL_EESTOP : OA_CONTROL_EBUSY;
     }
     return OA_CONTROL_OK;
 }
@@ -1083,20 +1141,21 @@ oa_control_status Controller::stop(const std::uint32_t stop_kind) noexcept {
     lifecycle_ = OA_LIFECYCLE_STOPPING;
     const auto stopped_id = command_id_;
     if (executing_) {
-        publish(OA_EVENT_ABORTED, OA_CONTROL_OK, stopped_id);
+        if (!publish(OA_EVENT_ABORTED, OA_CONTROL_OK, stopped_id)) {
+            return OA_CONTROL_EBUSY;
+        }
     }
     executing_.reset();
     command_id_ = 0U;
     if (stop_kind == OA_STOP_DISABLE) {
-        for (auto &runtime : arm_) {
-            runtime.set_enabled(false);
-        }
+        materialize_stop(false);
         lifecycle_ = OA_LIFECYCLE_DISARMED;
     } else {
+        materialize_stop(true);
         lifecycle_ = OA_LIFECYCLE_ARMED_IDLE;
     }
-    publish(OA_EVENT_STOPPED, OA_CONTROL_OK, stopped_id);
-    return OA_CONTROL_OK;
+    active_stop_kind_ = OA_STOP_DISABLE;
+    return publish(OA_EVENT_STOPPED, OA_CONTROL_OK, stopped_id) ? OA_CONTROL_OK : OA_CONTROL_EBUSY;
 }
 
 oa_control_status Controller::disarm(const std::uint64_t deadline_ns) noexcept {
@@ -1109,13 +1168,9 @@ oa_control_status Controller::disarm(const std::uint64_t deadline_ns) noexcept {
     }
     executing_.reset();
     command_id_ = 0U;
-    for (auto &runtime : arm_) {
-        runtime.set_enabled(false);
-        runtime.force_state(runtime.measured_q(), JointVector{}, now_ns_);
-    }
+    materialize_stop(false);
     lifecycle_ = OA_LIFECYCLE_DISARMED;
-    publish(OA_EVENT_DISARMED, OA_CONTROL_OK, 0U);
-    return OA_CONTROL_OK;
+    return publish(OA_EVENT_DISARMED, OA_CONTROL_OK, 0U) ? OA_CONTROL_OK : OA_CONTROL_EBUSY;
 }
 
 oa_control_status Controller::reset(const oa_reset_request &request) noexcept {
@@ -1129,6 +1184,7 @@ oa_control_status Controller::reset(const oa_reset_request &request) noexcept {
     for (auto &runtime : arm_) {
         runtime.set_injection(0U, 0U, 0U, 0U, 0U, 0U);
         runtime.set_enabled(false);
+        runtime.retire_pending_feedback();
     }
     ++verify_epoch_;
     outstanding_nonce_ = 0U;
@@ -1146,7 +1202,7 @@ oa_control_status Controller::poll_event(oa_event &out) noexcept {
     return OA_CONTROL_OK;
 }
 
-void Controller::publish(const std::uint32_t kind, const oa_control_status cause,
+bool Controller::publish(const std::uint32_t kind, const oa_control_status cause,
                          const std::uint64_t command_id) noexcept {
     const bool overflow = event_count_ == events_.size();
     if (overflow) {
@@ -1154,9 +1210,8 @@ void Controller::publish(const std::uint32_t kind, const oa_control_status cause
         --event_count_;
         executing_.reset();
         command_id_ = 0U;
-        for (auto &runtime : arm_) {
-            runtime.set_enabled(false);
-        }
+        materialize_stop(false);
+        active_stop_kind_ = OA_STOP_DISABLE;
         lifecycle_ = OA_LIFECYCLE_FAULT;
     }
     oa_event event{};
@@ -1171,20 +1226,26 @@ void Controller::publish(const std::uint32_t kind, const oa_control_status cause
     const std::size_t tail = (event_head_ + event_count_) % events_.size();
     events_[tail] = event;
     ++event_count_;
+    return !overflow;
 }
 
-void Controller::materialize_fault_stop(const bool enabled_hold) noexcept {
+void Controller::materialize_stop(const bool enabled_hold) noexcept {
     for (auto &runtime : arm_) {
         if (options_.backend == OA_BACKEND_VIRTUAL) {
-            runtime.materialize_stop(enabled_hold, now_ns_);
+            if (runtime.feedback_sequence() != 0U) {
+                runtime.materialize_stop(enabled_hold, now_ns_);
+            } else {
+                runtime.set_enabled(false);
+                runtime.retire_pending_feedback();
+            }
         } else {
             runtime.set_enabled(false);
         }
     }
 }
 
-void Controller::latch_fault(const oa_control_status cause,
-                             const bool controlled_stop_available) noexcept {
+oa_control_status Controller::latch_fault(const oa_control_status cause,
+                                  const bool controlled_stop_available) noexcept {
     const auto failed_id = command_id_;
     /* Only coherent watchdog paths may retain an enabled hold. Transport or
      * motor-integrity faults always take the disabled fallback. */
@@ -1195,11 +1256,11 @@ void Controller::latch_fault(const oa_control_status cause,
                                  active_stop_kind_ == OA_STOP_CONTROLLED;
     executing_.reset();
     command_id_ = 0U;
-    materialize_fault_stop(controlled_stop);
+    materialize_stop(controlled_stop);
     active_stop_kind_ = OA_STOP_DISABLE;
     lifecycle_ = OA_LIFECYCLE_FAULT;
     outstanding_nonce_ = ++nonce_counter_;
-    publish(OA_EVENT_FAULTED, cause, failed_id);
+    return publish(OA_EVENT_FAULTED, cause, failed_id) ? cause : OA_CONTROL_EBUSY;
 }
 
 oa_control_status Controller::feedback_integrity() const noexcept {

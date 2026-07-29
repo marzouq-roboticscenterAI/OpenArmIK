@@ -21,45 +21,50 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
 
-if(NOT TARGET openarm_model)
-    set(OA_MODEL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(OA_MODEL_SANITIZERS ${OA_CONTROL_SANITIZERS} CACHE BOOL "" FORCE)
-    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../model"
-                     "${CMAKE_CURRENT_BINARY_DIR}/openarm_model" EXCLUDE_FROM_ALL)
+if(NOT TARGET OpenArm::Model AND NOT TARGET openarm_model::openarm_model)
+    find_package(openarm_model 1 CONFIG REQUIRED)
+endif()
+if(TARGET OpenArm::Model)
+    set(OPENARM_CONTROL_MODEL_TARGET OpenArm::Model)
+else()
+    set(OPENARM_CONTROL_MODEL_TARGET openarm_model::openarm_model)
 endif()
 
-add_library(openarm_control STATIC
+set(OPENARM_CONTROL_SOURCES
     src/c_api.cpp
     src/control_core.cpp
     src/kinematics.cpp
-    src/standard_manifest.cpp
-)
-add_library(openarm_control::openarm_control ALIAS openarm_control)
-target_include_directories(openarm_control
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(openarm_control PUBLIC
-    $<BUILD_INTERFACE:openarm_model>
-    $<INSTALL_INTERFACE:openarm_model::openarm_model>
-    Threads::Threads)
-target_compile_features(openarm_control PUBLIC c_std_11 cxx_std_17)
-set_target_properties(openarm_control PROPERTIES EXPORT_NAME openarm_control)
-target_compile_options(openarm_control PRIVATE
-    $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Werror;-Wshadow;-Wformat=2>
-)
+    src/standard_manifest.cpp)
 
-if(OA_CONTROL_SANITIZERS)
-    target_compile_options(openarm_control PRIVATE
-        -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_link_options(openarm_control PUBLIC -fsanitize=address,undefined)
-endif()
-if(OA_CONTROL_TSAN)
-    target_compile_options(openarm_control PRIVATE
-        -fsanitize=thread -fno-omit-frame-pointer)
-    target_link_options(openarm_control PUBLIC -fsanitize=thread)
-endif()
+function(openarm_configure_control_target target)
+    target_include_directories(${target}
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(${target} PUBLIC
+        ${OPENARM_CONTROL_MODEL_TARGET}
+        Threads::Threads)
+    target_compile_features(${target} PUBLIC c_std_11 cxx_std_17)
+    target_compile_options(${target} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Werror;-Wshadow;-Wformat=2>)
+    if(OA_CONTROL_SANITIZERS)
+        target_compile_options(${target} PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(${target} PUBLIC -fsanitize=address,undefined)
+    endif()
+    if(OA_CONTROL_TSAN)
+        target_compile_options(${target} PRIVATE
+            -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(${target} PUBLIC -fsanitize=thread)
+    endif()
+endfunction()
+
+add_library(openarm_control STATIC ${OPENARM_CONTROL_SOURCES})
+add_library(openarm_control::openarm_control ALIAS openarm_control)
+add_library(OpenArm::Control ALIAS openarm_control)
+openarm_configure_control_target(openarm_control)
+set_target_properties(openarm_control PROPERTIES EXPORT_NAME openarm_control)
 
 install(TARGETS openarm_control EXPORT openarm_controlTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -207,8 +212,15 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
     target_compile_options(openarm_legacy_model_status PRIVATE
         -Wall -Wextra -Wpedantic -Werror)
 
+    add_library(openarm_control_test STATIC ${OPENARM_CONTROL_SOURCES})
+    target_compile_definitions(openarm_control_test PRIVATE
+        OPENARM_CONTROL_ENABLE_TEST_HOOKS=1)
+    openarm_configure_control_target(openarm_control_test)
     add_executable(openarm_control_tests tests/test_control.cpp)
-    target_link_libraries(openarm_control_tests PRIVATE openarm_control Threads::Threads)
+    target_include_directories(openarm_control_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(openarm_control_tests PRIVATE
+        openarm_control_test Threads::Threads)
     target_compile_options(openarm_control_tests PRIVATE
         -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2)
     if(OA_CONTROL_SANITIZERS OR OA_CONTROL_TSAN)
@@ -234,10 +246,16 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
     add_test(NAME openarm_control_v1_original_abi COMMAND openarm_control_v1_original_abi)
 
     if(NOT OA_CONTROL_SANITIZERS AND NOT OA_CONTROL_TSAN)
+        get_filename_component(OPENARM_CONTROL_MODEL_CMAKE_ROOT
+            "${openarm_model_DIR}" DIRECTORY)
+        get_filename_component(OPENARM_CONTROL_MODEL_LIB_ROOT
+            "${OPENARM_CONTROL_MODEL_CMAKE_ROOT}" DIRECTORY)
+        get_filename_component(OPENARM_CONTROL_MODEL_PREFIX
+            "${OPENARM_CONTROL_MODEL_LIB_ROOT}" DIRECTORY)
         add_test(NAME openarm_public_headers_install_consumer
             COMMAND "${CMAKE_COMMAND}"
                 -DOA_CONTROL_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}
-                -DOA_MODEL_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/openarm_model
+                -DOA_MODEL_PREFIX=${OPENARM_CONTROL_MODEL_PREFIX}
                 -DOA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_install_consumer.cmake")
     endif()

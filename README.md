@@ -15,6 +15,10 @@ The repository also contains:
 - [can/README.md](can/README.md): the C11 DaMiao codec, commissioned-manifest
   validator, fresh-disabled probe, fake transport, and read-only SocketCAN
   interface discovery API.
+- [transport/README.md](transport/README.md): the query-only transport library.
+- [commission/README.md](commission/README.md): manual and supervised
+  commissioning building blocks.
+- [control/README.md](control/README.md): the virtual controller core.
 
 Automatic CAN discovery cannot establish physical joint identity, side, sign,
 zero, gearing, firmware, or a safe motor mapping. Consequently this revision
@@ -28,6 +32,33 @@ watchdog are installed.
 ./scripts/fetch_upstreams.sh
 ./scripts/build.sh
 ./scripts/launch_rviz.sh
+```
+
+The build command performs a clean Release build in dependency order (CAN,
+model, commission, transport, control, then ROS), installs everything under
+`ros2_ws/install`, and never uses sudo or configures an interface. To compile
+and run every registered hardware-free native CTest while verifying that all
+eight ROS tests are freshly registered, use:
+
+```bash
+./scripts/build.sh --tests
+```
+
+The transport `vcan0` smoke test is not registered in this hardware-free
+profile. Standalone transport builds retain that test by default. Use
+`--incremental` only when deliberately reusing prior output. A disposable build
+can be isolated with `--output-root /tmp/openarmik-build`; its setup file is
+then `/tmp/openarmik-build/install/setup.bash`. Output roots may contain spaces,
+but `:` and `;` are rejected because they are prefix-list delimiters used by
+ROS and CMake.
+
+The reusable native helper overwrites and verifies each component's cached
+dependency directory on every invocation. Its two-prefix reuse regression can
+be run without ROS:
+
+```bash
+reuse_root=$(mktemp -d /tmp/openarmik-prefix-reuse.XXXXXX)
+./tests/test_native_prefix_reuse.sh "$reuse_root"
 ```
 
 On this Wayland hybrid-GPU laptop the launcher uses Mesa software OpenGL with
@@ -68,7 +99,19 @@ unchecked operation is WARN, never OK.
 
 RViz may report four unrealistic finger-inertia errors from the pinned canonical generated URDF. They are inherited model data; meshes and TF still load, and this adapter neither edits nor reinterprets that URDF.
 
-`model/` is installed as an ordinary CMake package (`openarm_model::openarm_model`); the ROS package finds that export instead of compiling monorepo-relative sources. `scripts/install_ros_dependencies.sh` is review-only unless explicitly passed `--apply`; it is never run automatically. After `scripts/build.sh`, test only the authored adapter with:
+The native install exports CMake targets for dependency-safe consumption:
+`OpenArm::Can`, `OpenArm::Model`, `OpenArm::Transport`, and
+`OpenArm::Commission`. Existing model and transport target names remain
+available. Control discovers the installed model package instead of compiling a
+second model copy, and transport links the installed CAN target instead of
+embedding CAN objects. The ROS package likewise finds the installed model
+export instead of compiling monorepo-relative sources. Production archives do
+not contain the native suites' fault-injection hooks.
+
+`scripts/install_ros_dependencies.sh` is review-only unless explicitly passed
+`--apply`; it is never run automatically. `./scripts/build.sh --tests` is the
+preferred hardware-free native test and ROS registration path. To explicitly
+execute the already-built authored adapter tests (which start ROS middleware):
 
 ```bash
 source /opt/ros/lyrical/setup.bash

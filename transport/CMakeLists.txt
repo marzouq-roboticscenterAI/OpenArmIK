@@ -5,6 +5,8 @@ option(OA_TRANSPORT_ENABLE_SANITIZERS
        "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(OA_TRANSPORT_ENABLE_THREAD_SANITIZER
        "Enable ThreadSanitizer" OFF)
+option(OA_TRANSPORT_BUILD_VCAN_SMOKE
+       "Build and register the vcan0 smoke test" ON)
 
 if(OA_TRANSPORT_ENABLE_SANITIZERS AND OA_TRANSPORT_ENABLE_THREAD_SANITIZER)
     message(FATAL_ERROR "ASan/UBSan and TSan cannot be enabled together")
@@ -14,6 +16,10 @@ set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
+find_package(OpenArmCan 1 CONFIG REQUIRED)
+if(NOT OpenArmCan_PREFIX)
+    message(FATAL_ERROR "OpenArmCan package did not provide its install prefix")
+endif()
 
 function(oa_transport_strict_c target)
     target_compile_features(${target} PRIVATE c_std_11)
@@ -62,33 +68,20 @@ function(oa_transport_sanitizers target)
     endif()
 endfunction()
 
-add_library(openarm_transport_codec OBJECT
-    "${CMAKE_CURRENT_SOURCE_DIR}/../can/src/openarm_can.c")
-target_include_directories(openarm_transport_codec PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../can/include")
-oa_transport_strict_c(openarm_transport_codec)
-if(OA_TRANSPORT_ENABLE_SANITIZERS AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(openarm_transport_codec PRIVATE
-        -fsanitize=address,undefined -fno-omit-frame-pointer)
-elseif(OA_TRANSPORT_ENABLE_THREAD_SANITIZER AND
-       CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(openarm_transport_codec PRIVATE
-        -fsanitize=thread -fno-omit-frame-pointer)
-endif()
-
 add_library(openarm_transport STATIC
     src/c_api.cpp
     src/socketcan_backend.cpp
-    src/transport.cpp
-    $<TARGET_OBJECTS:openarm_transport_codec>)
+    src/transport.cpp)
+add_library(OpenArm::Transport ALIAS openarm_transport)
 target_include_directories(openarm_transport
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../can/include")
-target_link_libraries(openarm_transport PUBLIC Threads::Threads)
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(openarm_transport
+    PUBLIC Threads::Threads
+    PRIVATE OpenArm::Can)
 oa_transport_strict_cxx(openarm_transport)
 oa_transport_sanitizers(openarm_transport)
 
@@ -111,19 +104,22 @@ if(BUILD_TESTING)
     add_test(NAME openarm_transport_c11_consumer
              COMMAND openarm_transport_c11_consumer)
 
-    add_executable(openarm_transport_vcan_smoke tests/vcan_smoke.cpp)
-    target_link_libraries(openarm_transport_vcan_smoke PRIVATE openarm_transport)
-    oa_transport_strict_cxx(openarm_transport_vcan_smoke)
-    oa_transport_sanitizers(openarm_transport_vcan_smoke)
-    add_test(NAME openarm_transport_vcan_smoke
-             COMMAND openarm_transport_vcan_smoke)
+    if(OA_TRANSPORT_BUILD_VCAN_SMOKE)
+        add_executable(openarm_transport_vcan_smoke tests/vcan_smoke.cpp)
+        target_link_libraries(openarm_transport_vcan_smoke PRIVATE openarm_transport)
+        oa_transport_strict_cxx(openarm_transport_vcan_smoke)
+        oa_transport_sanitizers(openarm_transport_vcan_smoke)
+        add_test(NAME openarm_transport_vcan_smoke
+                 COMMAND openarm_transport_vcan_smoke)
+    endif()
 
     if(NOT OA_TRANSPORT_ENABLE_SANITIZERS AND
        NOT OA_TRANSPORT_ENABLE_THREAD_SANITIZER)
         add_test(NAME openarm_transport_install_consumer
             COMMAND "${CMAKE_COMMAND}"
-                -DOA_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}
-                -DOA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                "-DOA_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                "-DOA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+                "-DOA_CAN_PREFIX=${OpenArmCan_PREFIX}"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_install_consumer.cmake")
     endif()
 endif()

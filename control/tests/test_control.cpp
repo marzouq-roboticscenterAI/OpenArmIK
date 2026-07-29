@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "openarm_control.h"
+#include "control_core.hpp"
 
 #include <algorithm>
 #include <array>
@@ -256,8 +257,153 @@ bool has_event(oa_controller *controller, const std::uint32_t wanted,
     }
 }
 
+bool take_event(oa_controller *controller, const std::uint32_t wanted,
+                const std::uint64_t command_id, oa_event &matched) {
+    for (;;) {
+        oa_event event{};
+        init(event);
+        const oa_control_status status = oa_controller_poll_event(controller, 0U, &event);
+        if (status == OA_CONTROL_ETIMEOUT) {
+            return false;
+        }
+        CHECK(status == OA_CONTROL_OK);
+        if (event.kind == wanted && event.command_id == command_id) {
+            matched = event;
+            return true;
+        }
+    }
+}
+
+void check_arm_payload_equal(const oa_arm_snapshot &actual,
+                             const oa_arm_snapshot &expected) {
+    CHECK(actual.feedback_seq == expected.feedback_seq);
+    CHECK(actual.t_ns == expected.t_ns);
+    CHECK(actual.fresh_mask == expected.fresh_mask);
+    CHECK(actual.fault_mask == expected.fault_mask);
+    for (std::size_t joint = 0U; joint < 7U; ++joint) {
+        CHECK(actual.q[joint] == expected.q[joint]);
+        CHECK(actual.dq[joint] == expected.dq[joint]);
+        CHECK(actual.tau[joint] == expected.tau[joint]);
+        CHECK(actual.raw_q[joint] == expected.raw_q[joint]);
+        CHECK(actual.raw_dq[joint] == expected.raw_dq[joint]);
+        CHECK(actual.raw_tau[joint] == expected.raw_tau[joint]);
+        CHECK(actual.status[joint] == expected.status[joint]);
+        CHECK(actual.mos_c[joint] == expected.mos_c[joint]);
+        CHECK(actual.coil_c[joint] == expected.coil_c[joint]);
+    }
+}
+
 oa_execute_request request_for(const oa_motion_plan_report &report,
                                std::uint64_t start_ns = 0U);
+
+void set_feedback_delay(Fixture &fixture, const std::uint64_t delay_ns) {
+    for (std::uint32_t side = OA_LEFT; side <= OA_RIGHT; ++side) {
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = side;
+        fault.feedback_delay_ns = delay_ns;
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+    }
+}
+
+oa_motion_plan *start_delayed_motion(Fixture &fixture, const std::uint32_t stop_kind,
+                                     const std::uint64_t producer_deadline_ns,
+                                     std::uint64_t &command_id) {
+    oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.3);
+    const auto report = plan_report(plan);
+    set_feedback_delay(fixture, 20000000U);
+    auto request = request_for(report);
+    request.producer_deadline_ns = producer_deadline_ns;
+    request.stop_kind = stop_kind;
+    CHECK(oa_controller_execute(fixture.controller, plan, &request, &command_id) == OA_CONTROL_OK);
+    CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_OK);
+    CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_CONTROL_OK);
+    return plan;
+}
+
+oa_snapshot controller_snapshot(Fixture &fixture) {
+    oa_snapshot state{};
+    init(state);
+    CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
+    return state;
+}
+
+void check_stop_payload(const oa_snapshot &state, const std::uint32_t lifecycle,
+                        const bool enabled, const std::int32_t fault_side = -1,
+                        const std::int32_t fault_joint = -1) {
+    CHECK(state.lifecycle == lifecycle);
+    for (std::size_t side = 0U; side < 2U; ++side) {
+        CHECK(state.arm[side].fresh_mask == 0x7fU);
+        for (std::size_t joint = 0U; joint < 7U; ++joint) {
+            const bool faulted = static_cast<std::int32_t>(side) == fault_side &&
+                                 static_cast<std::int32_t>(joint) == fault_joint;
+            CHECK(state.arm[side].status[joint] ==
+                  (faulted ? 8U : (enabled ? 1U : 0U)));
+            CHECK(std::abs(state.arm[side].dq[joint]) <= 1.2e-2);
+        }
+    }
+}
+
+void drain_events(Fixture &fixture) {
+    for (;;) {
+        oa_event event{};
+        init(event);
+        if (oa_controller_poll_event(fixture.controller, 0U, &event) == OA_CONTROL_ETIMEOUT) {
+            break;
+        }
+    }
+}
+
+void fill_event_ring(Fixture &fixture, const std::size_t event_count) {
+    CHECK(event_count <= 64U);
+    drain_events(fixture);
+    const std::size_t cycles = event_count / 3U;
+    for (std::size_t cycle = 0U; cycle < cycles; ++cycle) {
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_stop(fixture.controller, OA_STOP_CONTROLLED) == OA_CONTROL_OK);
+        oa_motion_plan_destroy(plan);
+    }
+    for (std::size_t event = cycles * 3U; event < event_count; ++event) {
+        CHECK(oa_controller_stop(fixture.controller, OA_STOP_CONTROLLED) == OA_CONTROL_OK);
+    }
+}
+
+oa_event take_overflow_event(Fixture &fixture) {
+    for (;;) {
+        oa_event event{};
+        init(event);
+        CHECK(oa_controller_poll_event(fixture.controller, 0U, &event) == OA_CONTROL_OK);
+        if (event.kind == OA_EVENT_FAULTED && event.cause == OA_CONTROL_EBUSY) {
+            CHECK(event.lifecycle == OA_LIFECYCLE_FAULT);
+            return event;
+        }
+    }
+}
+
+void reset_and_reverify(Fixture &fixture) {
+    drain_events(fixture);
+    oa_arm_challenge challenge{};
+    init(challenge);
+    CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_CONTROL_OK);
+    oa_reset_request reset{};
+    init(reset);
+    reset.verify_epoch = challenge.verify_epoch;
+    reset.nonce = challenge.nonce;
+    CHECK(oa_controller_reset_fault(fixture.controller, &reset) == OA_CONTROL_OK);
+    oa_snapshot unavailable{};
+    init(unavailable);
+    CHECK(oa_controller_snapshot(fixture.controller, &unavailable) == OA_CONTROL_ESTATE);
+    oa_verify_report verify{};
+    init(verify);
+    CHECK(oa_controller_open_and_verify(fixture.controller, &verify) == OA_CONTROL_OK);
+    check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_DISARMED, false);
+}
 
 void test_manifest_validation() {
     oa_manifest *standard = nullptr;
@@ -659,6 +805,7 @@ void test_plan_ownership_and_start_drift() {
 void test_coherent_feedback_skew_and_partial_send() {
     {
         Fixture fixture;
+        const oa_arm_snapshot before = fixture.state.arm[1];
         oa_sim_fault fault{};
         init(fault);
         fault.side = OA_RIGHT;
@@ -668,7 +815,13 @@ void test_coherent_feedback_skew_and_partial_send() {
         oa_snapshot state{};
         init(state);
         CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
-        CHECK(state.arm[1].fresh_mask == 0x7eU);
+        CHECK(state.arm[1].fresh_mask == 0x7fU);
+        CHECK(state.arm[1].feedback_seq == before.feedback_seq + 1U);
+        CHECK(state.arm[1].t_ns == 10000000U);
+        for (std::size_t joint = 0U; joint < 7U; ++joint) {
+            CHECK(state.arm[1].q[joint] == before.q[joint]);
+            CHECK(state.arm[1].raw_q[joint] == before.raw_q[joint]);
+        }
     }
     {
         Fixture fixture;
@@ -678,6 +831,19 @@ void test_coherent_feedback_skew_and_partial_send() {
         fault.feedback_delay_ns = 2000000U;
         CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
         CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_ECAN);
+    }
+    {
+        Fixture fixture;
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = OA_LEFT;
+        fault.feedback_delay_ns = UINT64_MAX;
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_ECAN);
+        oa_snapshot state{};
+        init(state);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
+        CHECK(state.lifecycle == OA_LIFECYCLE_FAULT);
     }
     {
         Fixture fixture;
@@ -697,6 +863,629 @@ void test_coherent_feedback_skew_and_partial_send() {
         CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
         CHECK(state.lifecycle == OA_LIFECYCLE_FAULT);
         oa_motion_plan_destroy(plan);
+    }
+}
+
+void test_delayed_feedback_public_abi_oracle() {
+    Fixture immediate;
+    Fixture delayed;
+    for (std::uint32_t side = OA_LEFT; side <= OA_RIGHT; ++side) {
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = side;
+        fault.feedback_delay_ns = 20000000U;
+        CHECK(oa_controller_sim_set_fault(delayed.controller, &fault) == OA_CONTROL_OK);
+    }
+
+    oa_motion_plan *immediate_plan = joint_plan(immediate, OA_LEFT, 0U, 0.3);
+    oa_motion_plan *delayed_plan = joint_plan(delayed, OA_LEFT, 0U, 0.3);
+    const auto immediate_report = plan_report(immediate_plan);
+    const auto delayed_report = plan_report(delayed_plan);
+    CHECK(immediate_report.duration_ns == delayed_report.duration_ns);
+    const std::uint64_t immediate_command =
+        execute(immediate, immediate_plan, immediate_report, 3000000000ULL);
+    const std::uint64_t delayed_command =
+        execute(delayed, delayed_plan, delayed_report, 3000000000ULL);
+
+    std::vector<oa_snapshot> immediate_history;
+    bool differs_from_current = false;
+    std::uint64_t immediate_completed_ns = 0U;
+    std::uint64_t delayed_completed_ns = 0U;
+    oa_event immediate_completed{};
+    oa_event delayed_completed{};
+    oa_snapshot immediate_completion_state{};
+    oa_snapshot delayed_completion_state{};
+    for (std::uint64_t cycle = 1U; delayed_completed_ns == 0U && cycle < 400U; ++cycle) {
+        const std::uint64_t now = cycle * 10000000U;
+        CHECK(oa_controller_advance(immediate.controller, now) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(delayed.controller, now) == OA_CONTROL_OK);
+        oa_snapshot immediate_state{};
+        oa_snapshot delayed_state{};
+        init(immediate_state);
+        init(delayed_state);
+        CHECK(oa_controller_snapshot(immediate.controller, &immediate_state) == OA_CONTROL_OK);
+        CHECK(oa_controller_snapshot(delayed.controller, &delayed_state) == OA_CONTROL_OK);
+        immediate_history.push_back(immediate_state);
+        if (cycle <= 2U) {
+            CHECK(delayed_state.arm[0].feedback_seq == delayed.state.arm[0].feedback_seq);
+            CHECK(delayed_state.arm[0].t_ns == 0U);
+        } else if (immediate_completed_ns == 0U) {
+            const oa_snapshot &historical = immediate_history[cycle - 3U];
+            for (std::size_t side = 0U; side < 2U; ++side) {
+                check_arm_payload_equal(delayed_state.arm[side], historical.arm[side]);
+            }
+            differs_from_current = differs_from_current ||
+                                   delayed_state.arm[0].q[0] != immediate_state.arm[0].q[0] ||
+                                   delayed_state.arm[0].dq[0] != immediate_state.arm[0].dq[0];
+        }
+        if (immediate_completed_ns == 0U &&
+            take_event(immediate.controller, OA_EVENT_COMPLETED, immediate_command,
+                       immediate_completed)) {
+            immediate_completed_ns = now;
+            immediate_completion_state = immediate_state;
+        }
+        if (take_event(delayed.controller, OA_EVENT_COMPLETED, delayed_command,
+                       delayed_completed)) {
+            delayed_completed_ns = now;
+            delayed_completion_state = delayed_state;
+        }
+    }
+    CHECK(differs_from_current);
+    CHECK(immediate_completed_ns != 0U);
+    CHECK(delayed_completed_ns == immediate_completed_ns + 20000000U);
+    CHECK(immediate_completed.feedback_seq ==
+          std::min(immediate_completion_state.arm[0].feedback_seq,
+                   immediate_completion_state.arm[1].feedback_seq));
+    CHECK(delayed_completed.feedback_seq ==
+          std::min(delayed_completion_state.arm[0].feedback_seq,
+                   delayed_completion_state.arm[1].feedback_seq));
+    oa_motion_plan_destroy(immediate_plan);
+    oa_motion_plan_destroy(delayed_plan);
+}
+
+void test_feedback_generation_atomicity_and_bounds() {
+    const auto config = valid_config();
+    openarm::control::ArmRuntime partial(config.arm[0]);
+    const openarm::control::JointVector zero{};
+    partial.force_state(zero, zero, 0U);
+    const oa_arm_snapshot before = partial.snapshot(0U, 100000000U);
+    openarm::control::JointVector target{};
+    target.fill(0.5);
+    partial.set_injection(0U, 1U, 0U, 0U, 0U, 0U);
+    CHECK(partial.command_and_step(target, zero, 10000000U, 0.01));
+    const oa_arm_snapshot after = partial.snapshot(10000000U, 100000000U);
+    CHECK(after.feedback_seq == before.feedback_seq);
+    CHECK(after.fresh_mask == 0x7eU);
+    CHECK(after.t_ns == before.t_ns);
+    for (std::size_t joint = 0U; joint < 7U; ++joint) {
+        CHECK(after.q[joint] == before.q[joint]);
+        CHECK(after.dq[joint] == before.dq[joint]);
+        CHECK(after.raw_q[joint] == before.raw_q[joint]);
+        CHECK(after.raw_dq[joint] == before.raw_dq[joint]);
+        CHECK(after.status[joint] == before.status[joint]);
+    }
+
+    openarm::control::ArmRuntime immediate(config.arm[0]);
+    openarm::control::ArmRuntime nongrid(config.arm[0]);
+    immediate.force_state(zero, zero, 0U);
+    nongrid.force_state(zero, zero, 0U);
+    immediate.set_injection(0U, 0U, 0U, 0U, 0U, 0U);
+    nongrid.set_injection(0U, 0U, 0U, 0U, 0U, 15000000U);
+    CHECK(immediate.command_and_step(target, zero, 10000000U, 0.01));
+    CHECK(nongrid.command_and_step(target, zero, 10000000U, 0.01));
+    CHECK(nongrid.command_and_step(target, zero, 20000000U, 0.01));
+    CHECK(nongrid.snapshot(20000000U, 100000000U).feedback_seq == 1U);
+    CHECK(nongrid.command_and_step(target, zero, 30000000U, 0.01));
+    const oa_arm_snapshot delayed_first = nongrid.snapshot(30000000U, 100000000U);
+    const oa_arm_snapshot immediate_first = immediate.snapshot(10000000U, 100000000U);
+    check_arm_payload_equal(delayed_first, immediate_first);
+    CHECK(delayed_first.t_ns == 10000000U);
+
+    openarm::control::ArmRuntime mutation(config.arm[0]);
+    mutation.force_state(zero, zero, 0U);
+    mutation.set_injection(0U, 0U, 0U, 0U, 0U, 20000000U);
+    CHECK(mutation.command_and_step(target, zero, 10000000U, 0.01));
+    mutation.set_injection(0U, 0U, 0U, 0U, 0U, 100000000U);
+    CHECK(mutation.command_and_step(target, zero, 20000000U, 0.01));
+    CHECK(mutation.command_and_step(target, zero, 30000000U, 0.01));
+    const oa_arm_snapshot retained_ready_time =
+        mutation.snapshot(30000000U, 100000000U);
+    check_arm_payload_equal(retained_ready_time, immediate_first);
+
+    openarm::control::ArmRuntime delayed_partial(config.arm[0]);
+    delayed_partial.force_state(zero, zero, 0U);
+    const oa_arm_snapshot delayed_partial_before =
+        delayed_partial.snapshot(0U, 100000000U);
+    delayed_partial.set_injection(0U, 1U, 0U, 0U, 0U, 20000000U);
+    CHECK(delayed_partial.command_and_step(target, zero, 10000000U, 0.01));
+    CHECK(delayed_partial.command_and_step(target, zero, 20000000U, 0.01));
+    CHECK(delayed_partial.command_and_step(target, zero, 30000000U, 0.01));
+    const oa_arm_snapshot delayed_partial_after =
+        delayed_partial.snapshot(30000000U, 100000000U);
+    CHECK(delayed_partial_after.feedback_seq == delayed_partial_before.feedback_seq);
+    CHECK(delayed_partial_after.fresh_mask == 0x7eU);
+    CHECK(delayed_partial_after.t_ns == delayed_partial_before.t_ns);
+    for (std::size_t joint = 0U; joint < 7U; ++joint) {
+        CHECK(delayed_partial_after.q[joint] == delayed_partial_before.q[joint]);
+        CHECK(delayed_partial_after.raw_q[joint] == delayed_partial_before.raw_q[joint]);
+    }
+
+    openarm::control::ArmRuntime overflow(config.arm[0]);
+    overflow.force_state(zero, zero, 0U);
+    overflow.set_injection(0U, 0U, 0U, 0U, 0U, UINT64_MAX);
+    CHECK(!overflow.command_and_step(target, zero, 1U, 1.0e-9));
+    const oa_arm_snapshot overflow_state = overflow.snapshot(1U, 100000000U);
+    CHECK(overflow_state.feedback_seq == 1U);
+    CHECK(overflow_state.t_ns == 0U);
+
+    openarm::control::ArmRuntime bounded(config.arm[0]);
+    bounded.force_state(zero, zero, 0U);
+    bounded.set_injection(0U, 0U, 0U, 0U, 0U, 1000000000U);
+    for (std::uint64_t now = 1U; now <= 64U; ++now) {
+        CHECK(bounded.command_and_step(target, zero, now, 1.0e-9));
+    }
+    CHECK(!bounded.command_and_step(target, zero, 65U, 1.0e-9));
+    CHECK(bounded.snapshot(65U, 100000000U).feedback_seq == 1U);
+
+    openarm::control::ArmRuntime freshness(config.arm[0]);
+    freshness.force_state(zero, zero, 0U);
+    freshness.set_injection(0U, 0U, 0U, 0U, 0U, 1000000000U);
+    for (std::uint64_t now = 10000000U; now <= 50000000U; now += 10000000U) {
+        CHECK(freshness.command_and_step(target, zero, now, 0.01));
+    }
+    CHECK(freshness.complete_fresh(50000000U, 50000000U));
+    const oa_arm_snapshot freshness_boundary =
+        freshness.snapshot(50000000U, 50000000U);
+    CHECK(!freshness.complete_fresh(50000001U, 50000000U));
+    const oa_arm_snapshot stale = freshness.snapshot(50000001U, 50000000U);
+    CHECK(stale.feedback_seq == freshness_boundary.feedback_seq);
+    CHECK(stale.t_ns == 0U);
+    for (std::size_t joint = 0U; joint < 7U; ++joint) {
+        CHECK(stale.q[joint] == freshness_boundary.q[joint]);
+        CHECK(stale.raw_q[joint] == freshness_boundary.raw_q[joint]);
+    }
+}
+
+void test_completion_requires_distinct_delivered_generations() {
+    Fixture fixture;
+    oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+    const auto report = plan_report(plan);
+    const std::uint64_t command = execute(fixture, plan, report, 3000000000ULL);
+    std::uint64_t now = 0U;
+    bool at_goal = false;
+    while (!at_goal && now < report.duration_ns + 1500000000ULL) {
+        now += 10000000U;
+        CHECK(oa_controller_advance(fixture.controller, now) == OA_CONTROL_OK);
+        oa_snapshot state{};
+        init(state);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_CONTROL_OK);
+        at_goal = now >= report.duration_ns &&
+                  std::abs(state.arm[0].q[0] - report.target_q[0][0]) <= 5.0e-4 &&
+                  std::abs(state.arm[0].dq[0]) <= 2.0e-2;
+        CHECK(!has_event(fixture.controller, OA_EVENT_COMPLETED, command));
+    }
+    CHECK(at_goal);
+    for (std::uint32_t side = OA_LEFT; side <= OA_RIGHT; ++side) {
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = side;
+        fault.feedback_delay_ns = 40000000U;
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+    }
+    for (std::size_t cycle = 1U; cycle <= 6U; ++cycle) {
+        CHECK(oa_controller_advance(fixture.controller, now + cycle * 10000000U) == OA_CONTROL_OK);
+        CHECK(!has_event(fixture.controller, OA_EVENT_COMPLETED, command));
+    }
+    CHECK(oa_controller_advance(fixture.controller, now + 70000000U) == OA_CONTROL_OK);
+    CHECK(has_event(fixture.controller, OA_EVENT_COMPLETED, command));
+    oa_motion_plan_destroy(plan);
+}
+
+void test_delayed_feedback_is_retired_by_lifecycle_transitions() {
+    for (const std::uint32_t stop_kind : {OA_STOP_DISABLE, OA_STOP_CONTROLLED}) {
+        Fixture fixture;
+        std::uint64_t command = 0U;
+        oa_motion_plan *plan = start_delayed_motion(
+            fixture, stop_kind, UINT64_C(5000000000), command);
+        const oa_snapshot before = controller_snapshot(fixture);
+        check_stop_payload(before, OA_LIFECYCLE_EXECUTING, true);
+        CHECK(oa_controller_stop(fixture.controller, stop_kind) == OA_CONTROL_OK);
+        const oa_snapshot stopped = controller_snapshot(fixture);
+        const bool enabled = stop_kind == OA_STOP_CONTROLLED;
+        check_stop_payload(stopped, enabled ? OA_LIFECYCLE_ARMED_IDLE
+                                            : OA_LIFECYCLE_DISARMED,
+                           enabled);
+        for (std::size_t side = 0U; side < 2U; ++side) {
+            CHECK(stopped.arm[side].feedback_seq == before.arm[side].feedback_seq + 1U);
+            CHECK(stopped.arm[side].t_ns == 20000000U);
+            for (std::size_t joint = 0U; joint < 7U; ++joint) {
+                CHECK(stopped.arm[side].q[joint] == before.arm[side].q[joint]);
+                CHECK(stopped.arm[side].raw_q[joint] == before.arm[side].raw_q[joint]);
+            }
+        }
+        oa_event stopped_event{};
+        CHECK(take_event(fixture.controller, OA_EVENT_STOPPED, command, stopped_event));
+        CHECK(stopped_event.feedback_seq ==
+              std::min(stopped.arm[0].feedback_seq, stopped.arm[1].feedback_seq));
+        CHECK(oa_controller_advance(fixture.controller, 30000000U) == OA_CONTROL_OK);
+        const oa_snapshot next = controller_snapshot(fixture);
+        for (std::size_t side = 0U; side < 2U; ++side) {
+            check_arm_payload_equal(next.arm[side], stopped.arm[side]);
+        }
+        CHECK(oa_controller_advance(fixture.controller, 40000000U) == OA_CONTROL_OK);
+        const oa_snapshot second = controller_snapshot(fixture);
+        for (std::size_t side = 0U; side < 2U; ++side) {
+            check_arm_payload_equal(second.arm[side], stopped.arm[side]);
+        }
+        CHECK(oa_controller_advance(fixture.controller, 50000000U) == OA_CONTROL_OK);
+        const oa_snapshot post_stop_feedback = controller_snapshot(fixture);
+        check_stop_payload(post_stop_feedback,
+                           enabled ? OA_LIFECYCLE_ARMED_IDLE
+                                   : OA_LIFECYCLE_DISARMED,
+                           enabled);
+        CHECK(post_stop_feedback.arm[0].t_ns == 30000000U);
+        CHECK(post_stop_feedback.arm[1].t_ns == 30000000U);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        std::uint64_t command = 0U;
+        oa_motion_plan *plan = start_delayed_motion(
+            fixture, OA_STOP_CONTROLLED, UINT64_C(5000000000), command);
+        const oa_snapshot before = controller_snapshot(fixture);
+        CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_CONTROL_OK);
+        const oa_snapshot disarmed = controller_snapshot(fixture);
+        check_stop_payload(disarmed, OA_LIFECYCLE_DISARMED, false);
+        for (std::size_t side = 0U; side < 2U; ++side) {
+            CHECK(disarmed.arm[side].feedback_seq == before.arm[side].feedback_seq + 1U);
+            CHECK(disarmed.arm[side].t_ns == 20000000U);
+        }
+        CHECK(oa_controller_advance(fixture.controller, 30000000U) == OA_CONTROL_OK);
+        const oa_snapshot next = controller_snapshot(fixture);
+        for (std::size_t side = 0U; side < 2U; ++side) {
+            check_arm_payload_equal(next.arm[side], disarmed.arm[side]);
+        }
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        std::uint64_t command = 0U;
+        oa_motion_plan *plan = start_delayed_motion(
+            fixture, OA_STOP_CONTROLLED, UINT64_C(5000000000), command);
+        const oa_snapshot before = controller_snapshot(fixture);
+        CHECK(oa_controller_set_interlock(fixture.controller, 1U, 0U) == OA_CONTROL_EESTOP);
+        const oa_snapshot estop = controller_snapshot(fixture);
+        check_stop_payload(estop, OA_LIFECYCLE_ESTOP, false);
+        for (std::size_t side = 0U; side < 2U; ++side) {
+            CHECK(estop.arm[side].feedback_seq == before.arm[side].feedback_seq + 1U);
+            CHECK(estop.arm[side].t_ns == 20000000U);
+        }
+        reset_and_reverify(fixture);
+        CHECK(oa_controller_advance(fixture.controller, 30000000U) == OA_CONTROL_OK);
+        const oa_snapshot after_close = controller_snapshot(fixture);
+        check_stop_payload(after_close, OA_LIFECYCLE_DISARMED, false);
+        CHECK(after_close.arm[0].t_ns == 30000000U);
+        CHECK(after_close.arm[1].t_ns == 30000000U);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        std::uint64_t command = 0U;
+        oa_motion_plan *plan = start_delayed_motion(
+            fixture, OA_STOP_CONTROLLED, 20000000U, command);
+        CHECK(oa_controller_advance(fixture.controller, 30000000U) == OA_CONTROL_ESTALE);
+        const oa_snapshot watchdog = controller_snapshot(fixture);
+        check_stop_payload(watchdog, OA_LIFECYCLE_FAULT, true);
+        CHECK(watchdog.arm[0].t_ns == 30000000U);
+        CHECK(watchdog.arm[1].t_ns == 30000000U);
+        reset_and_reverify(fixture);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        std::uint64_t command = 0U;
+        oa_motion_plan *plan = start_delayed_motion(
+            fixture, OA_STOP_DISABLE, UINT64_C(5000000000), command);
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = OA_LEFT;
+        fault.command_fail_mask = 1U;
+        fault.feedback_delay_ns = 20000000U;
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 30000000U) == OA_CONTROL_ECAN);
+        const oa_snapshot bus_fault = controller_snapshot(fixture);
+        check_stop_payload(bus_fault, OA_LIFECYCLE_FAULT, false);
+        CHECK(bus_fault.arm[0].t_ns == 30000000U);
+        CHECK(bus_fault.arm[1].t_ns == 30000000U);
+        reset_and_reverify(fixture);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        std::uint64_t command = 0U;
+        oa_motion_plan *plan = start_delayed_motion(
+            fixture, OA_STOP_CONTROLLED, UINT64_C(5000000000), command);
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = OA_RIGHT;
+        fault.fault_mask = 1U << 3U;
+        fault.feedback_delay_ns = 20000000U;
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 30000000U) == OA_CONTROL_EFAULT);
+        const oa_snapshot motor_fault = controller_snapshot(fixture);
+        check_stop_payload(motor_fault, OA_LIFECYCLE_FAULT, false, 1, 3);
+        CHECK((motor_fault.arm[1].fault_mask & (1U << 3U)) != 0U);
+        CHECK(motor_fault.arm[0].t_ns == 30000000U);
+        CHECK(motor_fault.arm[1].t_ns == 30000000U);
+        reset_and_reverify(fixture);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        std::uint64_t command = 0U;
+        oa_motion_plan *plan = start_delayed_motion(
+            fixture, OA_STOP_CONTROLLED, UINT64_C(5000000000), command);
+        oa_sim_fault fault{};
+        init(fault);
+        fault.side = OA_LEFT;
+        fault.drop_mask = 1U;
+        fault.feedback_delay_ns = 20000000U;
+        CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 30000000U) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 40000000U) == OA_CONTROL_OK);
+        const oa_snapshot before_partial = controller_snapshot(fixture);
+        CHECK(oa_controller_advance(fixture.controller, 50000000U) == OA_CONTROL_ESTALE);
+        const oa_snapshot partial = controller_snapshot(fixture);
+        check_stop_payload(partial, OA_LIFECYCLE_FAULT, false);
+        for (std::size_t joint = 0U; joint < 7U; ++joint) {
+            CHECK(partial.arm[0].q[joint] == before_partial.arm[0].q[joint]);
+            CHECK(partial.arm[0].raw_q[joint] == before_partial.arm[0].raw_q[joint]);
+        }
+        reset_and_reverify(fixture);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        std::uint64_t command = 0U;
+        oa_motion_plan *plan = start_delayed_motion(
+            fixture, OA_STOP_DISABLE, UINT64_C(5000000000), command);
+        CHECK(oa_controller_advance(fixture.controller, 40000000U) == OA_CONTROL_ETIMEOUT);
+        const oa_snapshot deadline = controller_snapshot(fixture);
+        check_stop_payload(deadline, OA_LIFECYCLE_FAULT, false);
+        CHECK(deadline.arm[0].t_ns == 40000000U);
+        CHECK(deadline.arm[1].t_ns == 40000000U);
+        reset_and_reverify(fixture);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        for (;;) {
+            oa_event event{};
+            init(event);
+            if (oa_controller_poll_event(fixture.controller, 0U, &event) == OA_CONTROL_ETIMEOUT) {
+                break;
+            }
+        }
+        for (std::size_t event = 0U; event < 64U; ++event) {
+            CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_CONTROL_OK);
+        }
+        set_feedback_delay(fixture, 20000000U);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_CONTROL_OK);
+        CHECK(oa_controller_set_interlock(fixture.controller, 1U, 0U) == OA_CONTROL_EBUSY);
+        const oa_snapshot overflow = controller_snapshot(fixture);
+        check_stop_payload(overflow, OA_LIFECYCLE_FAULT, false);
+        CHECK(overflow.arm[0].t_ns == 20000000U);
+        CHECK(overflow.arm[1].t_ns == 20000000U);
+        reset_and_reverify(fixture);
+    }
+
+    {
+        const auto config = valid_config();
+        oa_manifest *manifest = nullptr;
+        CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_OK);
+        auto options = virtual_options();
+        oa_controller *controller = nullptr;
+        CHECK(oa_controller_create(manifest, &options, &controller) == OA_CONTROL_OK);
+        CHECK(oa_controller_set_interlock(controller, 1U, 0U) == OA_CONTROL_EESTOP);
+        oa_snapshot state{};
+        init(state);
+        CHECK(oa_controller_snapshot(controller, &state) == OA_CONTROL_OK);
+        CHECK(state.lifecycle == OA_LIFECYCLE_ESTOP);
+        CHECK(state.arm[0].feedback_seq == 0U);
+        CHECK(state.arm[1].feedback_seq == 0U);
+        CHECK(state.arm[0].fresh_mask == 0U);
+        CHECK(state.arm[1].fresh_mask == 0U);
+        oa_controller_destroy(controller);
+        oa_manifest_destroy(manifest);
+    }
+}
+
+void test_event_overflow_terminates_every_publishing_path() {
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 64U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report, 10000000U);
+        std::uint64_t command = UINT64_MAX;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_EBUSY);
+        CHECK(command == UINT64_MAX);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id != 0U);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 63U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.2);
+        const auto report = plan_report(plan);
+        set_feedback_delay(fixture, 20000000U);
+        auto request = request_for(report, 10000000U);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        const oa_snapshot before = controller_snapshot(fixture);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_CONTROL_EBUSY);
+        const oa_snapshot overflow = controller_snapshot(fixture);
+        check_stop_payload(overflow, OA_LIFECYCLE_FAULT, false);
+        CHECK(overflow.arm[0].feedback_seq == before.arm[0].feedback_seq + 1U);
+        CHECK(overflow.arm[1].feedback_seq == before.arm[1].feedback_seq + 1U);
+        CHECK(overflow.arm[0].t_ns == 10000000U);
+        CHECK(overflow.arm[1].t_ns == 10000000U);
+        for (std::size_t side = 0U; side < 2U; ++side) {
+            for (std::size_t joint = 0U; joint < 7U; ++joint) {
+                CHECK(overflow.arm[side].q[joint] == before.arm[side].q[joint]);
+                CHECK(overflow.arm[side].raw_q[joint] == before.arm[side].raw_q[joint]);
+            }
+        }
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 63U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        oa_control_status status = OA_CONTROL_OK;
+        for (std::uint64_t now = 10000000U;
+             status == OA_CONTROL_OK && now <= report.duration_ns + 1000000000ULL;
+             now += 10000000U) {
+            status = oa_controller_advance(fixture.controller, now);
+        }
+        CHECK(status == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 62U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        oa_control_status status = OA_CONTROL_OK;
+        bool post_duration_advance_succeeded = false;
+        for (std::uint64_t now = 10000000U;
+             status == OA_CONTROL_OK && now <= report.duration_ns + 1000000000ULL;
+             now += 10000000U) {
+            status = oa_controller_advance(fixture.controller, now);
+            post_duration_advance_succeeded =
+                post_duration_advance_succeeded ||
+                (status == OA_CONTROL_OK && now >= report.duration_ns);
+        }
+        CHECK(post_duration_advance_succeeded);
+        CHECK(status == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 63U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_stop(fixture.controller, OA_STOP_DISABLE) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 62U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_stop(fixture.controller, OA_STOP_CONTROLLED) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        fill_event_ring(fixture, 63U);
+        fixture.state = controller_snapshot(fixture);
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_CONTROL_OK);
+        CHECK(oa_controller_heartbeat(fixture.controller, command, 0U) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == command);
+        oa_motion_plan_destroy(plan);
+    }
+
+    {
+        Fixture fixture;
+        drain_events(fixture);
+        for (std::size_t event = 0U; event < 64U; ++event) {
+            CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_CONTROL_OK);
+        }
+        oa_arm_challenge challenge{};
+        init(challenge);
+        CHECK(oa_controller_get_arm_challenge(fixture.controller, &challenge) == OA_CONTROL_OK);
+        CHECK(oa_controller_arm(fixture.controller, &challenge) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+
+        oa_arm_challenge reset_challenge{};
+        init(reset_challenge);
+        CHECK(oa_controller_get_arm_challenge(fixture.controller, &reset_challenge) == OA_CONTROL_OK);
+        oa_reset_request reset{};
+        init(reset);
+        reset.verify_epoch = reset_challenge.verify_epoch;
+        reset.nonce = reset_challenge.nonce;
+        CHECK(oa_controller_reset_fault(fixture.controller, &reset) == OA_CONTROL_OK);
+        oa_verify_report verify{};
+        init(verify);
+        CHECK(oa_controller_open_and_verify(fixture.controller, &verify) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == 0U);
+    }
+
+    {
+        Fixture fixture;
+        drain_events(fixture);
+        for (std::size_t event = 0U; event < 64U; ++event) {
+            CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_CONTROL_OK);
+        }
+        CHECK(oa_controller_disarm(fixture.controller, UINT64_MAX) == OA_CONTROL_EBUSY);
+        check_stop_payload(controller_snapshot(fixture), OA_LIFECYCLE_FAULT, false);
+        CHECK(take_overflow_event(fixture).command_id == 0U);
     }
 }
 
@@ -759,7 +1548,7 @@ void test_watchdog_estop_event_overflow_and_concurrency() {
         for (std::size_t index = 0; index < 70U; ++index) {
             const oa_control_status status = oa_controller_disarm(fixture.controller, UINT64_MAX);
             if (status != OA_CONTROL_OK) {
-                CHECK(status == OA_CONTROL_ESTATE);
+                CHECK(status == OA_CONTROL_EBUSY);
                 break;
             }
         }
@@ -1209,6 +1998,11 @@ int main() {
     test_faults_gate_arming_and_idle_motion();
     test_plan_ownership_and_start_drift();
     test_coherent_feedback_skew_and_partial_send();
+    test_delayed_feedback_public_abi_oracle();
+    test_feedback_generation_atomicity_and_bounds();
+    test_completion_requires_distinct_delivered_generations();
+    test_delayed_feedback_is_retired_by_lifecycle_transitions();
+    test_event_overflow_terminates_every_publishing_path();
     test_cartesian_path_policies_and_scene_binding();
     test_watchdog_estop_event_overflow_and_concurrency();
     test_invalid_handles_and_transactional_create();

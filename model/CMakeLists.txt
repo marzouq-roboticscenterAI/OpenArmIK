@@ -17,6 +17,7 @@ set(OA_XACRO_PYTHONPATH "" CACHE STRING "PYTHONPATH required by xacro")
 set(OA_XACRO_AMENT_PREFIX "" CACHE STRING "Base AMENT_PREFIX_PATH required by xacro")
 
 add_library(openarm_model STATIC src/openarm_model.c)
+add_library(OpenArm::Model ALIAS openarm_model)
 target_include_directories(openarm_model PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
