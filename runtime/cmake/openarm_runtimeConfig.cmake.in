@@ -1,0 +1,11 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+find_dependency(OpenArmCan 1 CONFIG)
+find_dependency(openarm_model 1 CONFIG)
+find_dependency(openarm_commission CONFIG)
+find_dependency(OpenArmTransport 1 CONFIG)
+find_dependency(openarm_control 1 CONFIG)
+include("${CMAKE_CURRENT_LIST_DIR}/openarm_runtimeTargets.cmake")
+check_required_components(openarm_runtime)
