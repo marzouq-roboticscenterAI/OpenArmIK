@@ -11,56 +11,83 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(ament_cmake REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(openarm_control CONFIG REQUIRED)
+find_package(openarm_control_msgs REQUIRED)
 find_package(openarm_description REQUIRED)
-find_package(openarm_model CONFIG REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(Threads REQUIRED)
 find_package(X11 REQUIRED)
 
 option(OPENARM_IK_ROS_COVERAGE "Instrument authored adapter code for gcov" OFF)
 
-add_library(openarm_ik_transaction STATIC src/paired_transaction.cpp)
-target_include_directories(openarm_ik_transaction PRIVATE include)
-target_compile_options(openarm_ik_transaction PRIVATE -Wall -Wextra -Wpedantic -Werror)
-target_link_libraries(openarm_ik_transaction PUBLIC openarm_model::openarm_model)
+add_library(openarm_virtual_control_session STATIC src/virtual_control_session.cpp)
+target_include_directories(openarm_virtual_control_session PUBLIC include)
+target_compile_options(openarm_virtual_control_session PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_virtual_control_session PUBLIC
+  openarm_control::openarm_control Threads::Threads)
 
 add_executable(openarm_ik_ros_node src/openarm_ik_ros_node.cpp)
 target_include_directories(openarm_ik_ros_node PRIVATE include)
 target_compile_options(openarm_ik_ros_node PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_ik_ros_node PRIVATE
-  openarm_ik_transaction
+  openarm_virtual_control_session
   diagnostic_msgs::diagnostic_msgs
   geometry_msgs::geometry_msgs
+  openarm_control_msgs::openarm_control_msgs
   rclcpp::rclcpp
-  sensor_msgs::sensor_msgs)
+  rclcpp_action::rclcpp_action
+  sensor_msgs::sensor_msgs
+  std_msgs::std_msgs
+  tf2::tf2
+  tf2_geometry_msgs::tf2_geometry_msgs
+  tf2_ros::tf2_ros)
+
+add_executable(openarm_control_cli src/openarm_control_cli.cpp)
+target_compile_options(openarm_control_cli PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_control_cli PRIVATE
+  diagnostic_msgs::diagnostic_msgs
+  openarm_control_msgs::openarm_control_msgs
+  rclcpp::rclcpp
+  rclcpp_action::rclcpp_action)
 
 add_executable(close_rviz_window src/close_rviz_window.cpp)
 target_compile_options(close_rviz_window PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(close_rviz_window PRIVATE X11::X11)
 
 if(OPENARM_IK_ROS_COVERAGE)
-  foreach(target openarm_ik_transaction openarm_ik_ros_node)
+  foreach(target openarm_virtual_control_session openarm_ik_ros_node openarm_control_cli)
     target_compile_options(${target} PRIVATE --coverage -O0)
     target_link_options(${target} PRIVATE --coverage)
   endforeach()
 endif()
 
-install(TARGETS openarm_ik_ros_node close_rviz_window DESTINATION lib/${PROJECT_NAME})
+install(TARGETS openarm_ik_ros_node openarm_control_cli close_rviz_window
+  DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch rviz DESTINATION share/${PROJECT_NAME})
-install(FILES package.xml DESTINATION share/${PROJECT_NAME})
+install(FILES package.xml README.md DESTINATION share/${PROJECT_NAME})
 install(FILES "${openarm_model_GENERATED_URDF}" DESTINATION share/${PROJECT_NAME}/urdf)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
-  ament_add_gtest(test_paired_transaction test/test_paired_transaction.cpp)
-  target_link_libraries(test_paired_transaction openarm_ik_transaction)
-  target_include_directories(test_paired_transaction PRIVATE include)
-  target_compile_options(test_paired_transaction PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  ament_add_gtest(test_virtual_control_session test/test_virtual_control_session.cpp)
+  target_link_libraries(test_virtual_control_session openarm_virtual_control_session)
+  target_include_directories(test_virtual_control_session PRIVATE include)
+  target_compile_options(test_virtual_control_session PRIVATE -Wall -Wextra -Wpedantic -Werror)
   if(OPENARM_IK_ROS_COVERAGE)
-    target_compile_options(test_paired_transaction PRIVATE --coverage -O0)
-    target_link_options(test_paired_transaction PRIVATE --coverage)
+    target_compile_options(test_virtual_control_session PRIVATE --coverage -O0)
+    target_link_options(test_virtual_control_session PRIVATE --coverage)
   endif()
+  add_test(
+    NAME test_no_can_linkage
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_no_can_linkage.py
+      --executable $<TARGET_FILE:openarm_ik_ros_node>)
   get_filename_component(OPENARM_DESCRIPTION_SHARE "${openarm_description_DIR}/.." ABSOLUTE)
   add_test(
     NAME test_generated_urdf
@@ -68,22 +95,17 @@ if(BUILD_TESTING)
       --urdf ${openarm_model_GENERATED_URDF}
       --description-root ${OPENARM_DESCRIPTION_SHARE})
   add_test(
-    NAME test_no_can_linkage
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_no_can_linkage.py
-      --executable $<TARGET_FILE:openarm_ik_ros_node>)
+    NAME test_invalid_expiry_parameter
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_invalid_expiry_parameter.py)
   add_test(
     NAME test_ros_contract
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_ros_contract.py)
-  add_test(
-    NAME test_invalid_expiry_parameter
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_invalid_expiry_parameter.py)
+  set_tests_properties(test_ros_contract test_no_can_linkage test_invalid_expiry_parameter
+    PROPERTIES RUN_SERIAL TRUE)
   add_test(NAME test_close_rviz_window_help COMMAND close_rviz_window --help)
   add_test(NAME test_close_rviz_window_invalid_pid COMMAND close_rviz_window 0)
-  add_test(
-    NAME test_close_rviz_window_invalid_timeout
-    COMMAND close_rviz_window 1 --timeout infinity)
-  set_tests_properties(
-    test_close_rviz_window_invalid_pid test_close_rviz_window_invalid_timeout
+  add_test(NAME test_close_rviz_window_invalid_timeout COMMAND close_rviz_window 1 --timeout infinity)
+  set_tests_properties(test_close_rviz_window_invalid_pid test_close_rviz_window_invalid_timeout
     PROPERTIES WILL_FAIL TRUE)
 endif()
 

@@ -30,6 +30,11 @@ or PMAX/VMAX/TMAX/gear profiles, non-unit arm mappings, and limits outside the
 pinned URDF. Text/digest loading is reserved and returns
 `OA_EUNSUPPORTED`; normal runtime never edits a manifest.
 
+`oa_manifest_create_openarm_v10_virtual` creates the canonical fixed two-arm,
+fourteen-motor virtual manifest used by the ROS adapter and controller tests.
+Its identities and bus labels are explicitly in-process; it performs no CAN
+discovery or hardware access.
+
 State is encoder-derived and published only from one complete coherent feedback
 generation. Missing members invalidate the generation immediately; cross-bus
 skew and partial paired command cycles latch a two-arm fault. J1--J7 use the output-shaft relationship

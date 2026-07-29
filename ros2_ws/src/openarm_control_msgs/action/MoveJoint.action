@@ -1,0 +1,26 @@
+builtin_interfaces/Time stamp
+string joint_name
+float64 target_rad
+---
+uint8 OUTCOME_COMPLETED=1
+uint8 OUTCOME_CANCELED=2
+uint8 OUTCOME_REJECTED=3
+uint8 OUTCOME_ABORTED=4
+uint8 outcome
+uint32 control_status
+unique_identifier_msgs/UUID goal_id
+uint64 command_id
+uint64 seed_feedback_seq
+uint64 terminal_feedback_seq
+uint32 lifecycle
+uint32 event
+uint32 cause
+bool collision_checked
+string reason
+---
+uint32 lifecycle
+uint32 event
+uint64 command_id
+uint64 left_feedback_seq
+uint64 right_feedback_seq
+float64 measured_progress

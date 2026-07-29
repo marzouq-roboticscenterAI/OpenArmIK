@@ -260,6 +260,12 @@ oa_execute_request request_for(const oa_motion_plan_report &report,
                                std::uint64_t start_ns = 0U);
 
 void test_manifest_validation() {
+    oa_manifest *standard = nullptr;
+    CHECK(oa_manifest_create_openarm_v10_virtual(&standard) == OA_CONTROL_OK);
+    CHECK(standard != nullptr);
+    oa_manifest_destroy(standard);
+    CHECK(oa_manifest_create_openarm_v10_virtual(nullptr) == OA_CONTROL_EINVAL);
+
     auto config = valid_config();
     oa_manifest *manifest = nullptr;
     CHECK(oa_manifest_create(&config, &manifest) == OA_CONTROL_OK);

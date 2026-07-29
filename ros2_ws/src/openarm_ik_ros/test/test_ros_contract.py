@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the standard PoseArray adapter contract against a real headless launch."""
+"""Exercise measured state, action CLI, authority, diagnostics, TF ownership, and shutdown."""
 import os
 import signal
 import subprocess
@@ -7,24 +7,14 @@ import time
 
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray
-from geometry_msgs.msg import Pose, PoseArray
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rclpy.time import Time
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
-from tf2_msgs.msg import TFMessage
-from tf2_ros import Buffer, TransformListener
 
 
 EXPECTED_NAMES = [
     *(f"openarm_left_joint{index}" for index in range(1, 8)),
     *(f"openarm_right_joint{index}" for index in range(1, 8)),
-    "openarm_left_finger_joint1",
-    "openarm_right_finger_joint1",
 ]
-
-
-def values(status):
-    return {entry.key: entry.value for entry in status.values}
 
 
 def wait_for(node, predicate, timeout=8.0):
@@ -36,113 +26,118 @@ def wait_for(node, predicate, timeout=8.0):
     raise AssertionError("timed out waiting for ROS contract event")
 
 
-def paired_message(left, right, node):
-    message = PoseArray()
-    message.header.frame_id = "world"
-    message.header.stamp = node.get_clock().now().to_msg()
-    for xyz in (left, right):
-        pose = Pose()
-        pose.position.x, pose.position.y, pose.position.z = xyz
-        message.poses.append(pose)
-    return message
+def fields(message):
+    return {item.key: item.value for item in message.status[0].values}
 
 
 def main():
+    environment = os.environ.copy()
+    environment["ROS_DOMAIN_ID"] = str(100 + os.getpid() % 100)
     launch = subprocess.Popen(
         ["ros2", "launch", "openarm_ik_ros", "openarm_ik_rviz.launch.py", "rviz:=false"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         start_new_session=True,
-        env=os.environ.copy(),
+        env=environment,
     )
+    os.environ["ROS_DOMAIN_ID"] = environment["ROS_DOMAIN_ID"]
     rclpy.init()
-    node = rclpy.create_node("openarm_ik_ros_contract_test")
-    states, diagnostics, transforms = [], [], {}
-    qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
-    static_qos = QoSProfile(
-        depth=1,
-        reliability=ReliabilityPolicy.RELIABLE,
-        durability=DurabilityPolicy.TRANSIENT_LOCAL,
-    )
+    node = rclpy.create_node("openarm_virtual_control_contract_test")
+    states = []
+    diagnostics = []
+    qos = QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE)
     node.create_subscription(JointState, "/joint_states", states.append, qos)
     node.create_subscription(DiagnosticArray, "/openarm_ik/diagnostics", diagnostics.append, qos)
-
-    def receive_tf(message: TFMessage):
-        for transform in message.transforms:
-            transforms[transform.child_frame_id] = transform
-
-    node.create_subscription(TFMessage, "/tf", receive_tf, qos)
-    node.create_subscription(TFMessage, "/tf_static", receive_tf, static_qos)
-    tf_buffer = Buffer()
-    listener = TransformListener(tf_buffer, node)
-    publisher = node.create_publisher(PoseArray, "/openarm_ik/paired_xyz", qos)
     try:
-        wait_for(node, lambda: states and tf_buffer.can_transform("world", "openarm_body_link0", Time()))
+        wait_for(node, lambda: len(states) >= 3 and diagnostics)
         assert states[-1].name == EXPECTED_NAMES
+        assert len(states[-1].position) == 14
+        assert len(states[-1].velocity) == 14
+        assert len(states[-1].effort) == 14
+        assert states[-1].header.stamp.sec > 0
         assert len(node.get_publishers_info_by_topic("/joint_states")) == 1
         assert len(node.get_publishers_info_by_topic("/tf")) == 1
-        assert publisher.get_subscription_count() == 1
-        assert tf_buffer.lookup_transform("world", "openarm_body_link0", Time()).header.frame_id == "world"
-
-        publisher.publish(paired_message((0.20, 0.30, 0.85), (0.20, -0.30, 0.85), node))
-        wait_for(node, lambda: diagnostics and values(diagnostics[-1].status[0]).get("committed") == "true")
-        report = values(diagnostics[-1].status[0])
-        assert report["achieved_available"] == "true"
-        assert report["redundancy_policy"] == "continuity-v1"
+        assert len(node.get_publishers_info_by_topic("/tf_static")) == 1
+        report = fields(diagnostics[-1])
+        level = diagnostics[-1].status[0].level
+        if isinstance(level, bytes):
+            level = int.from_bytes(level)
+        assert level == 1, (level, report)
         assert report["backend"] == "virtual"
         assert report["collision_checked"] == "false"
-        left_expected = tuple(map(float, report["left_achieved_hand_tcp_xyz"].split(",")))
-        right_expected = tuple(map(float, report["right_achieved_hand_tcp_xyz"].split(",")))
+        assert report["state_source"] == "oa_snapshot_encoder_feedback"
+        assert report["physical_motion_authorized"] == "false"
+        assert report["left_fresh_mask"] == "127"
+        assert report["right_fresh_mask"] == "127"
 
-        def tcp_matches_diagnostic():
-            if not tf_buffer.can_transform("world", "openarm_left_hand_tcp", Time()) or \
-                    not tf_buffer.can_transform("world", "openarm_right_hand_tcp", Time()):
-                return False
-            left = tf_buffer.lookup_transform("world", "openarm_left_hand_tcp", Time()).transform.translation
-            right = tf_buffer.lookup_transform("world", "openarm_right_hand_tcp", Time()).transform.translation
-            return all(abs(actual - expected) < 1e-6 for actual, expected in zip(
-                (left.x, left.y, left.z), left_expected)) and all(
-                abs(actual - expected) < 1e-6 for actual, expected in zip(
-                    (right.x, right.y, right.z), right_expected))
+        duplicate = subprocess.run(
+            ["ros2", "run", "openarm_ik_ros", "openarm_ik_ros_node"],
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=5.0,
+            check=False,
+        )
+        assert duplicate.returncode != 0
+        assert "another local JointState authority" in duplicate.stderr
 
+        invalid_name = subprocess.run(
+            ["ros2", "run", "openarm_ik_ros", "openarm_control_cli", "move-joint",
+             "unknown_joint", "0.1"],
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=5.0,
+            check=False,
+        )
+        assert invalid_name.returncode == 4
+        assert "goal rejected" in invalid_name.stderr
+
+        invalid_frame = subprocess.run(
+            ["ros2", "run", "openarm_ik_ros", "openarm_control_cli", "move-paired-tcp",
+             "missing_frame", "0.2", "0.3", "0.85", "0.2", "-0.3", "0.85"],
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=5.0,
+            check=False,
+        )
+        assert invalid_frame.returncode == 7
+        assert "transform_unavailable" in invalid_frame.stderr
+
+        before_sequence = int(report["left_feedback_seq"])
+        command = subprocess.run(
+            ["ros2", "run", "openarm_ik_ros", "openarm_control_cli", "move-joint",
+             "openarm_left_joint4", "0.2"],
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=15.0,
+            check=False,
+        )
+        assert command.returncode == 0, command.stderr
+        assert "completed command_id=" in command.stdout
         wait_for(
             node,
-            tcp_matches_diagnostic,
+            lambda: diagnostics and fields(diagnostics[-1]).get("committed") == "true"
+            and states and abs(states[-1].position[3] - 0.2) < 5e-4,
         )
-        left_tcp = tf_buffer.lookup_transform("world", "openarm_left_hand_tcp", Time()).transform.translation
-        right_tcp = tf_buffer.lookup_transform("world", "openarm_right_hand_tcp", Time()).transform.translation
-        for actual, expected in zip(
-            (left_tcp.x, left_tcp.y, left_tcp.z),
-            left_expected,
-        ):
-            assert abs(actual - expected) < 1e-6
-        for actual, expected in zip(
-            (right_tcp.x, right_tcp.y, right_tcp.z),
-            right_expected,
-        ):
-            assert abs(actual - expected) < 1e-6
-        committed_state = list(states[-1].position)
-
-        publisher.publish(paired_message((10.0, 10.0, 10.0), (0.20, -0.30, 0.85), node))
-        wait_for(node, lambda: diagnostics and values(diagnostics[-1].status[0]).get("committed") == "false")
-        failure = values(diagnostics[-1].status[0])
-        assert failure["achieved_available"] == "false"
-        assert "left_residual_m" not in failure
-        assert "left_achieved_hand_tcp_matrix" not in failure
-        time.sleep(0.2)
-        rclpy.spin_once(node, timeout_sec=0.1)
-        assert list(states[-1].position) == committed_state
+        assert int(fields(diagnostics[-1])["left_feedback_seq"]) > before_sequence
+        assert abs(states[-1].position[3] - 0.2) < 5e-4
     finally:
-        del listener
         node.destroy_node()
         rclpy.shutdown()
+        started = time.monotonic()
         os.killpg(launch.pid, signal.SIGINT)
         try:
-            launch.wait(timeout=5.0)
+            launch.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
             os.killpg(launch.pid, signal.SIGKILL)
             launch.wait()
+            raise AssertionError("headless launch exceeded the two-second shutdown bound")
+        assert time.monotonic() - started < 2.0
+        assert launch.returncode == 0
 
 
 if __name__ == "__main__":

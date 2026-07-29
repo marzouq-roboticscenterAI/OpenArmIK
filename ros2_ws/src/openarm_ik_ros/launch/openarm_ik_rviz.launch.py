@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch the virtual paired position-IK RViz workflow; it has no hardware backend."""
+"""Launch the measured virtual controller and its sole robot-state TF authority."""
 from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory

@@ -32,6 +32,7 @@ add_library(openarm_control STATIC
     src/c_api.cpp
     src/control_core.cpp
     src/kinematics.cpp
+    src/standard_manifest.cpp
 )
 add_library(openarm_control::openarm_control ALIAS openarm_control)
 target_include_directories(openarm_control

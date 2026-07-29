@@ -331,6 +331,7 @@ typedef struct oa_sim_state {
     ((uint32_t)offsetof(oa_sim_fault, fault_status))
 
 oa_control_status oa_manifest_create(const oa_manifest_config *config, oa_manifest **out);
+oa_control_status oa_manifest_create_openarm_v10_virtual(oa_manifest **out);
 /* Stage A uses the compiled config builder. Text/digest loading is reserved. */
 oa_control_status oa_manifest_load(const char *path, const char *sha256_path,
                                    oa_manifest **out);

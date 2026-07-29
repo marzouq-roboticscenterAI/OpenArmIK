@@ -1,0 +1,28 @@
+std_msgs/Header header
+geometry_msgs/Point left_tcp_m
+geometry_msgs/Point right_tcp_m
+---
+uint8 OUTCOME_COMPLETED=1
+uint8 OUTCOME_CANCELED=2
+uint8 OUTCOME_REJECTED=3
+uint8 OUTCOME_ABORTED=4
+uint8 outcome
+uint32 control_status
+unique_identifier_msgs/UUID goal_id
+uint64 command_id
+uint64 left_seed_feedback_seq
+uint64 right_seed_feedback_seq
+uint64 left_terminal_feedback_seq
+uint64 right_terminal_feedback_seq
+uint32 lifecycle
+uint32 event
+uint32 cause
+bool collision_checked
+string reason
+---
+uint32 lifecycle
+uint32 event
+uint64 command_id
+uint64 left_feedback_seq
+uint64 right_feedback_seq
+float64 measured_progress
