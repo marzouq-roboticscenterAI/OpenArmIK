@@ -5,12 +5,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct oa_can_header {
+    uint32_t struct_size;
+    uint32_t abi_version;
+} oa_can_header;
+
 struct oa_can_fake {
-    oa_can_frame *queue;
+    oa_can_received_frame *queue;
     size_t capacity;
     size_t head;
     size_t count;
     size_t sent_count;
+    size_t rejected_control_count;
+    uint64_t now_ns;
     oa_can_fake_lifecycle lifecycle;
 };
 
@@ -23,7 +30,29 @@ enum {
 };
 
 static int oa_valid_version(uint32_t struct_size, size_t required, uint32_t abi_version) {
-    return struct_size >= required && abi_version == OA_CAN_ABI_VERSION;
+    return (size_t)struct_size >= required && abi_version == OA_CAN_ABI_VERSION;
+}
+
+static int oa_valid_output(const void *output, size_t required) {
+    oa_can_header header;
+    if (output == NULL) return 0;
+    (void)memcpy(&header, output, sizeof(header));
+    return oa_valid_version(header.struct_size, required, header.abi_version);
+}
+
+static void oa_clear_output(void *output, size_t size) {
+    oa_can_header header;
+    (void)memset(output, 0, size);
+    header.struct_size = (uint32_t)size;
+    header.abi_version = OA_CAN_ABI_VERSION;
+    (void)memcpy(output, &header, sizeof(header));
+}
+
+static void oa_seed_output(void *output, size_t size) {
+    oa_can_header header;
+    header.struct_size = (uint32_t)size;
+    header.abi_version = OA_CAN_ABI_VERSION;
+    (void)memcpy(output, &header, sizeof(header));
 }
 
 static int oa_valid_standard_id(uint16_t id) {
@@ -39,34 +68,28 @@ static int oa_valid_type(oa_can_motor_type motor_type) {
            motor_type == OA_CAN_MOTOR_DM4310;
 }
 
-static void oa_init_frame(oa_can_frame *frame, uint16_t id) {
-    (void)memset(frame, 0, sizeof(*frame));
-    frame->struct_size = (uint32_t)sizeof(*frame);
-    frame->abi_version = OA_CAN_ABI_VERSION;
+static void oa_fill_frame(oa_can_frame *frame, uint16_t id) {
+    oa_clear_output(frame, sizeof(*frame));
     frame->can_id = id;
     frame->dlc = 8u;
 }
 
 static double oa_from_uint(uint32_t value, double lower, double upper, unsigned int bits) {
-    const double maximum = (double)((1u << bits) - 1u);
+    const double maximum = (double)((UINT32_C(1) << bits) - UINT32_C(1));
     return ((double)value / maximum) * (upper - lower) + lower;
 }
 
 static uint32_t oa_to_uint(double value, double lower, double upper, unsigned int bits) {
-    const double maximum = (double)((1u << bits) - 1u);
+    const double maximum = (double)((UINT32_C(1) << bits) - UINT32_C(1));
     return (uint32_t)((value - lower) * maximum / (upper - lower));
 }
 
 static oa_can_status oa_limit_value(double input, double lower, double upper,
                                     oa_can_range_policy policy, uint32_t bit,
                                     uint32_t *saturated_mask, double *out_value) {
-    if (!isfinite(input)) {
-        return OA_CAN_EINVAL;
-    }
+    if (!isfinite(input)) return OA_CAN_EINVAL;
     if (input < lower || input > upper) {
-        if (policy != OA_CAN_RANGE_SATURATE) {
-            return OA_CAN_ERANGE;
-        }
+        if (policy != OA_CAN_RANGE_SATURATE) return OA_CAN_ERANGE;
         *saturated_mask |= bit;
         *out_value = input < lower ? lower : upper;
         return OA_CAN_OK;
@@ -76,12 +99,10 @@ static oa_can_status oa_limit_value(double input, double lower, double upper,
 }
 
 oa_can_status oa_can_motor_limits(oa_can_motor_type motor_type, oa_can_limits *out_limits) {
-    if (out_limits == NULL || !oa_valid_type(motor_type)) {
+    if (!oa_valid_type(motor_type) || !oa_valid_output(out_limits, sizeof(*out_limits))) {
         return OA_CAN_EINVAL;
     }
-    (void)memset(out_limits, 0, sizeof(*out_limits));
-    out_limits->struct_size = (uint32_t)sizeof(*out_limits);
-    out_limits->abi_version = OA_CAN_ABI_VERSION;
+    oa_clear_output(out_limits, sizeof(*out_limits));
     out_limits->position_min_rad = -12.5;
     out_limits->position_max_rad = 12.5;
     out_limits->kp_min = 0.0;
@@ -124,16 +145,14 @@ oa_can_status oa_can_encode_mit(const oa_can_mit_command *command,
     uint32_t kd_raw;
     uint32_t torque_raw;
     oa_can_status status;
-    if (command == NULL || out_frame == NULL || out_result == NULL ||
+    if (command == NULL || !oa_valid_output(out_frame, sizeof(*out_frame)) ||
+        !oa_valid_output(out_result, sizeof(*out_result)) ||
         !oa_valid_version(command->struct_size, sizeof(*command), command->abi_version) ||
         !oa_valid_standard_id(command->send_id) ||
-        (policy != OA_CAN_RANGE_REJECT && policy != OA_CAN_RANGE_SATURATE)) {
-        return OA_CAN_EINVAL;
-    }
+        (policy != OA_CAN_RANGE_REJECT && policy != OA_CAN_RANGE_SATURATE)) return OA_CAN_EINVAL;
+    oa_seed_output(&limits, sizeof(limits));
     status = oa_can_motor_limits(command->motor_type, &limits);
-    if (status != OA_CAN_OK) {
-        return status;
-    }
+    if (status != OA_CAN_OK) return status;
     status = oa_limit_value(command->position_rad, limits.position_min_rad, limits.position_max_rad,
                             policy, OA_FIELD_POSITION, &mask, &position);
     if (status != OA_CAN_OK) return status;
@@ -152,7 +171,7 @@ oa_can_status oa_can_encode_mit(const oa_can_mit_command *command,
     kp_raw = oa_to_uint(kp, limits.kp_min, limits.kp_max, 12u);
     kd_raw = oa_to_uint(kd, limits.kd_min, limits.kd_max, 12u);
     torque_raw = oa_to_uint(torque, limits.torque_min_nm, limits.torque_max_nm, 12u);
-    oa_init_frame(out_frame, command->send_id);
+    oa_fill_frame(out_frame, command->send_id);
     out_frame->data[0] = (uint8_t)(position_raw >> 8u);
     out_frame->data[1] = (uint8_t)position_raw;
     out_frame->data[2] = (uint8_t)(velocity_raw >> 4u);
@@ -161,9 +180,7 @@ oa_can_status oa_can_encode_mit(const oa_can_mit_command *command,
     out_frame->data[5] = (uint8_t)(kd_raw >> 4u);
     out_frame->data[6] = (uint8_t)((kd_raw << 4u) | (torque_raw >> 8u));
     out_frame->data[7] = (uint8_t)torque_raw;
-    (void)memset(out_result, 0, sizeof(*out_result));
-    out_result->struct_size = (uint32_t)sizeof(*out_result);
-    out_result->abi_version = OA_CAN_ABI_VERSION;
+    oa_clear_output(out_result, sizeof(*out_result));
     out_result->saturated_mask = mask;
     return OA_CAN_OK;
 }
@@ -184,31 +201,22 @@ oa_can_status oa_can_decode_feedback(const oa_can_frame *frame,
     uint32_t position_raw;
     uint32_t velocity_raw;
     uint32_t torque_raw;
-    oa_can_status status;
-    if (!oa_valid_frame(frame) || out_feedback == NULL || !oa_valid_standard_id(expected_receive_id) ||
-        expected_motor_id > 15u || !oa_valid_type(motor_type)) {
-        return OA_CAN_EINVAL;
-    }
+    if (!oa_valid_frame(frame) || !oa_valid_output(out_feedback, sizeof(*out_feedback)) ||
+        !oa_valid_standard_id(expected_receive_id) || expected_motor_id > 15u ||
+        !oa_valid_type(motor_type)) return OA_CAN_EINVAL;
     if ((frame->can_id & (OA_CAN_EFF_FLAG | OA_CAN_RTR_FLAG | OA_CAN_ERR_FLAG)) != 0u ||
-        frame->can_id > OA_CAN_SFF_MASK || frame->can_id != expected_receive_id || frame->dlc != 8u) {
-        return frame->can_id != expected_receive_id ? OA_CAN_EID : OA_CAN_EFRAME;
-    }
+        frame->can_id > OA_CAN_SFF_MASK || frame->dlc != 8u) return OA_CAN_EFRAME;
+    if (frame->can_id != expected_receive_id) return OA_CAN_EID;
     motor_id = (uint8_t)(frame->data[0] & 0x0fu);
     status_nibble = (uint8_t)(frame->data[0] >> 4u);
-    if (motor_id != expected_motor_id) {
-        return OA_CAN_EID;
-    }
-    if (!oa_known_feedback_status(status_nibble)) {
-        return OA_CAN_EFRAME;
-    }
-    status = oa_can_motor_limits(motor_type, &limits);
-    if (status != OA_CAN_OK) return status;
+    if (motor_id != expected_motor_id) return OA_CAN_EID;
+    if (!oa_known_feedback_status(status_nibble)) return OA_CAN_EFRAME;
+    oa_seed_output(&limits, sizeof(limits));
+    if (oa_can_motor_limits(motor_type, &limits) != OA_CAN_OK) return OA_CAN_EINVAL;
     position_raw = ((uint32_t)frame->data[1] << 8u) | frame->data[2];
     velocity_raw = ((uint32_t)frame->data[3] << 4u) | (frame->data[4] >> 4u);
     torque_raw = ((uint32_t)(frame->data[4] & 0x0fu) << 8u) | frame->data[5];
-    (void)memset(out_feedback, 0, sizeof(*out_feedback));
-    out_feedback->struct_size = (uint32_t)sizeof(*out_feedback);
-    out_feedback->abi_version = OA_CAN_ABI_VERSION;
+    oa_clear_output(out_feedback, sizeof(*out_feedback));
     out_feedback->receive_id = expected_receive_id;
     out_feedback->motor_id = motor_id;
     out_feedback->status_nibble = status_nibble;
@@ -217,13 +225,13 @@ oa_can_status oa_can_decode_feedback(const oa_can_frame *frame,
     out_feedback->torque_nm = oa_from_uint(torque_raw, limits.torque_min_nm, limits.torque_max_nm, 12u);
     out_feedback->mos_temperature_c = frame->data[6];
     out_feedback->rotor_temperature_c = frame->data[7];
-    return status_nibble == OA_CAN_FEEDBACK_ENABLED || status_nibble == OA_CAN_FEEDBACK_DISABLED ?
+    return (status_nibble == OA_CAN_FEEDBACK_ENABLED || status_nibble == OA_CAN_FEEDBACK_DISABLED) ?
            OA_CAN_OK : OA_CAN_EFAULT;
 }
 
 static oa_can_status oa_make_special(uint16_t send_id, uint8_t last_byte, oa_can_frame *out_frame) {
-    if (!oa_valid_standard_id(send_id) || out_frame == NULL) return OA_CAN_EINVAL;
-    oa_init_frame(out_frame, send_id);
+    if (!oa_valid_standard_id(send_id) || !oa_valid_output(out_frame, sizeof(*out_frame))) return OA_CAN_EINVAL;
+    oa_fill_frame(out_frame, send_id);
     (void)memset(out_frame->data, 0xff, sizeof(out_frame->data));
     out_frame->data[7] = last_byte;
     return OA_CAN_OK;
@@ -238,8 +246,8 @@ oa_can_status oa_can_make_disable(uint16_t send_id, oa_can_frame *out_frame) {
 }
 
 oa_can_status oa_can_make_refresh_status(uint16_t send_id, oa_can_frame *out_frame) {
-    if (!oa_valid_standard_id(send_id) || out_frame == NULL) return OA_CAN_EINVAL;
-    oa_init_frame(out_frame, 0x7ffu);
+    if (!oa_valid_standard_id(send_id) || !oa_valid_output(out_frame, sizeof(*out_frame))) return OA_CAN_EINVAL;
+    oa_fill_frame(out_frame, 0x7ffu);
     out_frame->data[0] = (uint8_t)send_id;
     out_frame->data[1] = (uint8_t)(send_id >> 8u);
     out_frame->data[2] = 0xccu;
@@ -247,8 +255,8 @@ oa_can_status oa_can_make_refresh_status(uint16_t send_id, oa_can_frame *out_fra
 }
 
 oa_can_status oa_can_make_register_query(uint16_t send_id, uint8_t register_id, oa_can_frame *out_frame) {
-    if (!oa_valid_standard_id(send_id) || out_frame == NULL) return OA_CAN_EINVAL;
-    oa_init_frame(out_frame, 0x7ffu);
+    if (!oa_valid_standard_id(send_id) || !oa_valid_output(out_frame, sizeof(*out_frame))) return OA_CAN_EINVAL;
+    oa_fill_frame(out_frame, 0x7ffu);
     out_frame->data[0] = (uint8_t)send_id;
     out_frame->data[1] = (uint8_t)(send_id >> 8u);
     out_frame->data[2] = 0x33u;
@@ -268,10 +276,12 @@ oa_can_status oa_can_validate_manifest(const oa_can_arm_manifest *manifest) {
             !oa_valid_version(mapping->struct_size, sizeof(*mapping), mapping->abi_version) ||
             motor->joint_index >= OA_CAN_MAX_MOTORS || motor->expected_motor_id > 15u ||
             !oa_valid_standard_id(motor->send_id) || !oa_valid_standard_id(motor->receive_id) ||
-            !oa_valid_type(motor->motor_type) || !isfinite(mapping->position_scale) ||
+            !oa_valid_type(motor->decode_motor_type) || !isfinite(mapping->position_scale) ||
             !isfinite(mapping->position_offset_rad) || !isfinite(mapping->velocity_scale) ||
             !isfinite(mapping->torque_scale) || mapping->position_scale == 0.0 ||
-            mapping->velocity_scale == 0.0 || mapping->torque_scale == 0.0 || motor->joint_name[0] == '\0') {
+            mapping->velocity_scale == 0.0 || mapping->torque_scale == 0.0 || motor->joint_name[0] == '\0' ||
+            memchr(motor->joint_name, '\0', sizeof(motor->joint_name)) == NULL ||
+            memchr(motor->commissioned_serial, '\0', sizeof(motor->commissioned_serial)) == NULL) {
             return OA_CAN_EINVAL;
         }
         for (j = 0u; j < i; ++j) {
@@ -287,36 +297,56 @@ oa_can_status oa_can_validate_manifest(const oa_can_arm_manifest *manifest) {
 
 oa_can_status oa_can_probe_expected(const oa_can_transport *transport,
                                     const oa_can_arm_manifest *manifest,
+                                    const oa_can_probe_options *options,
                                     oa_can_probe_report *out_report) {
+    uint64_t request_epochs[OA_CAN_MAX_MOTORS];
+    uint64_t now_ns;
     uint32_t i;
     oa_can_status result;
-    if (transport == NULL || out_report == NULL ||
+    if (transport == NULL || options == NULL ||
         !oa_valid_version(transport->struct_size, sizeof(*transport), transport->abi_version) ||
-        transport->send == NULL || transport->receive == NULL) return OA_CAN_EINVAL;
+        !oa_valid_version(options->struct_size, sizeof(*options), options->abi_version) ||
+        !oa_valid_output(out_report, sizeof(*out_report)) || transport->now == NULL ||
+        transport->send == NULL || transport->receive == NULL || options->timeout_ns == 0u ||
+        options->max_receive_frames == 0u) return OA_CAN_EINVAL;
     result = oa_can_validate_manifest(manifest);
     if (result != OA_CAN_OK) return result;
-    (void)memset(out_report, 0, sizeof(*out_report));
-    out_report->struct_size = (uint32_t)sizeof(*out_report);
-    out_report->abi_version = OA_CAN_ABI_VERSION;
+    oa_clear_output(out_report, sizeof(*out_report));
     for (i = 0u; i < manifest->motor_count; ++i) {
         oa_can_frame refresh;
+        oa_seed_output(&refresh, sizeof(refresh));
         result = oa_can_make_refresh_status(manifest->motors[i].send_id, &refresh);
         if (result != OA_CAN_OK) return result;
-        result = transport->send(transport->context, &refresh);
+        result = transport->send(transport->context, &refresh, &request_epochs[i]);
         if (result != OA_CAN_OK) return result;
-        out_report->expected_mask |= 1u << i;
+        out_report->expected_mask |= UINT32_C(1) << i;
         ++out_report->refresh_frames_sent;
     }
-    for (;;) {
-        oa_can_frame frame;
-        uint32_t matching = manifest->motor_count;
+    result = transport->now(transport->context, &now_ns);
+    if (result != OA_CAN_OK || UINT64_MAX - now_ns < options->timeout_ns) return OA_CAN_EIO;
+    for (i = 0u; i < manifest->motor_count; ++i) {
+        if (request_epochs[i] > now_ns) return OA_CAN_EIO;
+    }
+    out_report->deadline_monotonic_ns = now_ns + options->timeout_ns;
+    for (i = 0u; i < options->max_receive_frames; ++i) {
+        oa_can_received_frame received;
         oa_can_feedback feedback;
-        result = transport->receive(transport->context, &frame);
+        uint32_t matching = manifest->motor_count;
+        uint32_t motor_index;
+        oa_seed_output(&received, sizeof(received));
+        oa_seed_output(&received.frame, sizeof(received.frame));
+        result = transport->receive(transport->context, out_report->deadline_monotonic_ns, &received);
         if (result == OA_CAN_ETIMEOUT) break;
         if (result != OA_CAN_OK) return result;
-        for (i = 0u; i < manifest->motor_count; ++i) {
-            if (frame.can_id == manifest->motors[i].receive_id) {
-                matching = i;
+        ++out_report->received_frames;
+        if (!oa_valid_frame(&received.frame) ||
+            received.received_monotonic_ns > out_report->deadline_monotonic_ns) {
+            ++out_report->invalid_frames;
+            continue;
+        }
+        for (motor_index = 0u; motor_index < manifest->motor_count; ++motor_index) {
+            if (received.frame.can_id == manifest->motors[motor_index].receive_id) {
+                matching = motor_index;
                 break;
             }
         }
@@ -324,53 +354,128 @@ oa_can_status oa_can_probe_expected(const oa_can_transport *transport,
             ++out_report->unexpected_frames;
             continue;
         }
-        result = oa_can_decode_feedback(&frame, manifest->motors[matching].receive_id,
+        if (received.received_monotonic_ns <= request_epochs[matching]) {
+            ++out_report->stale_frames;
+            continue;
+        }
+        oa_seed_output(&feedback, sizeof(feedback));
+        result = oa_can_decode_feedback(&received.frame, manifest->motors[matching].receive_id,
                                         manifest->motors[matching].expected_motor_id,
-                                        manifest->motors[matching].motor_type, &feedback);
+                                        manifest->motors[matching].decode_motor_type, &feedback);
         if (result == OA_CAN_EFRAME || result == OA_CAN_EID || result == OA_CAN_EINVAL) {
             ++out_report->invalid_frames;
             continue;
         }
-        if ((out_report->fresh_mask & (1u << matching)) != 0u) {
-            out_report->duplicate_mask |= 1u << matching;
+        if (feedback.status_nibble == OA_CAN_FEEDBACK_ENABLED) {
+            out_report->enabled_mask |= UINT32_C(1) << matching;
+            continue;
         }
-        out_report->fresh_mask |= 1u << matching;
-        if (result == OA_CAN_EFAULT) out_report->fault_mask |= 1u << matching;
+        if (result == OA_CAN_EFAULT) {
+            out_report->fault_mask |= UINT32_C(1) << matching;
+            continue;
+        }
+        if ((out_report->fresh_mask & (UINT32_C(1) << matching)) != 0u) {
+            out_report->duplicate_mask |= UINT32_C(1) << matching;
+        }
+        out_report->fresh_mask |= UINT32_C(1) << matching;
     }
-    if (out_report->fresh_mask != out_report->expected_mask) return OA_CAN_ETIMEOUT;
+    if (i == options->max_receive_frames) out_report->receive_limit_reached = 1u;
+    if (out_report->enabled_mask != 0u) return OA_CAN_ESTATE;
     if (out_report->fault_mask != 0u || out_report->duplicate_mask != 0u) return OA_CAN_EFAULT;
+    if (out_report->receive_limit_reached != 0u) return OA_CAN_ETIMEOUT;
+    if (out_report->fresh_mask != out_report->expected_mask || out_report->stale_frames != 0u) return OA_CAN_ETIMEOUT;
     return OA_CAN_OK;
 }
 
-static oa_can_status oa_fake_send(void *context, const oa_can_frame *frame) {
-    oa_can_fake *fake = (oa_can_fake *)context;
-    if (fake == NULL || !oa_valid_frame(frame)) return OA_CAN_EINVAL;
-    ++fake->sent_count;
-    if (frame->can_id == 0x7ffu && frame->dlc == 8u && frame->data[2] == 0xccu) {
-        fake->lifecycle = OA_CAN_FAKE_PROBING;
+static int oa_frame_is_special(const oa_can_frame *frame, uint8_t last_byte) {
+    size_t i;
+    if (frame->dlc != 8u || frame->can_id > OA_CAN_SFF_MASK) return 0;
+    for (i = 0u; i < 7u; ++i) {
+        if (frame->data[i] != 0xffu) return 0;
     }
+    return frame->data[7] == last_byte;
+}
+
+static int oa_frame_is_diagnostic(const oa_can_frame *frame) {
+    uint16_t send_id;
+    size_t first_zero;
+    size_t i;
+    if (frame->can_id != 0x7ffu || frame->dlc != 8u) return 0;
+    send_id = (uint16_t)((uint16_t)frame->data[0] | ((uint16_t)frame->data[1] << 8u));
+    if (!oa_valid_standard_id(send_id)) return 0;
+    if (frame->data[2] == 0xccu) first_zero = 3u;
+    else if (frame->data[2] == 0x33u) first_zero = 4u;
+    else return 0;
+    for (i = first_zero; i < sizeof(frame->data); ++i) {
+        if (frame->data[i] != 0u) return 0;
+    }
+    return 1;
+}
+
+static oa_can_status oa_fake_now(void *context, uint64_t *out_monotonic_ns) {
+    oa_can_fake *fake = (oa_can_fake *)context;
+    if (fake == NULL || out_monotonic_ns == NULL) return OA_CAN_EINVAL;
+    *out_monotonic_ns = fake->now_ns;
     return OA_CAN_OK;
 }
 
-static oa_can_status oa_fake_receive(void *context, oa_can_frame *frame) {
+static oa_can_status oa_fake_send(void *context, const oa_can_frame *frame,
+                                  uint64_t *out_sent_monotonic_ns) {
     oa_can_fake *fake = (oa_can_fake *)context;
-    if (fake == NULL || frame == NULL) return OA_CAN_EINVAL;
+    if (fake == NULL || !oa_valid_frame(frame) || out_sent_monotonic_ns == NULL) return OA_CAN_EINVAL;
+    if (fake->now_ns == UINT64_MAX) return OA_CAN_EIO;
+    ++fake->now_ns;
+    ++fake->sent_count;
+    *out_sent_monotonic_ns = fake->now_ns;
+    if (oa_frame_is_diagnostic(frame)) {
+        if (frame->data[2] == 0xccu && fake->lifecycle != OA_CAN_FAKE_FAULT) {
+            fake->lifecycle = OA_CAN_FAKE_PROBING;
+        }
+        return OA_CAN_OK;
+    }
+    if (oa_frame_is_special(frame, 0xfdu)) {
+        if (fake->lifecycle != OA_CAN_FAKE_FAULT) fake->lifecycle = OA_CAN_FAKE_DISABLED;
+        return OA_CAN_OK;
+    }
+    ++fake->rejected_control_count;
+    fake->lifecycle = OA_CAN_FAKE_FAULT;
+    return OA_CAN_ESTATE;
+}
+
+static oa_can_status oa_fake_receive(void *context, uint64_t deadline_monotonic_ns,
+                                     oa_can_received_frame *out_frame) {
+    oa_can_fake *fake = (oa_can_fake *)context;
+    const oa_can_received_frame *queued;
+    if (fake == NULL || !oa_valid_output(out_frame, sizeof(*out_frame)) ||
+        !oa_valid_output(&out_frame->frame, sizeof(out_frame->frame))) return OA_CAN_EINVAL;
     if (fake->count == 0u) {
         if (fake->lifecycle == OA_CAN_FAKE_PROBING) fake->lifecycle = OA_CAN_FAKE_PROBED;
+        if (fake->now_ns < deadline_monotonic_ns) fake->now_ns = deadline_monotonic_ns;
         return OA_CAN_ETIMEOUT;
     }
-    *frame = fake->queue[fake->head];
+    queued = &fake->queue[fake->head];
+    if (queued->received_monotonic_ns > deadline_monotonic_ns) {
+        if (fake->now_ns < deadline_monotonic_ns) fake->now_ns = deadline_monotonic_ns;
+        return OA_CAN_ETIMEOUT;
+    }
+    *out_frame = *queued;
     fake->head = (fake->head + 1u) % fake->capacity;
     --fake->count;
+    if (fake->count == 0u && fake->lifecycle == OA_CAN_FAKE_PROBING) {
+        fake->lifecycle = OA_CAN_FAKE_PROBED;
+    }
+    if (fake->now_ns < out_frame->received_monotonic_ns) fake->now_ns = out_frame->received_monotonic_ns;
     return OA_CAN_OK;
 }
 
 oa_can_status oa_can_fake_create(size_t queue_capacity, oa_can_fake **out_fake) {
     oa_can_fake *fake;
-    if (out_fake == NULL || queue_capacity == 0u || queue_capacity > SIZE_MAX / sizeof(*fake->queue)) return OA_CAN_EINVAL;
+    if (out_fake == NULL || queue_capacity == 0u || queue_capacity > SIZE_MAX / sizeof(*fake->queue)) {
+        return OA_CAN_EINVAL;
+    }
     fake = (oa_can_fake *)calloc(1u, sizeof(*fake));
     if (fake == NULL) return OA_CAN_ENOMEM;
-    fake->queue = (oa_can_frame *)calloc(queue_capacity, sizeof(*fake->queue));
+    fake->queue = (oa_can_received_frame *)calloc(queue_capacity, sizeof(*fake->queue));
     if (fake->queue == NULL) {
         free(fake);
         return OA_CAN_ENOMEM;
@@ -389,22 +494,32 @@ void oa_can_fake_destroy(oa_can_fake *fake) {
 }
 
 oa_can_status oa_can_fake_transport(oa_can_fake *fake, oa_can_transport *out_transport) {
-    if (fake == NULL || out_transport == NULL) return OA_CAN_EINVAL;
-    (void)memset(out_transport, 0, sizeof(*out_transport));
-    out_transport->struct_size = (uint32_t)sizeof(*out_transport);
-    out_transport->abi_version = OA_CAN_ABI_VERSION;
+    if (fake == NULL || !oa_valid_output(out_transport, sizeof(*out_transport))) return OA_CAN_EINVAL;
+    oa_clear_output(out_transport, sizeof(*out_transport));
     out_transport->context = fake;
+    out_transport->now = oa_fake_now;
     out_transport->send = oa_fake_send;
     out_transport->receive = oa_fake_receive;
     return OA_CAN_OK;
 }
 
-oa_can_status oa_can_fake_enqueue_feedback(oa_can_fake *fake, const oa_can_frame *frame) {
+oa_can_status oa_can_fake_set_time(oa_can_fake *fake, uint64_t monotonic_ns) {
+    if (fake == NULL || monotonic_ns < fake->now_ns) return OA_CAN_EINVAL;
+    fake->now_ns = monotonic_ns;
+    return OA_CAN_OK;
+}
+
+oa_can_status oa_can_fake_enqueue_feedback(oa_can_fake *fake, const oa_can_frame *frame,
+                                           uint64_t received_monotonic_ns) {
     size_t index;
+    oa_can_received_frame *queued;
     if (fake == NULL || !oa_valid_frame(frame)) return OA_CAN_EINVAL;
     if (fake->count == fake->capacity) return OA_CAN_EIO;
     index = (fake->head + fake->count) % fake->capacity;
-    fake->queue[index] = *frame;
+    queued = &fake->queue[index];
+    oa_clear_output(queued, sizeof(*queued));
+    queued->received_monotonic_ns = received_monotonic_ns;
+    queued->frame = *frame;
     ++fake->count;
     return OA_CAN_OK;
 }
@@ -414,4 +529,7 @@ oa_can_fake_lifecycle oa_can_fake_get_lifecycle(const oa_can_fake *fake) {
 }
 
 size_t oa_can_fake_sent_count(const oa_can_fake *fake) { return fake == NULL ? 0u : fake->sent_count; }
+size_t oa_can_fake_rejected_control_count(const oa_can_fake *fake) {
+    return fake == NULL ? 0u : fake->rejected_control_count;
+}
 int oa_can_fake_torque_enabled(const oa_can_fake *fake) { (void)fake; return 0; }

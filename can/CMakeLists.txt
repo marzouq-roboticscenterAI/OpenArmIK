@@ -12,8 +12,15 @@ target_compile_features(openarm_can PUBLIC c_std_11)
 
 if(MSVC)
     target_compile_options(openarm_can PRIVATE /W4 /WX)
-else()
-    target_compile_options(openarm_can PRIVATE -Wall -Wextra -Wpedantic -Werror)
+elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(openarm_can PRIVATE
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+        -Wshadow -Wformat=2 -Wundef -Wcast-align -Wstrict-prototypes
+        -Wmissing-prototypes
+    )
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(openarm_can PRIVATE -Wcast-align=strict)
+    endif()
     if(OA_CAN_ENABLE_SANITIZERS)
         target_compile_options(openarm_can PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(openarm_can PRIVATE -fsanitize=address,undefined)
@@ -23,12 +30,23 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
     add_executable(openarm_can_tests tests/test_openarm_can.c)
-    target_link_libraries(openarm_can_tests PRIVATE openarm_can m)
+    target_link_libraries(openarm_can_tests PRIVATE openarm_can)
+    target_include_directories(openarm_can_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    if(NOT MSVC)
+        target_link_libraries(openarm_can_tests PRIVATE m)
+    endif()
     target_compile_features(openarm_can_tests PRIVATE c_std_11)
     if(MSVC)
         target_compile_options(openarm_can_tests PRIVATE /W4 /WX)
-    else()
-        target_compile_options(openarm_can_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(openarm_can_tests PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+            -Wshadow -Wformat=2 -Wundef -Wcast-align -Wstrict-prototypes
+            -Wmissing-prototypes
+        )
+        if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            target_compile_options(openarm_can_tests PRIVATE -Wcast-align=strict)
+        endif()
         if(OA_CAN_ENABLE_SANITIZERS)
             target_compile_options(openarm_can_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
             target_link_options(openarm_can_tests PRIVATE -fsanitize=address,undefined)
