@@ -114,6 +114,27 @@ if(BUILD_TESTING)
     target_compile_options(test_virtual_control_session PRIVATE --coverage -O0)
     target_link_options(test_virtual_control_session PRIVATE --coverage)
   endif()
+  add_executable(test_openarm_control_cli src/openarm_control_cli.cpp)
+  target_compile_definitions(test_openarm_control_cli PRIVATE
+    OPENARM_CLI_RESULT_TIMEOUT_MS=1500
+    OPENARM_CLI_CANCEL_TIMEOUT_MS=500
+    OPENARM_CLI_CANCEL_RESULT_TIMEOUT_MS=1000
+    OPENARM_CLI_TEST_CONTEXT_SHUTDOWN_AFTER_ACCEPT)
+  target_compile_options(test_openarm_control_cli PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_link_libraries(test_openarm_control_cli PRIVATE
+    diagnostic_msgs::diagnostic_msgs
+    openarm_control_msgs::openarm_control_msgs
+    rclcpp::rclcpp
+    rclcpp_action::rclcpp_action)
+  if(OPENARM_IK_ROS_COVERAGE)
+    target_compile_options(test_openarm_control_cli PRIVATE --coverage -O0)
+    target_link_options(test_openarm_control_cli PRIVATE --coverage)
+  endif()
+  add_test(
+    NAME test_cli_server_lifecycle
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_cli_server_lifecycle.py
+      --executable $<TARGET_FILE:test_openarm_control_cli>
+      --production-executable $<TARGET_FILE:openarm_control_cli>)
   add_test(
     NAME test_no_can_linkage
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_no_can_linkage.py
@@ -133,7 +154,8 @@ if(BUILD_TESTING)
   add_test(
     NAME test_active_sigint
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_active_sigint.py)
-  set_tests_properties(test_ros_contract test_active_sigint test_no_can_linkage test_invalid_expiry_parameter
+  set_tests_properties(test_ros_contract test_active_sigint test_cli_server_lifecycle
+    test_no_can_linkage test_invalid_expiry_parameter
     PROPERTIES RUN_SERIAL TRUE)
   add_test(NAME test_close_rviz_window_help COMMAND close_rviz_window --help)
   add_test(NAME test_close_rviz_window_invalid_pid COMMAND close_rviz_window 0)
