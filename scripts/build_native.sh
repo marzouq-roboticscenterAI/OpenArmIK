@@ -166,10 +166,15 @@ configure_build_test_install can \
   -DBUILD_TESTING="$tests_flag" \
   -DOA_CAN_ENABLE_SANITIZERS=OFF
 
+model_test_args=()
+if ((run_tests)); then
+  model_test_args=(-DPython3_EXECUTABLE=/usr/bin/python3)
+fi
+
 configure_build_test_install model \
   -DOA_MODEL_BUILD_TESTS="$tests_flag" \
   -DOA_MODEL_SANITIZERS=OFF \
-  -DPython3_EXECUTABLE=/usr/bin/python3 \
+  "${model_test_args[@]}" \
   -DOA_DESCRIPTION_ROOT="$description_dir" \
   -DOA_XACRO_EXECUTABLE="$xacro_executable" \
   -DOA_XACRO_PYTHONPATH="$xacro_pythonpath" \

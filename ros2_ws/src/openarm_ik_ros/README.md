@@ -38,7 +38,9 @@ Run the local compiled portal from the repository root with `./run.sh`. The
 launcher builds the workspace, starts the virtual controller and stock RViz,
 then opens Firefox at a service bound only to `127.0.0.1`. The right pane is a
 JPEG snapshot stream of the launcher-owned RViz X11 window; it is not a browser
-renderer.
+renderer. The launcher resolves the stock `rviz2` executable to an absolute
+path, and the portal requires that exact `/proc/PID/exe` identity plus
+XComposite protocol 0.2 or newer.
 
 Portal controls remain virtual-only. Left/right requests use the freshest
 encoder-derived state as the opposite TCP target in a paired action. A sampled
@@ -47,3 +49,6 @@ but the controller still reports `collision_checked=false`; the guard is not
 physical collision certification. “Auto Calibrate” performs only a nonmoving
 simulation verification, and the software stop button is not a hardwired or
 safety-rated E-stop.
+
+Motion eligibility rechecks producer timestamps, local receipt ages, and
+unchanged joint/diagnostic generations immediately before action submission.

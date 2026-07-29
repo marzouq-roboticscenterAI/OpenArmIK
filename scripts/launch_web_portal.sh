@@ -170,6 +170,24 @@ package_prefix=$(ros2 pkg prefix openarm_ik_ros 2>/dev/null || true)
 share_dir="$package_prefix/share/openarm_ik_ros"
 close_helper="$package_prefix/lib/openarm_ik_ros/close_rviz_window"
 portal_binary=${OPENARM_PORTAL_BINARY:-"$package_prefix/lib/openarm_ik_ros/openarm_portal"}
+rviz_package_prefix=$(ros2 pkg prefix rviz2 2>/dev/null || true)
+[[ -n "$rviz_package_prefix" ]] || {
+  printf '%s\n' 'The installed stock rviz2 package was not found.' >&2
+  exit 1
+}
+rviz_command=$(command -v rviz2 2>/dev/null || true)
+rviz_executable=$(realpath -e -- "$rviz_command" 2>/dev/null || true)
+[[ -x "$rviz_executable" ]] || {
+  printf '%s\n' 'The stock RViz executable is missing from PATH.' >&2
+  exit 1
+}
+case "$rviz_executable" in
+  "$rviz_package_prefix"/*) ;;
+  *)
+    printf 'RViz executable is outside its ROS package prefix: %s\n' "$rviz_executable" >&2
+    exit 1
+    ;;
+esac
 
 if [[ ! -x "$portal_binary" && "$build_mode" == auto ]]; then
   build_stack
@@ -294,7 +312,7 @@ trap 'shutdown $?' EXIT
 setsid ros2 launch openarm_ik_ros openarm_ik_rviz.launch.py rviz:=false &
 core_pid=$!
 
-setsid rviz2 -d "$share_dir/rviz/openarm_ik.rviz" \
+setsid "$rviz_executable" -d "$share_dir/rviz/openarm_ik.rviz" \
   --ros-args -r __node:=rviz2 &
 rviz_pid=$!
 
@@ -315,7 +333,8 @@ done
 }
 
 setsid "$portal_binary" --rviz-pid "$rviz_pid" \
-  --rviz-start-ticks "$rviz_start_ticks" --port "$port" &
+  --rviz-start-ticks "$rviz_start_ticks" \
+  --rviz-executable "$rviz_executable" --port "$port" &
 portal_pid=$!
 
 url="http://127.0.0.1:$port/"

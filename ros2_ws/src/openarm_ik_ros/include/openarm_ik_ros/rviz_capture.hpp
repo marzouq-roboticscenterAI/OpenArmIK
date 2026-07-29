@@ -14,7 +14,7 @@ namespace openarm_ik_ros::portal
 class RvizCapture
 {
 public:
-  RvizCapture(std::int64_t pid, std::uint64_t start_ticks);
+  RvizCapture(std::int64_t pid, std::uint64_t start_ticks, std::string expected_executable);
   ~RvizCapture();
   RvizCapture(const RvizCapture &) = delete;
   RvizCapture & operator=(const RvizCapture &) = delete;
@@ -32,6 +32,7 @@ private:
 
   std::int64_t pid_;
   std::uint64_t start_ticks_;
+  std::string expected_executable_;
   Display * display_{nullptr};
   Atom pid_atom_{None};
   Atom wm_state_atom_{None};

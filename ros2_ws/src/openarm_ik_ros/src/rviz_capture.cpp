@@ -13,7 +13,7 @@
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
-#include <unistd.h>
+#include <utility>
 
 namespace openarm_ik_ros::portal
 {
@@ -79,8 +79,9 @@ unsigned char channel(unsigned long pixel, unsigned long mask)
 }
 }  // namespace
 
-RvizCapture::RvizCapture(std::int64_t pid, std::uint64_t start_ticks)
-: pid_(pid), start_ticks_(start_ticks)
+RvizCapture::RvizCapture(
+  std::int64_t pid, std::uint64_t start_ticks, std::string expected_executable)
+: pid_(pid), start_ticks_(start_ticks), expected_executable_(std::move(expected_executable))
 {
   if (!identity_valid()) {
     throw std::runtime_error("RViz process identity does not match launcher evidence");
@@ -98,6 +99,15 @@ RvizCapture::RvizCapture(std::int64_t pid, std::uint64_t start_ticks)
     XCloseDisplay(display_);
     display_ = nullptr;
     throw std::runtime_error("XComposite is unavailable on this display");
+  }
+  int composite_major = 0;
+  int composite_minor = 0;
+  if (XCompositeQueryVersion(display_, &composite_major, &composite_minor) == 0 ||
+    !xcomposite_version_supported(composite_major, composite_minor))
+  {
+    XCloseDisplay(display_);
+    display_ = nullptr;
+    throw std::runtime_error("XComposite protocol 0.2 or newer is required");
   }
   pid_atom_ = XInternAtom(display_, "_NET_WM_PID", True);
   wm_state_atom_ = XInternAtom(display_, "WM_STATE", True);
@@ -121,15 +131,7 @@ bool RvizCapture::identity_valid() const
   if (!process_identity_matches(pid_, start_ticks_)) {
     return false;
   }
-  std::array<char, 4096> path{};
-  const std::string link = "/proc/" + std::to_string(pid_) + "/exe";
-  const ssize_t length = readlink(link.c_str(), path.data(), path.size() - 1);
-  if (length <= 0) {
-    return false;
-  }
-  const std::string executable(path.data(), static_cast<std::size_t>(length));
-  const std::size_t slash = executable.rfind('/');
-  return executable.substr(slash == std::string::npos ? 0 : slash + 1) == "rviz2";
+  return process_executable_matches(pid_, expected_executable_);
 }
 
 bool RvizCapture::window_ready(std::string & reason) const

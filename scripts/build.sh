@@ -135,7 +135,7 @@ export CMAKE_PREFIX_PATH="$install_prefix:/opt/ros/lyrical"
 export AMENT_PREFIX_PATH=/opt/ros/lyrical
 unset COLCON_PREFIX_PATH
 
-coverage_args=(-DOPENARM_IK_ROS_COVERAGE=OFF)
+coverage_args=()
 if [[ "${OPENARM_IK_ROS_COVERAGE:-0}" == 1 ]]; then
   coverage_args=(-DOPENARM_IK_ROS_COVERAGE=ON)
 fi
@@ -154,6 +154,7 @@ colcon --log-base "$ros_log" build \
   --cmake-args \
     -DCMAKE_BUILD_TYPE="$build_type" \
     -DBUILD_TESTING="$tests_flag" \
+    -DCMAKE_WARN_DEPRECATED=OFF \
     -DPython3_EXECUTABLE=/usr/bin/python3 \
     "${coverage_args[@]}"
 

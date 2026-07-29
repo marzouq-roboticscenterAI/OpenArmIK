@@ -53,6 +53,12 @@ void signal_handler(int)
   stop_requested = 1;
 }
 
+std::int64_t steady_now_ns()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 std::string token()
 {
   std::random_device source;
@@ -131,9 +137,14 @@ public:
   bool state(GuardInput & input, std::array<Point, 2> & tcp, std::string & reason) const
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto steady_now = std::chrono::steady_clock::now();
-    if (!have_state_ || steady_now - state_received_ > kStateFreshness ||
-      !diagnostic_valid_ || steady_now - diagnostic_received_ > kDiagnosticFreshness)
+    const std::int64_t time_now = now().nanoseconds();
+    const std::int64_t steady_now = steady_now_ns();
+    if (!have_state_ || !fresh_at_use(
+        state_freshness_, time_now, steady_now,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count()) ||
+      !diagnostic_valid_ || !fresh_at_use(
+        diagnostic_freshness_, time_now, steady_now,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count()))
     {
       reason = diagnostic_reason_.empty() ?
         "encoder-derived joint state or controller diagnostics are missing or stale" : diagnostic_reason_;
@@ -141,6 +152,7 @@ public:
     }
     input.measured_q = measured_q_;
     input.state_sequence = state_sequence_;
+    input.diagnostic_sequence = diagnostic_sequence_;
     for (std::size_t side = 0; side < 2; ++side) {
       oa_fk_result fk{};
       const oa_model * model = side == 0 ? oa_model_left_v10_bimanual() :
@@ -182,11 +194,17 @@ public:
     }
     std::unique_lock<std::mutex> state_lock(mutex_);
     {
-      const auto steady_now = std::chrono::steady_clock::now();
+      const std::int64_t time_now = now().nanoseconds();
+      const std::int64_t steady_now = steady_now_ns();
       if (stopping_ || stop_requested != 0 || input.state_sequence == 0 ||
         input.state_sequence != state_sequence_ ||
-        !have_state_ || steady_now - state_received_ > kStateFreshness ||
-        !diagnostic_valid_ || steady_now - diagnostic_received_ > kDiagnosticFreshness)
+        input.diagnostic_sequence == 0 || input.diagnostic_sequence != diagnostic_sequence_ ||
+        !have_state_ || !fresh_at_use(
+          state_freshness_, time_now, steady_now,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count()) ||
+        !diagnostic_valid_ || !fresh_at_use(
+          diagnostic_freshness_, time_now, steady_now,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count()))
       {
         reason = "measured state changed or became untrusted during guard evaluation; retry";
         return false;
@@ -256,6 +274,22 @@ public:
           std::string(wrapped.result->collision_checked ? "true" : "false") +
           "; outcome=" + std::to_string(wrapped.result->outcome) + ".";
       };
+    const std::int64_t send_time_now = now().nanoseconds();
+    const std::int64_t send_steady_now = steady_now_ns();
+    if (stopping_ || stop_requested != 0 || !have_state_ || !diagnostic_valid_ ||
+      input.state_sequence != state_sequence_ ||
+      input.diagnostic_sequence != diagnostic_sequence_ || !fresh_at_use(
+        state_freshness_, send_time_now, send_steady_now,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count()) ||
+      !fresh_at_use(
+        diagnostic_freshness_, send_time_now, send_steady_now,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count()))
+    {
+      goal_active_ = false;
+      reason = "producer state or diagnostics aged out before action send; retry";
+      command_ = reason;
+      return false;
+    }
     try {
       action_->async_send_goal(goal, options);
     } catch (const std::exception & error) {
@@ -333,10 +367,11 @@ private:
     if (message.name.size() != message.position.size()) {
       return;
     }
-    const rclcpp::Time producer_stamp(message.header.stamp);
-    const rclcpp::Duration age = now() - producer_stamp;
-    if (producer_stamp.nanoseconds() <= 0 || age.nanoseconds() < 0 ||
-      age.nanoseconds() > std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count())
+    const FreshnessEvidence freshness{
+      rclcpp::Time(message.header.stamp).nanoseconds(), steady_now_ns()};
+    if (!fresh_at_use(
+        freshness, now().nanoseconds(), freshness.receipt_steady_ns,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count()))
     {
       return;
     }
@@ -359,13 +394,18 @@ private:
     }
     std::lock_guard<std::mutex> lock(mutex_);
     measured_q_ = next;
-    state_received_ = std::chrono::steady_clock::now();
+    state_freshness_ = freshness;
     have_state_ = true;
     ++state_sequence_;
   }
 
   void update_diagnostics(const diagnostic_msgs::msg::DiagnosticArray & message)
   {
+    const FreshnessEvidence freshness{
+      rclcpp::Time(message.header.stamp).nanoseconds(), steady_now_ns()};
+    const bool producer_fresh = fresh_at_use(
+      freshness, now().nanoseconds(), freshness.receipt_steady_ns,
+      std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count());
     for (const auto & status : message.status) {
       if (status.name != "openarm_ik_ros/virtual_control") {continue;}
       auto value = [&status](const std::string & key) {
@@ -379,25 +419,29 @@ private:
       const bool masks = left_expected == "127" && right_expected == "127" &&
         left_expected == value("left_fresh_mask") && right_expected == value("right_fresh_mask") &&
         value("left_fault_mask") == "0" && value("right_fault_mask") == "0";
-      const bool valid = status.level == diagnostic_msgs::msg::DiagnosticStatus::WARN &&
+      const bool valid = producer_fresh &&
+        status.level == diagnostic_msgs::msg::DiagnosticStatus::WARN &&
         value("backend") == "virtual" && value("physical_motion_authorized") == "false" &&
         value("collision_checked") == "false" && masks;
       std::lock_guard<std::mutex> lock(mutex_);
       diagnostic_valid_ = valid;
-      diagnostic_reason_ = valid ? std::string{} : "controller diagnostics are stale, faulted, or inconsistent";
-      diagnostic_received_ = std::chrono::steady_clock::now();
+      diagnostic_reason_ = valid ? std::string{} :
+        "controller diagnostics are delayed, replayed, faulted, or inconsistent";
+      diagnostic_freshness_ = freshness;
+      ++diagnostic_sequence_;
       return;
     }
   }
 
   mutable std::mutex mutex_;
   std::array<JointVector, 2> measured_q_{};
-  std::chrono::steady_clock::time_point state_received_{};
+  FreshnessEvidence state_freshness_{};
   bool have_state_{false};
   std::uint64_t state_sequence_{0};
+  std::uint64_t diagnostic_sequence_{0};
   bool diagnostic_valid_{false};
   std::string diagnostic_reason_{"controller diagnostics have not arrived"};
-  std::chrono::steady_clock::time_point diagnostic_received_{};
+  FreshnessEvidence diagnostic_freshness_{};
   bool goal_active_{false};
   bool stopping_{false};
   bool cancel_pending_{false};
@@ -413,8 +457,9 @@ class PortalServer
 public:
   PortalServer(
     unsigned short port, std::shared_ptr<PortalNode> node,
-    std::int64_t rviz_pid, std::uint64_t rviz_start_ticks)
-  : context_(1), acceptor_(context_), node_(std::move(node)), capture_(rviz_pid, rviz_start_ticks),
+    std::int64_t rviz_pid, std::uint64_t rviz_start_ticks, std::string rviz_executable)
+  : context_(1), acceptor_(context_), node_(std::move(node)),
+    capture_(rviz_pid, rviz_start_ticks, std::move(rviz_executable)),
     csrf_(token()), authority_("127.0.0.1:" + std::to_string(port)), policy_(authority_, csrf_),
     page_(page(csrf_))
   {
@@ -631,18 +676,22 @@ std::uint64_t unsigned_number(const char * value, const char * name)
 int main(int argc, char ** argv)
 {
   try {
-    if (argc != 7 || std::string(argv[1]) != "--rviz-pid" ||
-      std::string(argv[3]) != "--rviz-start-ticks" || std::string(argv[5]) != "--port")
+    if (argc != 9 || std::string(argv[1]) != "--rviz-pid" ||
+      std::string(argv[3]) != "--rviz-start-ticks" ||
+      std::string(argv[5]) != "--rviz-executable" || std::string(argv[7]) != "--port")
     {
       std::fprintf(stderr,
-        "Usage: openarm_portal --rviz-pid PID --rviz-start-ticks TICKS --port PORT\n");
+        "Usage: openarm_portal --rviz-pid PID --rviz-start-ticks TICKS "
+        "--rviz-executable ABSOLUTE_PATH --port PORT\n");
       return 2;
     }
     const std::uint64_t pid = unsigned_number(argv[2], "RViz PID");
     const std::uint64_t ticks = unsigned_number(argv[4], "RViz start ticks");
-    const std::uint64_t port_value = unsigned_number(argv[6], "port");
+    const std::string rviz_executable(argv[6]);
+    const std::uint64_t port_value = unsigned_number(argv[8], "port");
     if (pid > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
-      port_value < 1024 || port_value > 65535)
+      port_value < 1024 || port_value > 65535 || rviz_executable.empty() ||
+      rviz_executable.front() != '/')
     {
       throw std::invalid_argument("PID or port outside allowed range");
     }
@@ -653,7 +702,8 @@ int main(int argc, char ** argv)
     std::thread ros_thread([node]() {rclcpp::spin(node);});
     try {
       openarm_ik_ros::portal::PortalServer server(
-        static_cast<unsigned short>(port_value), node, static_cast<std::int64_t>(pid), ticks);
+        static_cast<unsigned short>(port_value), node, static_cast<std::int64_t>(pid), ticks,
+        rviz_executable);
       server.run();
       (void)node->cancel();
       const auto cancel_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);

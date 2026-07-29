@@ -143,3 +143,34 @@ TEST(ProcessIdentity, RequiresExactLivePidAndStartTicks)
   EXPECT_FALSE(portal::process_identity_matches(getpid(), ticks + 1));
   EXPECT_FALSE(portal::process_identity_matches(0, ticks));
 }
+
+TEST(ProcessIdentity, RequiresExactResolvedExecutablePath)
+{
+  std::array<char, 4096> executable{};
+  const ssize_t length = readlink("/proc/self/exe", executable.data(), executable.size() - 1);
+  ASSERT_GT(length, 0);
+  const std::string exact(executable.data(), static_cast<std::size_t>(length));
+  EXPECT_TRUE(portal::process_executable_matches(getpid(), exact));
+  EXPECT_FALSE(portal::process_executable_matches(getpid(), exact + ".other"));
+  EXPECT_FALSE(portal::process_executable_matches(getpid(), "test_portal_core"));
+}
+
+TEST(Freshness, RevalidatesProducerAndReceiptAgesAtUseTime)
+{
+  constexpr std::int64_t second = 1000000000;
+  const portal::FreshnessEvidence fresh{10 * second, 20 * second};
+  EXPECT_TRUE(portal::fresh_at_use(fresh, 10 * second + 500, 20 * second + 500, 1000));
+  EXPECT_FALSE(portal::fresh_at_use(fresh, 10 * second + 1001, 20 * second + 500, 1000));
+  EXPECT_FALSE(portal::fresh_at_use(fresh, 10 * second + 500, 20 * second + 1001, 1000));
+  EXPECT_FALSE(portal::fresh_at_use(fresh, 10 * second - 1, 20 * second + 1, 1000));
+  EXPECT_FALSE(portal::fresh_at_use({0, 20 * second}, 10 * second, 20 * second, 1000));
+}
+
+TEST(XCompositeVersion, RequiresNamedPixmapProtocolMinimum)
+{
+  EXPECT_FALSE(portal::xcomposite_version_supported(0, 1));
+  EXPECT_TRUE(portal::xcomposite_version_supported(0, 2));
+  EXPECT_TRUE(portal::xcomposite_version_supported(0, 4));
+  EXPECT_TRUE(portal::xcomposite_version_supported(1, 0));
+  EXPECT_FALSE(portal::xcomposite_version_supported(-1, 99));
+}

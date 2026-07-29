@@ -10,6 +10,7 @@
 #include <sstream>
 #include <utility>
 #include <vector>
+#include <unistd.h>
 
 namespace openarm_ik_ros::portal
 {
@@ -427,6 +428,39 @@ bool process_identity_matches(std::int64_t pid, std::uint64_t expected_start_tic
     }
   }
   return false;
+}
+
+bool process_executable_matches(std::int64_t pid, std::string_view expected_path)
+{
+  if (pid <= 1 || expected_path.empty() || expected_path.front() != '/' ||
+    expected_path.size() >= 4096)
+  {
+    return false;
+  }
+  std::array<char, 4096> resolved{};
+  const std::string link = "/proc/" + std::to_string(pid) + "/exe";
+  const ssize_t length = readlink(link.c_str(), resolved.data(), resolved.size() - 1);
+  return length > 0 && static_cast<std::size_t>(length) == expected_path.size() &&
+         std::equal(expected_path.begin(), expected_path.end(), resolved.begin());
+}
+
+bool fresh_at_use(
+  const FreshnessEvidence & evidence, std::int64_t now_time_ns,
+  std::int64_t now_steady_ns, std::int64_t maximum_age_ns)
+{
+  if (evidence.producer_time_ns <= 0 || evidence.receipt_steady_ns <= 0 ||
+    now_time_ns < evidence.producer_time_ns || now_steady_ns < evidence.receipt_steady_ns ||
+    maximum_age_ns <= 0)
+  {
+    return false;
+  }
+  return now_time_ns - evidence.producer_time_ns <= maximum_age_ns &&
+         now_steady_ns - evidence.receipt_steady_ns <= maximum_age_ns;
+}
+
+bool xcomposite_version_supported(int major, int minor)
+{
+  return major > 0 || (major == 0 && minor >= 2);
 }
 
 std::string json_escape(std::string_view value)

@@ -28,6 +28,7 @@ struct GuardInput
 {
   std::array<JointVector, 2> measured_q{};
   std::uint64_t state_sequence{0};
+  std::uint64_t diagnostic_sequence{0};
   MoveRequest request{};
 };
 
@@ -47,6 +48,12 @@ struct MutationHeaders
   std::string_view csrf;
   std::string_view content_type;
   std::size_t content_length{0};
+};
+
+struct FreshnessEvidence
+{
+  std::int64_t producer_time_ns{0};
+  std::int64_t receipt_steady_ns{0};
 };
 
 class StrictJson
@@ -84,6 +91,11 @@ private:
 };
 
 bool process_identity_matches(std::int64_t pid, std::uint64_t expected_start_ticks);
+bool process_executable_matches(std::int64_t pid, std::string_view expected_path);
+bool fresh_at_use(
+  const FreshnessEvidence & evidence, std::int64_t now_time_ns,
+  std::int64_t now_steady_ns, std::int64_t maximum_age_ns);
+bool xcomposite_version_supported(int major, int minor);
 std::string json_escape(std::string_view value);
 
 }  // namespace openarm_ik_ros::portal

@@ -16,7 +16,9 @@ Status: **DONE_WITH_CONCERNS**
 - The responsive embedded page displays controls on the left and JPEG snapshots
   of actual launcher-owned stock RViz pixels on the right. Capture recursively
   identifies exactly one mapped top-level X11 window by `WM_STATE` and exact
-  `_NET_WM_PID`, requires the `/proc/PID/exe` basename `rviz2`, revalidates
+  `_NET_WM_PID`, requires `/proc/PID/exe` to equal the launcher's canonical
+  stock-RViz path, negotiates and requires XComposite protocol 0.2 or newer,
+  revalidates
   `/proc/PID/stat` start ticks and window uniqueness before every frame, uses
   XComposite redirected pixmaps, bounds
   dimensions, traps X11 errors around resize/destroy races, and encodes with
@@ -27,6 +29,10 @@ Status: **DONE_WITH_CONCERNS**
   physical unauthorized, exact expected/fresh masks, zero fault masks, and
   collision unchecked. Both TCPs are recomputed with public `oa_fk`. The two
   XYZ forms are initially populated from that measured state.
+- Producer ROS stamps and steady receipt times are retained for both joint
+  state and diagnostics. Both clocks and unchanged state/diagnostic generations
+  are revalidated under one mutex immediately before `async_send_goal`, so a
+  delayed, replayed, queued, updated, or aged-out message cannot remain eligible.
 - A Left or Right request snapshots both arms once, guards the selected target,
   and sends one `MovePairedTcp` goal with the other target set to its freshest
   measured TCP. Browser values are never used for the opposite target. A state
@@ -66,11 +72,17 @@ Status: **DONE_WITH_CONCERNS**
 
 ## Verification evidence
 
-- The complete native stack and three ROS packages compiled under
-  `/tmp/openarmik-portal-server-build`, and CMake installed
-  `install/openarm_ik_ros/lib/openarm_ik_ros/openarm_portal`. A second fresh
+- After the final review fixes, `scripts/build.sh` completed a fresh native and
+  three-package ROS build under `/tmp/openarmik-portal-colcon-clean` and CMake
+  installed `install/openarm_ik_ros/lib/openarm_ik_ros/openarm_portal`. A second
   package build from an empty path, `/tmp/openarmik-portal-server-clean-package`,
-  compiled every package target after the final review fixes.
+  also compiled every package target.
+- The clean and follow-up colcon runs produced zero-byte `stderr.log` files for
+  `openarm_description`, `openarm_control_msgs`, and `openarm_ik_ros`. The build
+  passes `CMAKE_WARN_DEPRECATED=OFF` only to its own colcon invocation to silence
+  the known pinned-upstream deprecation, omits the portal coverage option unless
+  coverage is enabled, and passes the native model's Python override only when
+  model tests use it. Real compiler/configuration failures remain visible.
 - `openarm_portal` compiled with `-Wall -Wextra -Wpedantic -Werror` and links
   X11, XComposite, libjpeg, ROS, the action interfaces, and the public model.
   `ldd` showed no CAN, transport, commission, or Python library.
@@ -86,8 +98,12 @@ Status: **DONE_WITH_CONCERNS**
 - `test_portal_core` deterministically covers strict JSON rejection, Host /
   Origin / CSRF / content-type / length policy, nonfinite/unreachable guard
   rejection, an accepted public-FK/IK stationary regression pose with at least
-  25 mm nominal clearance, exact PID/start-ticks identity, and JSON escaping.
-- `git diff --check` passed after the final source changes.
+  25 mm nominal clearance, exact PID/start-ticks and executable-path identity,
+  producer/receipt freshness boundaries, XComposite version policy, and JSON
+  escaping.
+- The final focused `test_portal_core` rerun passed; Bash syntax
+  checks for the build/launcher entrypoints and `git diff --check` passed after
+  the final source changes.
 - No GUI, RViz, Firefox, browser, portal process, screenshot, X display, CAN
   interface, commissioning, hardware, or physical command was started.
 
