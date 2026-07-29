@@ -11,9 +11,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(ament_cmake REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(JPEG REQUIRED)
 find_package(openarm_control CONFIG REQUIRED)
 find_package(openarm_control_msgs REQUIRED)
 find_package(openarm_description REQUIRED)
+find_package(openarm_model CONFIG REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -23,6 +25,9 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(Threads REQUIRED)
 find_package(X11 REQUIRED)
+if(NOT X11_Xcomposite_FOUND)
+  message(FATAL_ERROR "XComposite development files are required")
+endif()
 
 option(OPENARM_IK_ROS_COVERAGE "Instrument authored adapter code for gcov" OFF)
 
@@ -60,14 +65,35 @@ add_executable(close_rviz_window src/close_rviz_window.cpp)
 target_compile_options(close_rviz_window PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(close_rviz_window PRIVATE X11::X11)
 
+add_library(openarm_portal_core STATIC src/portal_core.cpp)
+target_include_directories(openarm_portal_core PUBLIC include)
+target_compile_options(openarm_portal_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_portal_core PUBLIC openarm_model::openarm_model)
+
+add_executable(openarm_portal src/openarm_portal.cpp src/rviz_capture.cpp)
+target_include_directories(openarm_portal PRIVATE include ${X11_Xcomposite_INCLUDE_PATH})
+target_compile_definitions(openarm_portal PRIVATE BOOST_ERROR_CODE_HEADER_ONLY)
+target_compile_options(openarm_portal PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_portal PRIVATE
+  openarm_portal_core
+  diagnostic_msgs::diagnostic_msgs
+  openarm_control_msgs::openarm_control_msgs
+  rclcpp::rclcpp
+  rclcpp_action::rclcpp_action
+  sensor_msgs::sensor_msgs
+  X11::X11
+  ${X11_Xcomposite_LIB}
+  JPEG::JPEG
+  Threads::Threads)
+
 if(OPENARM_IK_ROS_COVERAGE)
-  foreach(target openarm_virtual_control_session openarm_ik_ros_node openarm_control_cli)
+  foreach(target openarm_virtual_control_session openarm_ik_ros_node openarm_control_cli openarm_portal_core openarm_portal)
     target_compile_options(${target} PRIVATE --coverage -O0)
     target_link_options(${target} PRIVATE --coverage)
   endforeach()
 endif()
 
-install(TARGETS openarm_ik_ros_node openarm_control_cli close_rviz_window
+install(TARGETS openarm_ik_ros_node openarm_control_cli close_rviz_window openarm_portal
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch rviz DESTINATION share/${PROJECT_NAME})
 install(FILES package.xml README.md DESTINATION share/${PROJECT_NAME})
@@ -80,6 +106,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_virtual_control_session openarm_virtual_control_session)
   target_include_directories(test_virtual_control_session PRIVATE include)
   target_compile_options(test_virtual_control_session PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  ament_add_gtest(test_portal_core test/test_portal_core.cpp)
+  target_link_libraries(test_portal_core openarm_portal_core)
+  target_include_directories(test_portal_core PRIVATE include)
+  target_compile_options(test_portal_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
   if(OPENARM_IK_ROS_COVERAGE)
     target_compile_options(test_virtual_control_session PRIVATE --coverage -O0)
     target_link_options(test_virtual_control_session PRIVATE --coverage)

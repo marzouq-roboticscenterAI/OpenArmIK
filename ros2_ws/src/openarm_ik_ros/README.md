@@ -33,3 +33,17 @@ The CLI returns success only after the matching action reaches measured
 completion. `/use_sim_time=true`, nonfinite targets, unknown names, invalid or
 stale stamps, missing transforms, unreachable targets, and concurrent commands
 are rejected.
+
+Run the local compiled portal from the repository root with `./run.sh`. The
+launcher builds the workspace, starts the virtual controller and stock RViz,
+then opens Firefox at a service bound only to `127.0.0.1`. The right pane is a
+JPEG snapshot stream of the launcher-owned RViz X11 window; it is not a browser
+renderer.
+
+Portal controls remain virtual-only. Left/right requests use the freshest
+encoder-derived state as the opposite TCP target in a paired action. A sampled
+public-IK/FK capsule and central-keepout guard rejects unproven nominal paths,
+but the controller still reports `collision_checked=false`; the guard is not
+physical collision certification. “Auto Calibrate” performs only a nonmoving
+simulation verification, and the software stop button is not a hardwired or
+safety-rated E-stop.
