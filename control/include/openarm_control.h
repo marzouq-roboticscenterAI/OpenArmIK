@@ -2,6 +2,7 @@
 #ifndef OPENARM_CONTROL_H
 #define OPENARM_CONTROL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -18,12 +19,13 @@ typedef struct oa_motion_plan oa_motion_plan;
 typedef uint32_t oa_status;
 typedef uint32_t oa_side;
 
-/* Calls on one controller are internally serialized. oa_controller_destroy may
- * overlap calls already in progress: it removes the handle from the public
- * registry, waits for the active call, and tombstones the token. Calls begun
- * afterward return OA_EINVAL. The pointer must not be used after destroy
- * returns. Manifest and plan handles are immutable but their destroy calls must
- * not overlap another call that uses the same handle. */
+/* Opaque handles are validated without dereferencing caller memory. Calls on one
+ * controller are internally serialized. Every destroy operation may overlap a
+ * call already in progress: it removes the handle from its typed registry and
+ * synchronizes with pins before freeing its registry slot. Already-pinned
+ * immutable work retains shared state safely. Handles are monotonic,
+ * never-dereferenced token values and are not reused. Calls begun afterward
+ * return OA_EINVAL; token-space exhaustion fails closed with OA_ENOMEM. */
 
 #define OA_LEFT UINT32_C(0)
 #define OA_RIGHT UINT32_C(1)
@@ -184,9 +186,9 @@ typedef struct oa_paired_tcp_move {
     double acceleration_scale;
     double jerk_scale;
     double tcp_tol_m;
+    uint64_t collision_scene_revision;
     double max_branch_step_rad;
     double min_singular_value;
-    uint64_t collision_scene_revision;
 } oa_paired_tcp_move;
 
 typedef struct oa_execute_request {
@@ -288,6 +290,15 @@ typedef struct oa_sim_state {
     double q[7];
     double dq[7];
 } oa_sim_state;
+
+/* Original V1 prefix sizes. Later V1 fields are optional append-only tails and
+ * receive documented defaults when an older caller supplies exactly a prefix. */
+#define OA_CONTROLLER_OPTIONS_V1_PREFIX_SIZE \
+    ((uint32_t)offsetof(oa_controller_options, collision_scene_revision))
+#define OA_PAIRED_TCP_MOVE_V1_PREFIX_SIZE \
+    ((uint32_t)offsetof(oa_paired_tcp_move, max_branch_step_rad))
+#define OA_SIM_FAULT_V1_PREFIX_SIZE \
+    ((uint32_t)offsetof(oa_sim_fault, fault_status))
 
 oa_status oa_manifest_create(const oa_manifest_config *config, oa_manifest **out);
 /* Stage A uses the compiled config builder. Text/digest loading is reserved. */

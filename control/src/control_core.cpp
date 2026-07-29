@@ -403,7 +403,8 @@ Controller::Controller(std::shared_ptr<const Manifest> manifest,
         throw std::invalid_argument("invalid collision policy");
     }
     if (options_.cycle_ns == 0U || options_.feedback_timeout_ns < options_.cycle_ns ||
-        options_.max_cross_bus_skew_ns == 0U) {
+        options_.max_cross_bus_skew_ns == 0U ||
+        options_.cycle_ns > std::numeric_limits<std::uint64_t>::max() / 3U) {
         throw std::invalid_argument("invalid timing policy");
     }
     if (options_.backend == OA_BACKEND_PHYSICAL &&
@@ -780,7 +781,7 @@ oa_status Controller::execute(const MotionPlan &plan, const oa_execute_request &
     command_start_ns_ = start_ns;
     command_expiry_ns_ = request.expiry_ns;
     producer_deadline_ns_ = request.producer_deadline_ns;
-    settle_cycles_ = 0U;
+    settle_start_ns_ = 0U;
     active_stop_kind_ = request.stop_kind;
     command_started_ = start_ns == now_ns_;
     settling_published_ = false;
@@ -794,11 +795,25 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
     if (monotonic_ns < now_ns_) {
         return OA_EINVAL;
     }
+    if (monotonic_ns == now_ns_) {
+        if (lifecycle_ == OA_LIFECYCLE_ARMED_IDLE ||
+            lifecycle_ == OA_LIFECYCLE_EXECUTING ||
+            lifecycle_ == OA_LIFECYCLE_DISARMED) {
+            return OA_OK;
+        }
+        return lifecycle_ == OA_LIFECYCLE_FAULT ? OA_EFAULT : OA_ESTATE;
+    }
     const std::uint64_t previous_ns = now_ns_;
     now_ns_ = monotonic_ns;
     if (lifecycle_ != OA_LIFECYCLE_ARMED_IDLE && lifecycle_ != OA_LIFECYCLE_EXECUTING &&
         lifecycle_ != OA_LIFECYCLE_DISARMED) {
         return lifecycle_ == OA_LIFECYCLE_FAULT ? OA_EFAULT : OA_ESTATE;
+    }
+    if ((lifecycle_ == OA_LIFECYCLE_ARMED_IDLE ||
+         lifecycle_ == OA_LIFECYCLE_EXECUTING) &&
+        now_ns_ - previous_ns > options_.cycle_ns) {
+        latch_fault(OA_ETIMEOUT);
+        return OA_ETIMEOUT;
     }
 
     std::array<JointVector, 2> q_reference{arm_[0].measured_q(), arm_[1].measured_q()};
@@ -889,8 +904,10 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
                 publish(OA_EVENT_SETTLING, OA_OK, command_id_);
                 settling_published_ = true;
             }
-            ++settle_cycles_;
-            if (settle_cycles_ >= 3U) {
+            if (settle_start_ns_ == 0U) {
+                settle_start_ns_ = now_ns_;
+            }
+            if (now_ns_ - settle_start_ns_ >= options_.cycle_ns * 3U) {
                 const auto completed_id = command_id_;
                 executing_.reset();
                 command_id_ = 0U;
@@ -902,7 +919,7 @@ oa_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
                 publish(OA_EVENT_SETTLING, OA_OK, command_id_);
                 settling_published_ = true;
             }
-            settle_cycles_ = 0U;
+            settle_start_ns_ = 0U;
         }
     }
     return OA_OK;
@@ -1139,11 +1156,17 @@ void Controller::publish(const std::uint32_t kind, const oa_status cause,
 
 void Controller::latch_fault(const oa_status cause) noexcept {
     const auto failed_id = command_id_;
+    const bool controlled_stop = executing_.has_value() &&
+                                 active_stop_kind_ == OA_STOP_CONTROLLED;
     executing_.reset();
     command_id_ = 0U;
     for (auto &runtime : arm_) {
-        runtime.set_enabled(false);
+        runtime.set_enabled(controlled_stop);
+        if (options_.backend == OA_BACKEND_VIRTUAL && cause == OA_ETIMEOUT) {
+            runtime.force_state(runtime.measured_q(), JointVector{}, now_ns_);
+        }
     }
+    active_stop_kind_ = OA_STOP_DISABLE;
     lifecycle_ = OA_LIFECYCLE_FAULT;
     outstanding_nonce_ = ++nonce_counter_;
     publish(OA_EVENT_FAULTED, cause, failed_id);

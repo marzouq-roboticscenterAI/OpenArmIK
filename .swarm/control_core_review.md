@@ -1,160 +1,127 @@
-# Independent review of `8bc839e`
+# Independent corrective re-review of `e225f30`
 
-Verdict: **CHANGES REQUIRED**. Release and ASan/UBSan builds pass, and the
-physical backend does fail closed before verification or traffic, but the new
-Stage-A core does not yet meet several non-negotiable controller contracts.
+Verdict: **CHANGES REQUIRED**. The corrective commit substantively fixes the six
+original High implementation findings and the mapped-PMAX defect. Release,
+ASan/UBSan, and TSan suites all pass. However, adversarial review found two High
+C-ABI defects and two remaining Medium robustness gaps.
 
-## 1. High — the simulator makes commands become measured encoder state
+## 1. High — the corrective change breaks the frozen V1 binary ABI
 
-`Controller::advance()` computes the trajectory reference and passes it directly
-to `ArmRuntime::sample()` (`control/src/control_core.cpp:588-622`). `sample()`
-passes that reference to every motor, and `DamiaoMotorSimulator::update()` writes
-it immediately into `MeasuredMotor::raw_q/raw_dq` (`:147-160,201-211`). Thus,
-outside the special freeze injection, feedback is exactly the current command;
-there is no independently evolving plant/encoder observation. The convergence
-tests reinforce this shortcut by asserting those mirrored values
-(`control/tests/test_control.cpp:290-316,423-455`). This cannot validate tracking,
-following error, delayed/stalled dynamics, or measured completion and violates
-the explicit requirement that fake feedback not let command targets masquerade
-as measurements.
+`OA_CONTROL_ABI_V1` remains 1, but the commit enlarges three V1 input records:
 
-Expected test: a simulated plant with its own state and dynamics must lag the
-reference; advancing reference alone must not change measured state, and only
-independently generated encoder samples may satisfy q/dq/TCP dwell completion.
+- `oa_controller_options` gains `collision_scene_revision`
+  (`control/include/openarm_control.h:212-221`);
+- `oa_sim_fault` gains status/send/skew fields (`:272-282`);
+- `oa_paired_tcp_move` inserts two fields before its previously existing
+  `collision_scene_revision` (`:176-190`).
 
-## 2. High — active faults do not gate arming and can be erased by arming
+Every wrapper still calls `valid_record<T>`, which requires
+`record->struct_size >= sizeof(the new T)` (`control/src/c_api.cpp:25-29`). A V1
+binary compiled against `8bc839e` therefore passes its smaller frozen record and
+is rejected with `OA_EINVAL` by the new library. The paired record is not even
+prefix-layout-compatible because fields were inserted before an existing field.
+The C11 test is recompiled against the new header, so it cannot detect this.
 
-`fresh()` checks only timestamps/masks and ignores motor status/fault masks
-(`control/src/control_core.cpp:808-810`). A fault injected while DISARMED sets
-status 8, but `challenge()` still succeeds (`:357-371`) and `arm()` then calls
-`set_enabled(true)`, overwriting every status byte with 1 before sampling
-(`:374-395,135-145`). The controller can therefore arm through an active fault
-and make the fault disappear. The same missing gate permits planning/execution
-from ARMED_IDLE with a newly injected fault until the next `advance()` notices
-it. Arming was required to consume fresh, legal, **disabled and fault-free**
-feedback.
+Expected fix/test: either bump the ABI and introduce new record/function names,
+or preserve the V1 layouts and accept documented older prefixes with defaults.
+Compile a consumer object against the `8bc839e` header, then link and run it
+against the current library as a compatibility test.
 
-Expected tests: inject every status fault before challenge, between challenge and
-arm, and while idle; arm/plan/execute must fail closed, latch the fault, and
-disable both arms without overwriting the originating status evidence.
+## 2. High — invalid manifest/plan handles can still cause memory-unsafe reads
 
-## 3. High — plans are replayable across controllers and start drift is not checked
+Controller handles are now safely looked up in a registry, but manifest and plan
+entry points still dereference caller pointers to inspect an in-object magic
+value before establishing that the pointer denotes a library-owned object:
 
-`MotionPlan` carries revisions and per-controller sequence numbers, but no
-controller/verification-epoch identity. `execute()` checks only manifest/model
-revisions and equality of the two sequence counters (`control/src/control_core.cpp:545-557`);
-it never compares the current measured q against `plan.start_q`. Two controllers
-with the same manifest and coincident sequence counters can therefore accept one
-another's plans even when their measured poses differ. A future-start command is
-also not revalidated at its actual start epoch. This defeats immutable plan
-ownership and the mandatory immediate pre-execution start-pose drift check.
+- `oa_controller_create` reads `manifest->magic` and `manifest->impl`
+  (`control/src/c_api.cpp:138-147`);
+- plan report/execute read `plan->magic` and `plan->impl` (`:281-286,311-319`);
+- manifest/plan destroy do the same (`:131-135,441-445`).
 
-Expected tests: create two controllers with equal revisions/sequences but
-different measured poses and prove cross-controller execution is rejected;
-likewise alter measured q after planning/queuing and require rejection before the
-first command cycle.
+This does not contain invalid, cross-type, or stale handles. A focused ASan probe
+passed a one-byte unregistered allocation as `oa_manifest *` to
+`oa_controller_create`; it failed with a heap-buffer-overflow reading eight bytes
+at `c_api.cpp:141`, rather than returning `OA_EINVAL`. C++ exception handling
+cannot catch this memory fault. This is one of the original ABI acceptance cases
+(`invalid handles`) and is not exercised by the in-tree tests.
 
-## 4. High — public controller operations have data races and unsafe lifetime overlap
+Expected fix/test: validate all opaque handles through ownership registries (or
+an equivalently non-dereferencing token scheme), tombstone stale handles under a
+documented policy, and test null, arbitrary, cross-type, destroyed, and
+destroy-overlap handles for every handle-taking API under ASan/UBSan.
 
-Every C entry point directly reads or mutates one unsynchronized `Controller`;
-the class contains mutable lifecycle, optional plan, simulator state, and event
-ring with no mutex/atomics (`control/src/control_core.hpp:112-167`,
-`control/src/c_api.cpp:103-357`). Concurrent `advance`, `snapshot`, `stop`, or
-`poll_event` calls therefore have C++ data races/undefined behavior. Concurrent
-destroy versus any call can additionally dereference freed handle/implementation
-memory. Neither the public header nor README declares an external serialization
-and destruction-quiescence contract. This is incompatible with a coordinator,
-watchdog, event consumer, and stop path operating concurrently.
+## 3. Medium — cycle-deadline, measured-dwell, and requested stop policy remain unenforced
 
-Expected test: a TSan stress test with advance/snapshot/event/stop from separate
-threads, plus a specified and enforced close/quiescence protocol. Either provide
-internal synchronization/lifetime pinning or make a deliberately single-threaded
-API contract explicit and redesign asynchronous use around one owner thread.
+`cycle_ns` is validated and used to establish a minimum trajectory segment, but
+never compared with successive `advance()` timestamps
+(`control/src/control_core.cpp:405-407,719-746,793-909`). `advance()` accepts
+equal timestamps and arbitrarily large gaps so long as command/producer expiry
+has not passed. Each equal-time call still emits another feedback generation,
+and completion is three calls/`settle_cycles_`, not a positive monotonic dwell
+interval (`:857-893`). Thus a missed control deadline is not faulted and three
+zero-time samples can satisfy completion.
 
-## 5. High — feedback is freshness-window aggregation, not a coherent complete generation; skew is unenforced
+The execute request's `stop_kind` is now copied to `active_stop_kind_`
+(`:778-789`), but that member is never read; all watchdog/fault paths still use
+the same immediate two-arm disable. This leaves the earlier finding only
+partially fixed and makes the requested controlled-stop policy ineffective.
 
-When one motor is dropped, the other six are updated but `feedback_seq_` merely
-stops incrementing (`control/src/control_core.cpp:201-211`). The dropped motor's
-old sample remains in `fresh_mask` until the timeout (`:214-242`), so the next
-incomplete generation is treated as complete and usable during that window.
-This also permits mixed-age joint vectors rather than an immutable complete
-snapshot. `max_cross_bus_skew_ns` is reported (`:314-326`) but never compared to
-the configured maximum anywhere; no partial-send/skew injection or paired-cycle
-enforcement exists. Consequently the requested immediate incomplete-feedback,
-cross-bus-skew, and paired stop-both gates are absent (the existing drop test
-waits 60 ms specifically to age out the stale sample at
-`control/tests/test_control.cpp:345-370`).
+Expected test: reject/fault a cycle gap beyond the configured deadline, prove
+equal timestamps cannot create new dwell progress, require a configured elapsed
+dwell, and verify distinct controlled versus disable reactions (or remove the
+unused execution policy until implemented).
 
-Expected tests: the first missing member of a generation must invalidate the
-whole generation and fault before another command; mixed timestamps must be
-rejected, excessive bus skew and a partial paired send must latch fault and stop
-both arms.
+## 4. Medium — `oa_controller_create` is not transactional under allocation failure
 
-## 6. High — paired TCP planning is endpoint IK plus joint interpolation, not a validated Cartesian path
+Creation inserts the new raw token into `registry.active` and only afterward
+pushes ownership into the allocating `registry.tokens` vector
+(`control/src/c_api.cpp:148-160`). If that vector growth throws `std::bad_alloc`,
+`contained()` returns `OA_ENOMEM`, but the active map entry remains while the
+local token is freed. This leaks an unreachable live controller and leaves a
+dangling key. If a later allocation reuses that address, `emplace` failure is
+ignored and the caller can receive a token mapped to the orphaned controller
+rather than the one just constructed.
 
-`plan_paired()` performs exactly one IK solve per arm from the measured initial
-seed (`control/src/control_core.cpp:451-505`), then execution interpolates a
-single straight segment in joint coordinates (`:588-618`). There are no Cartesian
-waypoints, predecessor-waypoint seeds, branch-jump tests, singularity policy, or
-path residual checks. `collision_scene_revision` is caller-supplied metadata with
-no controller scene dependency to revalidate, and the virtual unchecked policy
-is the sole planning path. Endpoint FK/IK residual and URDF bounds are correctly
-checked, but they do not satisfy the adjudicated path-planning contract.
+Expected fix/test: make registry publication transactional/rollback-safe and add
+deterministic allocation-failure injection at each create allocation boundary,
+checking that `*out` is untouched and no active entry or implementation remains.
 
-Expected tests: multi-waypoint TCP paths seeded from measured q then predecessor
-solutions, with explicit rejection of branch jumps, singularities, intermediate
-residual/bounds failures, and changed collision-scene revision.
+## Prior-finding disposition
 
-## 7. Medium — several lifecycle/watchdog contracts are present only nominally
+- **Command-as-state simulator:** fixed. Commands feed a bounded independent
+  plant; measured state is decoded from quantized feedback frames
+  (`control/src/control_core.cpp:149-251,287-312`). Tests observe post-reference
+  lag.
+- **Fault bypass during arming/idle:** fixed. Fresh, disabled, healthy feedback is
+  required, fault state is separate from enable state, and all status codes 8-14
+  are tested (`:489-535,543-617,946-969`).
+- **Cross-controller plan replay/start drift:** fixed with instance/verify-epoch
+  binding, measured start comparison, and a second check at a queued start
+  (`:573-601,632-715,749-790,819-825,1173-1184`).
+- **Controller concurrency/destroy overlap:** fixed for controller handles via
+  registry pinning plus per-controller serialization; TSan stress passes
+  (`control/src/c_api.cpp:59-106,404-472`). Manifest/plan invalid-handle safety is
+  separately outstanding as Finding 2.
+- **Coherent feedback/skew/partial paired send:** fixed. An incomplete generation
+  invalidates immediately, skew is enforced, and partial sends latch global
+  fault (`control/src/control_core.cpp:287-353,857-883`).
+- **Endpoint-only paired IK:** fixed with 17 Cartesian waypoints, predecessor
+  seeds, intermediate residual/bounds/protocol/branch/singularity gates, scene
+  binding, and synchronized segment trajectories (`:606-717,827-855`). Physical
+  execution remains hard-gated and collision defaults to reject-all.
+- **Lifecycle/watchdog:** ESTOP, heartbeat, reset-to-CLOSED/full reverify, event
+  deadlines, and queued/settling/aborted events are fixed. The narrower
+  cycle/dwell/stop-policy gap remains as Finding 3.
+- **Mapped protocol span:** fixed at manifest validation and planning
+  (`:126-140,567-571,676-685`). No double gearing was introduced.
 
-There is no route to `OA_LIFECYCLE_ESTOP`; fault reset clears injection and
-resamples the current simulator state rather than performing the specified full
-reverification (`control/src/control_core.cpp:740-756`). `poll_event` ignores its
-deadline (`control/src/c_api.cpp:324-341`). The producer deadline is immutable,
-must be at least command expiry (`control/src/control_core.cpp:559-564`), and has
-no heartbeat/update operation, so it cannot detect a stalled producer earlier
-than command expiry. `oa_execute_request.stop_kind` is validated but never stored
-or used. The event model also omits the specified queued/settling/aborted states.
+## Verification evidence
 
-Expected tests: ESTOP/interlock loss and physical-reset semantics, reset requiring
-a new verification pass, real deadline wait behavior, producer-heartbeat loss
-before motion expiry, and observable queued/settling/aborted transitions.
-
-## 8. Medium — a validated manifest can map legal model angles outside the verified protocol span
-
-Manifest validation checks `abs(q_scale)==1`, the codec PMAX, model joint bounds,
-and only that the offset itself lies in `[-PMAX,+PMAX]`
-(`control/src/control_core.cpp:94-121`). It does not require the full commissioned
-joint interval, inverse-mapped by `(q-b)/a`, to fit the raw output span. For
-example `a=1,b=12.5` passes, while a legal negative left-joint target maps below
-`-12.5` rad. Planning checks only model/mechanical bounds (`:423-446`), and the
-simulator accepts the impossible raw value. This would eventually clip/reject at
-the codec boundary and invalidates plan feasibility.
-
-Expected test: both endpoints of every joint's commissioned interval must
-inverse-map within PMAX (and dynamic/effort/thermal operational limits need
-equivalent validated intersections before physical enablement).
-
-## Test/ABI observations
-
-The ISO-C declarations, opaque shared manifest ownership, exception wrapper, and
-temporary-before-output pattern are directionally correct; valid output writes
-are limited to `sizeof(record)`, preserving trailing caller storage. The physical
-backend returns `OA_EUNSUPPORTED` before sampling or traffic, and collision
-defaults to reject-all.
-
-However, the C11 test only checks two null/short-record calls
-(`control/tests/c11_abi_consumer.c:11-22`), and the C++ "canary" test calls
-`snapshot(NULL, ...)`, so it exits on the invalid handle without exercising an
-output write (`control/tests/test_control.cpp:254-261`). The required wrong/short
-records across all APIs, wrong/cross-type/stale handles, successful and failing
-output canaries, allocation/exception injection, event overflow, and close/lifetime
-tests are not present. Passing ASan/UBSan therefore does not establish the stated
-ABI acceptance criteria.
-
-## Verification performed
-
-- Release/Werror build and CTest: 2/2 passed.
-- Debug ASan/UBSan build and CTest: 2/2 passed.
-- Independent source review against the adjudicated design, design critic, and
-  both hardware/protocol reports.
+- Release/Werror build and CTest: **2/2 passed**.
+- Debug ASan/UBSan build and CTest: **2/2 passed**.
+- Debug TSan build and CTest, including concurrent snapshot/event/destroy stress:
+  **2/2 passed**.
+- Focused invalid-handle ASan probe: **failed as expected**, heap-buffer-overflow
+  at `control/src/c_api.cpp:141`.
+- Diff and source review against every finding in the prior report and the frozen
+  controller design/protocol requirements.

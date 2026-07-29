@@ -35,12 +35,24 @@ has no collision engine, so the default `OA_COLLISION_REJECT_ALL` blocks every
 plan. Tests may opt into `OA_COLLISION_VIRTUAL_UNCHECKED`; reports continue to
 state `collision_checked == 0`.
 
-All public operations on one controller are internally serialized. Destroy can
+Opaque handles are validated through typed registries without dereferencing
+caller memory. Controller operations are internally serialized. Any destroy can
 overlap an operation already in progress: it removes the handle from lookup,
-waits for that operation, then tombstones it. Later calls return `OA_EINVAL`.
-The pointer must not be used after destroy returns. Manifest and plan objects are
-immutable, but callers must not destroy them concurrently with a call using
-them.
+synchronizes with pins, then frees the registry slot; already-pinned immutable
+work safely retains shared state. Handles are monotonic, never-dereferenced
+token values and are not reused. Later calls return `OA_EINVAL`; token-space
+exhaustion fails closed with `OA_ENOMEM`.
+
+V1 input records are append-compatible. The original `8bc839e` prefixes for
+controller options, paired TCP moves, and simulator faults remain accepted.
+Missing virtual-scene, branch/singularity, and fault-detail tails receive the
+documented defaults exercised by the frozen-header compatibility executable.
+
+While armed, `advance` must be called at the configured positive cycle. Missed
+cycles latch timeout, equal timestamps generate neither feedback nor dwell, and
+completion requires three full cycle intervals of measured in-tolerance state.
+The execution request's controlled and disable stop policies produce distinct
+simulator stop states while physical execution remains hard-gated.
 
 Build and test without Python:
 

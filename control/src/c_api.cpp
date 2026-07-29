@@ -3,29 +3,42 @@
 #include "openarm_control.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <chrono>
 #include <condition_variable>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <stdexcept>
 #include <unordered_map>
-#include <vector>
 
 using openarm::control::Controller;
 using openarm::control::Manifest;
 using openarm::control::MotionPlan;
 
 namespace {
-constexpr std::uint64_t kManifestMagic = UINT64_C(0x4f414d414e494631);
-constexpr std::uint64_t kPlanMagic = UINT64_C(0x4f41504c414e5631);
-
 template <typename T>
 bool valid_record(const T *record) noexcept {
     return record != nullptr && record->abi_version == OA_CONTROL_ABI_V1 &&
            record->struct_size >= sizeof(T);
+}
+
+template <typename T>
+bool valid_record_prefix(const T *record, const std::uint32_t minimum_size) noexcept {
+    return record != nullptr && record->abi_version == OA_CONTROL_ABI_V1 &&
+           record->struct_size >= minimum_size;
+}
+
+template <typename T>
+T copy_record_prefix(const T &record, T defaults) noexcept {
+    const std::size_t bytes = std::min<std::size_t>(record.struct_size, sizeof(T));
+    std::memcpy(&defaults, &record, bytes);
+    defaults.struct_size = sizeof(T);
+    defaults.abi_version = OA_CONTROL_ABI_V1;
+    return defaults;
 }
 
 template <typename Callable>
@@ -43,8 +56,7 @@ oa_status contained(Callable &&callable) noexcept {
 }  // namespace
 
 struct oa_manifest {
-    std::uint64_t magic{kManifestMagic};
-    std::shared_ptr<const Manifest> impl;
+    std::uint8_t opaque{};
 };
 
 struct oa_controller {
@@ -52,11 +64,75 @@ struct oa_controller {
 };
 
 struct oa_motion_plan {
-    std::uint64_t magic{kPlanMagic};
-    std::unique_ptr<MotionPlan> impl;
+    std::uint8_t opaque{};
 };
 
 namespace {
+template <typename Implementation>
+struct ImmutableSlot {
+    std::mutex mutex;
+    std::shared_ptr<const Implementation> impl;
+    bool closing{};
+};
+
+template <typename Token, typename Slot>
+struct TokenRegistry {
+    std::mutex mutex;
+    std::unordered_map<const Token *, std::shared_ptr<Slot>> active;
+};
+
+std::atomic<std::uintptr_t> next_opaque_token{static_cast<std::uintptr_t>(0x10000U)};
+
+template <typename Token>
+Token *allocate_opaque_token() {
+    constexpr std::uintptr_t kStride = static_cast<std::uintptr_t>(16U);
+    std::uintptr_t current = next_opaque_token.load();
+    for (;;) {
+        if (current > UINTPTR_MAX - kStride) {
+            throw std::bad_alloc();
+        }
+        if (next_opaque_token.compare_exchange_weak(current, current + kStride)) {
+            return reinterpret_cast<Token *>(current);
+        }
+    }
+}
+
+using ManifestSlot = ImmutableSlot<Manifest>;
+using PlanSlot = ImmutableSlot<MotionPlan>;
+
+TokenRegistry<oa_manifest, ManifestSlot> &manifest_registry() {
+    static TokenRegistry<oa_manifest, ManifestSlot> registry;
+    return registry;
+}
+
+TokenRegistry<oa_motion_plan, PlanSlot> &plan_registry() {
+    static TokenRegistry<oa_motion_plan, PlanSlot> registry;
+    return registry;
+}
+
+template <typename Token, typename Slot>
+std::shared_ptr<Slot> pin_immutable(TokenRegistry<Token, Slot> &registry,
+                                    const Token *token) {
+    if (token == nullptr) {
+        return {};
+    }
+    const std::lock_guard<std::mutex> lock(registry.mutex);
+    const auto found = registry.active.find(token);
+    return found == registry.active.end() ? std::shared_ptr<Slot>{} : found->second;
+}
+
+template <typename Token, typename Slot>
+Token *publish_immutable(TokenRegistry<Token, Slot> &registry,
+                         Token *const handle,
+                         std::shared_ptr<Slot> slot) {
+    const std::lock_guard<std::mutex> lock(registry.mutex);
+    const auto inserted = registry.active.emplace(handle, std::move(slot));
+    if (!inserted.second) {
+        throw std::logic_error("opaque token collision");
+    }
+    return handle;
+}
+
 struct ControllerSlot {
     std::mutex mutex;
     std::condition_variable changed;
@@ -67,14 +143,25 @@ struct ControllerSlot {
 struct ControllerRegistry {
     std::mutex mutex;
     std::unordered_map<const oa_controller *, std::shared_ptr<ControllerSlot>> active;
-    /* Tokens are tombstoned until process exit so stale pointers can never alias
-     * a newly allocated controller. Calls overlapping destroy only use the map. */
-    std::vector<std::unique_ptr<oa_controller>> tokens;
 };
 
 ControllerRegistry &controller_registry() {
     static ControllerRegistry registry;
     return registry;
+}
+
+std::atomic<std::int32_t> controller_create_fail_after{-1};
+
+void controller_create_checkpoint() {
+    const std::int32_t current = controller_create_fail_after.load();
+    if (current < 0) {
+        return;
+    }
+    if (current == 0) {
+        controller_create_fail_after.store(-1);
+        throw std::bad_alloc();
+    }
+    controller_create_fail_after.store(current - 1);
 }
 
 std::shared_ptr<ControllerSlot> pin_controller(const oa_controller *controller) {
@@ -106,6 +193,29 @@ oa_status with_controller(oa_controller *controller, Callable &&callable) noexce
 }
 }  // namespace
 
+extern "C" void oa_control_test_fail_controller_create_after(
+    const std::int32_t checkpoints) {
+    controller_create_fail_after.store(checkpoints);
+}
+
+extern "C" std::size_t oa_control_test_active_controller_count(void) {
+    auto &registry = controller_registry();
+    const std::lock_guard<std::mutex> lock(registry.mutex);
+    return registry.active.size();
+}
+
+extern "C" std::size_t oa_control_test_active_manifest_count(void) {
+    auto &registry = manifest_registry();
+    const std::lock_guard<std::mutex> lock(registry.mutex);
+    return registry.active.size();
+}
+
+extern "C" std::size_t oa_control_test_active_plan_count(void) {
+    auto &registry = plan_registry();
+    const std::lock_guard<std::mutex> lock(registry.mutex);
+    return registry.active.size();
+}
+
 extern "C" oa_status oa_manifest_create(const oa_manifest_config *config,
                                          oa_manifest **out) {
     if (!valid_record(config) || out == nullptr) {
@@ -113,9 +223,10 @@ extern "C" oa_status oa_manifest_create(const oa_manifest_config *config,
                                                                              : OA_EINVAL;
     }
     return contained([&]() -> oa_status {
-        auto handle = std::make_unique<oa_manifest>();
-        handle->impl = std::make_shared<const Manifest>(*config);
-        *out = handle.release();
+        oa_manifest *const handle = allocate_opaque_token<oa_manifest>();
+        auto slot = std::make_shared<ManifestSlot>();
+        slot->impl = std::make_shared<const Manifest>(*config);
+        *out = publish_immutable(manifest_registry(), handle, std::move(slot));
         return OA_OK;
     });
 }
@@ -129,32 +240,62 @@ extern "C" oa_status oa_manifest_load(const char *path, const char *sha256_path,
 }
 
 extern "C" void oa_manifest_destroy(oa_manifest *manifest) {
-    if (manifest != nullptr && manifest->magic == kManifestMagic) {
-        manifest->magic = 0U;
-        delete manifest;
+    auto &registry = manifest_registry();
+    std::shared_ptr<ManifestSlot> slot;
+    {
+        const std::lock_guard<std::mutex> lock(registry.mutex);
+        const auto found = registry.active.find(manifest);
+        if (found == registry.active.end()) {
+            return;
+        }
+        slot = found->second;
+        registry.active.erase(found);
+    }
+    {
+        const std::lock_guard<std::mutex> lock(slot->mutex);
+        slot->closing = true;
+        slot->impl.reset();
     }
 }
 
 extern "C" oa_status oa_controller_create(const oa_manifest *manifest,
                                            const oa_controller_options *options,
                                            oa_controller **out) {
-    if (manifest == nullptr || manifest->magic != kManifestMagic || !manifest->impl ||
-        !valid_record(options) || out == nullptr) {
+    if (!valid_record_prefix(options, OA_CONTROLLER_OPTIONS_V1_PREFIX_SIZE) || out == nullptr) {
         if (options != nullptr && options->abi_version != OA_CONTROL_ABI_V1) {
             return OA_EABI;
         }
         return OA_EINVAL;
     }
+    const auto manifest_slot = pin_immutable(manifest_registry(), manifest);
+    if (!manifest_slot) {
+        return OA_EINVAL;
+    }
+    std::shared_ptr<const Manifest> manifest_impl;
+    {
+        const std::lock_guard<std::mutex> lock(manifest_slot->mutex);
+        if (manifest_slot->closing || !manifest_slot->impl) {
+            return OA_EINVAL;
+        }
+        manifest_impl = manifest_slot->impl;
+    }
+    oa_controller_options defaults{};
+    defaults.collision_scene_revision = 1U;
+    const oa_controller_options normalized = copy_record_prefix(*options, defaults);
     return contained([&]() -> oa_status {
-        auto token = std::make_unique<oa_controller>();
+        controller_create_checkpoint();
         auto slot = std::make_shared<ControllerSlot>();
-        slot->impl = std::make_unique<Controller>(manifest->impl, *options);
-        oa_controller *const handle = token.get();
+        controller_create_checkpoint();
+        slot->impl = std::make_unique<Controller>(manifest_impl, normalized);
+        oa_controller *const handle = allocate_opaque_token<oa_controller>();
         auto &registry = controller_registry();
         {
             const std::lock_guard<std::mutex> lock(registry.mutex);
-            registry.active.emplace(handle, slot);
-            registry.tokens.push_back(std::move(token));
+            controller_create_checkpoint();
+            const auto inserted = registry.active.emplace(handle, slot);
+            if (!inserted.second) {
+                throw std::logic_error("opaque token collision");
+            }
         }
         *out = handle;
         return OA_OK;
@@ -251,9 +392,10 @@ extern "C" oa_status oa_controller_plan_joint(oa_controller *controller,
         if (status != OA_OK) {
             return status;
         }
-        auto handle = std::make_unique<oa_motion_plan>();
-        handle->impl = std::move(plan);
-        *out = handle.release();
+        oa_motion_plan *const handle = allocate_opaque_token<oa_motion_plan>();
+        auto slot = std::make_shared<PlanSlot>();
+        slot->impl = std::shared_ptr<const MotionPlan>(std::move(plan));
+        *out = publish_immutable(plan_registry(), handle, std::move(slot));
         return OA_OK;
     });
 }
@@ -261,47 +403,63 @@ extern "C" oa_status oa_controller_plan_joint(oa_controller *controller,
 extern "C" oa_status oa_controller_plan_paired_tcp(
     oa_controller *controller, const oa_paired_tcp_move *request,
     oa_motion_plan **out) {
-    if (!valid_record(request) || out == nullptr) {
+    if (!valid_record_prefix(request, OA_PAIRED_TCP_MOVE_V1_PREFIX_SIZE) || out == nullptr) {
         return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI
                                                                                : OA_EINVAL;
     }
+    oa_paired_tcp_move defaults{};
+    defaults.max_branch_step_rad = 2.0;
+    defaults.min_singular_value = 0.0;
+    const oa_paired_tcp_move normalized = copy_record_prefix(*request, defaults);
     return with_controller(controller, [&](Controller &impl) -> oa_status {
         std::unique_ptr<MotionPlan> plan;
-        const oa_status status = impl.plan_paired(*request, plan);
+        const oa_status status = impl.plan_paired(normalized, plan);
         if (status != OA_OK) {
             return status;
         }
-        auto handle = std::make_unique<oa_motion_plan>();
-        handle->impl = std::move(plan);
-        *out = handle.release();
+        oa_motion_plan *const handle = allocate_opaque_token<oa_motion_plan>();
+        auto slot = std::make_shared<PlanSlot>();
+        slot->impl = std::shared_ptr<const MotionPlan>(std::move(plan));
+        *out = publish_immutable(plan_registry(), handle, std::move(slot));
         return OA_OK;
     });
 }
 
 extern "C" oa_status oa_motion_plan_get_report(const oa_motion_plan *plan,
                                                  oa_motion_plan_report *out) {
-    if (plan == nullptr || plan->magic != kPlanMagic || !plan->impl ||
-        !valid_record(out)) {
+    if (!valid_record(out)) {
         return out != nullptr && out->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI : OA_EINVAL;
     }
+    const auto plan_slot = pin_immutable(plan_registry(), plan);
+    if (!plan_slot) {
+        return OA_EINVAL;
+    }
     return contained([&]() -> oa_status {
+        std::shared_ptr<const MotionPlan> plan_impl;
+        {
+            const std::lock_guard<std::mutex> lock(plan_slot->mutex);
+            if (plan_slot->closing || !plan_slot->impl) {
+                return OA_EINVAL;
+            }
+            plan_impl = plan_slot->impl;
+        }
         oa_motion_plan_report temporary{};
         temporary.struct_size = sizeof(temporary);
         temporary.abi_version = OA_CONTROL_ABI_V1;
-        temporary.kind = plan->impl->kind;
-        temporary.collision_checked = plan->impl->collision_checked ? 1U : 0U;
-        temporary.duration_ns = plan->impl->duration_ns;
-        temporary.manifest_revision = plan->impl->manifest_revision;
-        temporary.model_revision = plan->impl->model_revision;
-        temporary.collision_scene_revision = plan->impl->collision_scene_revision;
+        temporary.kind = plan_impl->kind;
+        temporary.collision_checked = plan_impl->collision_checked ? 1U : 0U;
+        temporary.duration_ns = plan_impl->duration_ns;
+        temporary.manifest_revision = plan_impl->manifest_revision;
+        temporary.model_revision = plan_impl->model_revision;
+        temporary.collision_scene_revision = plan_impl->collision_scene_revision;
         for (std::size_t side = 0; side < 2U; ++side) {
-            temporary.seed_feedback_seq[side] = plan->impl->seed_seq[side];
-            std::copy(plan->impl->target_q[side].begin(), plan->impl->target_q[side].end(),
+            temporary.seed_feedback_seq[side] = plan_impl->seed_seq[side];
+            std::copy(plan_impl->target_q[side].begin(), plan_impl->target_q[side].end(),
                       temporary.target_q[side]);
-            std::copy(plan->impl->achieved_tcp[side].begin(),
-                      plan->impl->achieved_tcp[side].end(),
+            std::copy(plan_impl->achieved_tcp[side].begin(),
+                      plan_impl->achieved_tcp[side].end(),
                       temporary.achieved_tcp_m[side]);
-            temporary.tcp_residual_m[side] = plan->impl->tcp_residual[side];
+            temporary.tcp_residual_m[side] = plan_impl->tcp_residual[side];
         }
         *out = temporary;
         return OA_OK;
@@ -312,14 +470,25 @@ extern "C" oa_status oa_controller_execute(oa_controller *controller,
                                              const oa_motion_plan *plan,
                                              const oa_execute_request *request,
                                              std::uint64_t *out_command_id) {
-    if (plan == nullptr || plan->magic != kPlanMagic ||
-        !plan->impl || !valid_record(request) || out_command_id == nullptr) {
+    if (!valid_record(request) || out_command_id == nullptr) {
         return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI
                                                                                : OA_EINVAL;
     }
+    const auto plan_slot = pin_immutable(plan_registry(), plan);
+    if (!plan_slot) {
+        return OA_EINVAL;
+    }
+    std::shared_ptr<const MotionPlan> plan_impl;
+    {
+        const std::lock_guard<std::mutex> lock(plan_slot->mutex);
+        if (plan_slot->closing || !plan_slot->impl) {
+            return OA_EINVAL;
+        }
+        plan_impl = plan_slot->impl;
+    }
     return with_controller(controller, [&](Controller &impl) -> oa_status {
         std::uint64_t temporary = 0U;
-        const oa_status status = impl.execute(*plan->impl, *request, temporary);
+        const oa_status status = impl.execute(*plan_impl, *request, temporary);
         if (status == OA_OK) {
             *out_command_id = temporary;
         }
@@ -335,12 +504,15 @@ extern "C" oa_status oa_controller_advance(oa_controller *controller,
 
 extern "C" oa_status oa_controller_sim_set_fault(oa_controller *controller,
                                                    const oa_sim_fault *fault) {
-    if (!valid_record(fault)) {
+    if (!valid_record_prefix(fault, OA_SIM_FAULT_V1_PREFIX_SIZE)) {
         return fault != nullptr && fault->abi_version != OA_CONTROL_ABI_V1 ? OA_EABI
                                                                            : OA_EINVAL;
     }
+    oa_sim_fault defaults{};
+    defaults.fault_status = 8U;
+    const oa_sim_fault normalized = copy_record_prefix(*fault, defaults);
     return with_controller(controller,
-                           [&](Controller &impl) { return impl.set_sim_fault(*fault); });
+                           [&](Controller &impl) { return impl.set_sim_fault(normalized); });
 }
 
 extern "C" oa_status oa_controller_sim_set_state(oa_controller *controller,
@@ -439,9 +611,21 @@ extern "C" oa_status oa_controller_poll_event(oa_controller *controller,
 }
 
 extern "C" void oa_motion_plan_destroy(oa_motion_plan *plan) {
-    if (plan != nullptr && plan->magic == kPlanMagic) {
-        plan->magic = 0U;
-        delete plan;
+    auto &registry = plan_registry();
+    std::shared_ptr<PlanSlot> slot;
+    {
+        const std::lock_guard<std::mutex> lock(registry.mutex);
+        const auto found = registry.active.find(plan);
+        if (found == registry.active.end()) {
+            return;
+        }
+        slot = found->second;
+        registry.active.erase(found);
+    }
+    {
+        const std::lock_guard<std::mutex> lock(slot->mutex);
+        slot->closing = true;
+        slot->impl.reset();
     }
 }
 

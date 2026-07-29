@@ -63,6 +63,10 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
     target_link_libraries(openarm_control_tests PRIVATE openarm_control Threads::Threads)
     target_compile_options(openarm_control_tests PRIVATE
         -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2)
+    if(OA_CONTROL_SANITIZERS OR OA_CONTROL_TSAN)
+        target_compile_definitions(openarm_control_tests PRIVATE
+            OA_CONTROL_TEST_SANITIZED=1)
+    endif()
     add_test(NAME openarm_control_tests COMMAND openarm_control_tests)
 
     add_executable(openarm_control_c11_abi tests/c11_abi_consumer.c)
@@ -71,4 +75,13 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
     target_compile_options(openarm_control_c11_abi PRIVATE
         -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2)
     add_test(NAME openarm_control_c11_abi COMMAND openarm_control_c11_abi)
+
+    add_executable(openarm_control_v1_original_abi tests/v1_original_abi_consumer.c)
+    target_include_directories(openarm_control_v1_original_abi BEFORE PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_v1_original")
+    target_link_libraries(openarm_control_v1_original_abi PRIVATE openarm_control)
+    set_target_properties(openarm_control_v1_original_abi PROPERTIES LINKER_LANGUAGE CXX)
+    target_compile_options(openarm_control_v1_original_abi PRIVATE
+        -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2)
+    add_test(NAME openarm_control_v1_original_abi COMMAND openarm_control_v1_original_abi)
 endif()

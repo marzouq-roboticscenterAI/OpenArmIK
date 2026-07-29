@@ -55,7 +55,7 @@ Release/Werror:
 cmake -S control -B /tmp/openarmik-control-build -DCMAKE_BUILD_TYPE=Release
 cmake --build /tmp/openarmik-control-build --parallel
 ctest --test-dir /tmp/openarmik-control-build --output-on-failure
-100% tests passed, 0 tests failed out of 2
+100% tests passed, 0 tests failed out of 3
 ```
 
 ASan/UBSan:
@@ -65,8 +65,11 @@ cmake -S control -B /tmp/openarmik-control-asan -DCMAKE_BUILD_TYPE=Debug \
   -DOA_CONTROL_SANITIZERS=ON
 cmake --build /tmp/openarmik-control-asan --parallel
 ctest --test-dir /tmp/openarmik-control-asan --output-on-failure
-100% tests passed, 0 tests failed out of 2
+100% tests passed, 0 tests failed out of 3
 ```
+
+ThreadSanitizer uses the same matrix with `-DOA_CONTROL_TSAN=ON`; all 3 tests
+pass there as well.
 
 The C++ suite covers valid/wrong manifests, physical rejection, collision
 rejection, ABI canary preservation, invalid numeric/limit requests, exact
@@ -96,7 +99,8 @@ initial commit:
 - plans bind a unique controller, verification epoch, scene revision, measured
   sequence, and start q, with a second start-pose check at a queued start;
 - controller calls use a serialized, pinned registry slot and destruction safely
-  overlaps active calls without dereferencing or recycling stale tokens;
+  overlaps active calls; monotonic opaque tokens are never dereferenced or
+  recycled, while destroyed registry slots are freed immediately;
 - snapshots represent one complete generation, not a freshness-window mixture;
   missing members, cross-bus skew, or partial command send fault both arms;
 - paired TCP planning uses 17 predecessor-seeded Cartesian waypoints and rejects
@@ -106,10 +110,22 @@ initial commit:
   deadline event waiting, and queued/settling/aborted events are implemented;
 - manifest validation inverse-maps both legal interval endpoints into PMAX.
 
-Fresh corrective verification passed 2/2 tests under Release/Werror,
+Fresh corrective verification passed 3/3 tests under Release/Werror,
 ASan/UBSan, and ThreadSanitizer. The expanded C++ suite adds successful-output
 canaries, real plant-lag proof, every fault status at arming gates,
 cross-controller replay, queued start drift, immediate incomplete generation,
 skew, partial send, branch/singularity/scene rejection, heartbeat loss and
 renewal, ESTOP/reverify, event overflow, blocking event wakeup, concurrent
 snapshot/event/advance, and destroy overlap.
+
+The final re-review corrections preserve frozen V1 prefix compatibility (an
+executable compiled against the `8bc839e` header now links/runs against the new
+library), validate manifest/plan/controller handles through typed active-only
+registries without reading arbitrary caller memory, and make controller registry
+publication transactional. Three deterministic allocation-failure checkpoints
+prove `OA_ENOMEM` leaves output and active registry state unchanged. Cycle gaps,
+equal-time calls, positive measured dwell, and controlled-versus-disable timeout
+policy now have explicit enforcement and regression coverage. A high-volume
+create/destroy regression checks all three registries return to zero active
+entries and that nonsanitized resident memory remains bounded. The final matrix
+contains three executables rather than two.

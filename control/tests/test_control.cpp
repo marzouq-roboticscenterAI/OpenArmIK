@@ -14,6 +14,15 @@
 #include <thread>
 #include <vector>
 
+#ifdef __linux__
+#include <unistd.h>
+#endif
+
+extern "C" void oa_control_test_fail_controller_create_after(std::int32_t checkpoints);
+extern "C" std::size_t oa_control_test_active_controller_count(void);
+extern "C" std::size_t oa_control_test_active_manifest_count(void);
+extern "C" std::size_t oa_control_test_active_plan_count(void);
+
 namespace {
 
 [[noreturn]] void fail(const char *expression, const char *file, int line) {
@@ -29,6 +38,31 @@ void init(T &record) {
     record.struct_size = sizeof(record);
     record.abi_version = OA_CONTROL_ABI_V1;
 }
+
+#ifndef OA_CONTROL_TEST_SANITIZED
+std::uint64_t resident_bytes() {
+#ifdef __linux__
+    std::FILE *const stream = std::fopen("/proc/self/statm", "r");
+    if (stream == nullptr) {
+        return 0U;
+    }
+    unsigned long total_pages = 0UL;
+    unsigned long resident_pages = 0UL;
+    const int fields = std::fscanf(stream, "%lu %lu", &total_pages, &resident_pages);
+    std::fclose(stream);
+    if (fields != 2) {
+        return 0U;
+    }
+    const long page_bytes = sysconf(_SC_PAGESIZE);
+    return page_bytes > 0
+               ? static_cast<std::uint64_t>(resident_pages) *
+                     static_cast<std::uint64_t>(page_bytes)
+               : 0U;
+#else
+    return 0U;
+#endif
+}
+#endif
 
 oa_manifest_config valid_config() {
     static constexpr std::array<double, 7> left_lower{
@@ -388,7 +422,7 @@ void test_stale_feedback_and_paired_fault_stop() {
         fault.side = OA_RIGHT;
         fault.drop_mask = 1U;
         CHECK(oa_controller_sim_set_fault(fixture.controller, &fault) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_ESTALE);
+        CHECK(oa_controller_advance(fixture.controller, 10000000U) == OA_ESTALE);
         oa_snapshot state{};
         init(state);
         CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
@@ -442,8 +476,11 @@ void test_stale_feedback_and_paired_fault_stop() {
         request.producer_deadline_ns = 50000000U;
         std::uint64_t command = 0U;
         CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
-        CHECK(oa_controller_advance(fixture.controller, 40000000U) == OA_OK);
+        for (std::uint64_t now = 10000000U; now <= 40000000U; now += 10000000U) {
+            CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+        }
         CHECK(oa_controller_heartbeat(fixture.controller, command, 500000000U) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 50000000U) == OA_OK);
         CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_OK);
         CHECK(oa_controller_stop(fixture.controller, OA_STOP_DISABLE) == OA_OK);
         CHECK(has_event(fixture.controller, OA_EVENT_ABORTED, command));
@@ -601,6 +638,9 @@ void test_plan_ownership_and_start_drift() {
     const auto future_report = plan_report(plan);
     request = request_for(future_report, 100000000U);
     CHECK(oa_controller_execute(future.controller, plan, &request, &command) == OA_OK);
+    for (std::uint64_t now = 10000000U; now <= 90000000U; now += 10000000U) {
+        CHECK(oa_controller_advance(future.controller, now) == OA_OK);
+    }
     init(moved);
     moved.side = OA_LEFT;
     std::copy(std::begin(future.state.arm[0].q), std::end(future.state.arm[0].q), moved.q);
@@ -684,6 +724,9 @@ void test_watchdog_estop_event_overflow_and_concurrency() {
         request.producer_deadline_ns = 50000000U;
         std::uint64_t command = 0U;
         CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        for (std::uint64_t now = 10000000U; now <= 50000000U; now += 10000000U) {
+            CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+        }
         CHECK(oa_controller_advance(fixture.controller, 60000000U) == OA_ESTALE);
         oa_motion_plan_destroy(plan);
     }
@@ -782,6 +825,217 @@ void test_watchdog_estop_event_overflow_and_concurrency() {
     }
 }
 
+void test_invalid_handles_and_transactional_create() {
+    auto config = valid_config();
+    oa_manifest *manifest = nullptr;
+    CHECK(oa_manifest_create(&config, &manifest) == OA_OK);
+    auto options = virtual_options();
+    std::array<unsigned char, 1> arbitrary{};
+    auto *invalid_manifest = reinterpret_cast<oa_manifest *>(arbitrary.data());
+    oa_controller *controller = reinterpret_cast<oa_controller *>(UINTPTR_MAX - 16U);
+    CHECK(oa_controller_create(invalid_manifest, &options, &controller) == OA_EINVAL);
+    CHECK(controller == reinterpret_cast<oa_controller *>(UINTPTR_MAX - 16U));
+    oa_manifest_destroy(invalid_manifest);
+
+    CHECK(oa_control_test_active_controller_count() == 0U);
+    for (std::int32_t checkpoint = 0; checkpoint < 3; ++checkpoint) {
+        controller = reinterpret_cast<oa_controller *>(UINTPTR_MAX - 32U);
+        oa_control_test_fail_controller_create_after(checkpoint);
+        CHECK(oa_controller_create(manifest, &options, &controller) == OA_ENOMEM);
+        CHECK(controller == reinterpret_cast<oa_controller *>(UINTPTR_MAX - 32U));
+        CHECK(oa_control_test_active_controller_count() == 0U);
+    }
+    oa_control_test_fail_controller_create_after(-1);
+    controller = nullptr;
+    CHECK(oa_controller_create(manifest, &options, &controller) == OA_OK);
+    CHECK(oa_controller_create(reinterpret_cast<oa_manifest *>(controller),
+                               &options, &controller) == OA_EINVAL);
+    oa_controller_destroy(controller);
+
+    oa_manifest *stale_manifest = manifest;
+    std::atomic<bool> manifest_run{true};
+    std::atomic<bool> manifest_failed{false};
+    std::thread manifest_user([&]() {
+        while (manifest_run.load()) {
+            oa_controller *temporary = nullptr;
+            const oa_status status =
+                oa_controller_create(stale_manifest, &options, &temporary);
+            if (status == OA_OK) {
+                oa_controller_destroy(temporary);
+            } else if (status != OA_EINVAL) {
+                manifest_failed.store(true);
+            }
+        }
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    oa_manifest_destroy(manifest);
+    manifest_run.store(false);
+    manifest_user.join();
+    CHECK(!manifest_failed.load());
+    controller = nullptr;
+    CHECK(oa_controller_create(stale_manifest, &options, &controller) == OA_EINVAL);
+
+    Fixture fixture;
+    oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+    oa_motion_plan_report report{};
+    init(report);
+    auto *invalid_plan = reinterpret_cast<oa_motion_plan *>(arbitrary.data());
+    CHECK(oa_motion_plan_get_report(invalid_plan, &report) == OA_EINVAL);
+    CHECK(oa_motion_plan_get_report(reinterpret_cast<oa_motion_plan *>(fixture.controller),
+                                    &report) == OA_EINVAL);
+    CHECK(oa_motion_plan_get_report(reinterpret_cast<oa_motion_plan *>(stale_manifest),
+                                    &report) == OA_EINVAL);
+    oa_motion_plan_destroy(invalid_plan);
+    oa_motion_plan *stale_plan = plan;
+    std::atomic<bool> plan_run{true};
+    std::atomic<bool> plan_failed{false};
+    std::thread plan_user([&]() {
+        while (plan_run.load()) {
+            oa_motion_plan_report concurrent_report{};
+            init(concurrent_report);
+            const oa_status status =
+                oa_motion_plan_get_report(stale_plan, &concurrent_report);
+            if (status != OA_OK && status != OA_EINVAL) {
+                plan_failed.store(true);
+            }
+        }
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    oa_motion_plan_destroy(plan);
+    plan_run.store(false);
+    plan_user.join();
+    CHECK(!plan_failed.load());
+    CHECK(oa_motion_plan_get_report(stale_plan, &report) == OA_EINVAL);
+    oa_execute_request request{};
+    init(request);
+    request.start_ns = 0U;
+    request.expiry_ns = 1000000000U;
+    request.producer_deadline_ns = 1000000000U;
+    request.stop_kind = OA_STOP_DISABLE;
+    std::uint64_t command = 0U;
+    CHECK(oa_controller_execute(fixture.controller, stale_plan, &request, &command) ==
+          OA_EINVAL);
+}
+
+void test_registry_storage_is_bounded() {
+    auto config = valid_config();
+    auto options = virtual_options();
+    const auto cycle_handles = [&]() {
+        oa_manifest *manifest = nullptr;
+        CHECK(oa_manifest_create(&config, &manifest) == OA_OK);
+        oa_controller *controller = nullptr;
+        CHECK(oa_controller_create(manifest, &options, &controller) == OA_OK);
+        oa_controller_destroy(controller);
+        oa_manifest_destroy(manifest);
+    };
+
+    for (std::size_t iteration = 0U; iteration < 64U; ++iteration) {
+        cycle_handles();
+    }
+    CHECK(oa_control_test_active_manifest_count() == 0U);
+    CHECK(oa_control_test_active_controller_count() == 0U);
+#ifndef OA_CONTROL_TEST_SANITIZED
+    const std::uint64_t rss_before = resident_bytes();
+#endif
+    for (std::size_t iteration = 0U; iteration < 4096U; ++iteration) {
+        cycle_handles();
+    }
+    CHECK(oa_control_test_active_manifest_count() == 0U);
+    CHECK(oa_control_test_active_controller_count() == 0U);
+
+    {
+        Fixture fixture;
+        for (std::size_t iteration = 0U; iteration < 4096U; ++iteration) {
+            oa_motion_plan *const plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+            oa_motion_plan_destroy(plan);
+        }
+        CHECK(oa_control_test_active_manifest_count() == 1U);
+        CHECK(oa_control_test_active_controller_count() == 1U);
+        CHECK(oa_control_test_active_plan_count() == 0U);
+    }
+    CHECK(oa_control_test_active_manifest_count() == 0U);
+    CHECK(oa_control_test_active_controller_count() == 0U);
+    CHECK(oa_control_test_active_plan_count() == 0U);
+
+#ifndef OA_CONTROL_TEST_SANITIZED
+    const std::uint64_t rss_after = resident_bytes();
+    constexpr std::uint64_t kMaximumAllocatorGrowth = UINT64_C(16) * 1024U * 1024U;
+    if (rss_before != 0U && rss_after != 0U) {
+        CHECK(rss_after <= rss_before + kMaximumAllocatorGrowth);
+    }
+#endif
+}
+
+void test_cycle_deadline_dwell_and_stop_policy() {
+    {
+        Fixture fixture;
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_DISABLE;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ETIMEOUT);
+        oa_snapshot state{};
+        init(state);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(state.arm[0].status[0] == 0U);
+        oa_motion_plan_destroy(plan);
+    }
+    {
+        Fixture fixture;
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        auto request = request_for(report);
+        request.stop_kind = OA_STOP_CONTROLLED;
+        std::uint64_t command = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, 20000000U) == OA_ETIMEOUT);
+        oa_snapshot state{};
+        init(state);
+        CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+        CHECK(state.arm[0].status[0] == 1U);
+        oa_motion_plan_destroy(plan);
+    }
+    {
+        Fixture fixture;
+        oa_motion_plan *plan = joint_plan(fixture, OA_LEFT, 0U, 0.1);
+        const auto report = plan_report(plan);
+        const auto command = execute(fixture, plan, report, 2000000000U);
+        std::uint64_t now = 0U;
+        bool measured_goal = false;
+        while (!measured_goal && now < report.duration_ns + 1500000000ULL) {
+            now += 10000000U;
+            CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+            oa_snapshot state{};
+            init(state);
+            CHECK(oa_controller_snapshot(fixture.controller, &state) == OA_OK);
+            measured_goal = now >= report.duration_ns &&
+                            std::abs(state.arm[0].q[0] - report.target_q[0][0]) <= 5.0e-4 &&
+                            std::abs(state.arm[0].dq[0]) <= 2.0e-2;
+            for (;;) {
+                oa_event event{};
+                init(event);
+                const oa_status status =
+                    oa_controller_poll_event(fixture.controller, 0U, &event);
+                if (status == OA_ETIMEOUT) break;
+                CHECK(status == OA_OK);
+                CHECK(event.kind != OA_EVENT_COMPLETED);
+            }
+        }
+        CHECK(measured_goal);
+        for (std::size_t repeat = 0; repeat < 10U; ++repeat) {
+            CHECK(oa_controller_advance(fixture.controller, now) == OA_OK);
+        }
+        CHECK(!has_event(fixture.controller, OA_EVENT_COMPLETED, command));
+        CHECK(oa_controller_advance(fixture.controller, now + 10000000U) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, now + 20000000U) == OA_OK);
+        CHECK(oa_controller_advance(fixture.controller, now + 30000000U) == OA_OK);
+        CHECK(has_event(fixture.controller, OA_EVENT_COMPLETED, command));
+        oa_motion_plan_destroy(plan);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -797,6 +1051,9 @@ int main() {
     test_coherent_feedback_skew_and_partial_send();
     test_cartesian_path_policies_and_scene_binding();
     test_watchdog_estop_event_overflow_and_concurrency();
+    test_invalid_handles_and_transactional_create();
+    test_registry_storage_is_bounded();
+    test_cycle_deadline_dwell_and_stop_policy();
     std::puts("openarm_control: all tests passed");
     return 0;
 }

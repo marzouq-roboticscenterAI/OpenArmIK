@@ -204,7 +204,7 @@ private:
     std::uint64_t command_start_ns_{};
     std::uint64_t command_expiry_ns_{};
     std::uint64_t producer_deadline_ns_{};
-    std::uint32_t settle_cycles_{};
+    std::uint64_t settle_start_ns_{};
     std::uint32_t active_stop_kind_{OA_STOP_DISABLE};
     bool command_started_{};
     bool settling_published_{};
