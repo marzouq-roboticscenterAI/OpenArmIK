@@ -1,147 +1,112 @@
-# Independent ROS/control re-review through `63f5617`
+# Independent ROS/control third review through `43687a9`
 
 Date: 2026-07-29 (America/Los_Angeles)
-Reviewed: merge `be628f9` plus fix `63f5617`, with `b3993ba` and the prior
-review used as the regression baseline
-Disposition: **FINDINGS**
+Reviewed: fault fix `9e427e8`, current-main merge `527d25d`, and report commit
+`43687a9`, with the prior two reviews used as the regression baseline
+Disposition: **CLEAN**
 
-No GUI, CAN, network service, hardware, commissioning, calibration, or physical
-control operation was performed. DDS traffic was confined to isolated ROS
+No GUI, browser, CAN, external service, hardware, commissioning, calibration,
+or physical-control operation was performed. DDS was confined to isolated ROS
 domains. The implementation was not modified; this report is the only worktree
 write.
 
-## Critical
+## Findings
 
-None.
+Critical: none.
 
-## Important
+Important: none.
 
-### I1. A callback fault continues publishing apparently live measured state, and a core fault reports a stale lifecycle
+Minor: none.
 
-`publish_feedback()` catches an exception from an action feedback callback and
-calls `fault()` (`virtual_control_session.cpp:644-678`), but it returns `void`.
-Consequently `publish_measured()` returns true (`361-372`) and the worker loop
-continues. The loop gates only `stopped_requires_restart`, not `fault`
-(`239-244`). `fault()` has already disable-stopped the controller and cleared
-the active command, but subsequent DISARMED virtual advances and measured-state
-callbacks continue. At the ROS boundary those callbacks publish new
-`JointState` messages, making a faulted adapter look live.
+## Prior Important convergence check
 
-This was reproduced against the exact fresh RelWithDebInfo build by submitting
-a production `VirtualControlSession` command whose feedback callback throws.
-The adapter reached `fault`, disable-stop produced lifecycle 2
-(`OA_LIFECYCLE_DISARMED`), and the aborted terminal callback ran exactly once,
-yet measured-state callback count increased from 2 to 22 over the following
-100 ms:
+The callback/fault defect from the second review does **not** persist.
+
+- `publish_feedback()` now returns failure after a rejected or throwing
+  callback; `publish_measured()` propagates it and the worker breaks. The loop
+  also explicitly gates `AdapterState::fault`, so it cannot resume measured or
+  feedback publication on a DISARMED virtual controller.
+- Throwing measured-state, feedback, and terminal callbacks are contained by
+  `noexcept` wrappers and converted to a fault. Normal fault terminalization
+  moves the active/pending command once, invokes at most one terminal callback,
+  clears owner and terminalizing state, and permanently rejects reuse with
+  `adapter_fault`. A terminal callback that itself fails is not invoked again.
+- `fault()` now performs its best-effort disable-stop and then independently
+  snapshots the native controller regardless of the stop result. Therefore a
+  native fault that rejects stop with `OA_CONTROL_ESTATE` still reports the
+  authoritative `OA_LIFECYCLE_FAULT` snapshot and the first native cause in
+  both `SessionHealth` and the action result.
+- Shutdown and cancellation detect an already-latched fault and do not issue a
+  second terminal result or relabel its lifecycle/cause.
+
+The exact fresh session binary independently passed the five focused tests for
+throwing terminal, feedback, and measured callbacks plus idle and active 35 ms
+cycle overruns. Each callback-fault test observed frozen publication for a
+further 100 ms, exactly one terminal attempt where a command existed, empty
+ownership, and failed reuse. No exception escaped or terminated the process.
+
+The active overrun returned one aborted result with event `OA_EVENT_FAULTED`,
+lifecycle `OA_LIFECYCLE_FAULT`, cause/status `OA_CONTROL_ETIMEOUT`, and retained
+plan provenance. The idle overrun exposed the same authoritative lifecycle and
+cause in health without publishing another sample.
+
+A separate exact native C-ABI reproduction established the difficult stop
+ordering directly:
 
 ```text
-adapter1=fault lifecycle1=2 reason1=feedback_callback_failed
-states_before=2 states_after=22 adapter2=fault lifecycle2=2 terminals=1
+first=0 fault=5 stop_after_fault=3 snapshot=0 lifecycle=7
 ```
 
-There is a second truthfulness failure in the same fault path. `fault()` only
-refreshes `snapshot_` when `oa_controller_stop()` succeeds (`791-796`). If
-`oa_controller_advance()` has already latched the native controller into
-`OA_LIFECYCLE_FAULT`, stop is rejected by the core, so adapter health and an
-active terminal result retain the last pre-fault snapshot (`828-833`). A 35 ms
-cycle overrun during an active command caused the native deadline fault and
-produced exactly one aborted terminal callback with this stale result:
+That is: first advance OK, deadline advance `OA_CONTROL_ETIMEOUT`, subsequent
+disable-stop `OA_CONTROL_ESTATE`, successful snapshot, and authoritative
+`OA_LIFECYCLE_FAULT`.
 
-```text
-adapter=fault health_lifecycle=5 cause=5 terminals=1
-result_lifecycle=5 result_event=6 result_reason=advance_failed
-```
+## Earlier finding regression check
 
-Lifecycle 5 is `OA_LIFECYCLE_EXECUTING`; the underlying controller had entered
-lifecycle 7 (`OA_LIFECYCLE_FAULT`). The same overrun before command submission
-reported stale lifecycle 4 (`OA_LIFECYCLE_ARMED_IDLE`). Thus adapter diagnostics
-and results can disagree with authoritative core state exactly at fault time.
-The worker must stop publication on every adapter fault, and the fault
-snapshot/result must be refreshed even when disable-stop is rejected because
-the core is already faulted.
+The five original Important and three Minor findings remain closed:
 
-## Prior finding closure
+- Four-phase queued/started/settling/completed SIGINT passed with bounded clean
+  exit and no missing-goal exception or process abort.
+- Reserved and executing cancellation disable-stop truthfully, terminate once,
+  retain authority through terminal publication, and reject restart. The
+  completion callback test likewise holds ownership until the callback returns.
+- The ROS contract reran the legacy-command/concurrent-rejection provenance
+  race; its diagnostic record remained one coherent action/owner/stamp/outcome
+  record with matching seed, duration, and terminal sequences.
+- The CLI completion/rejection paths passed. Its timeout path still waits for a
+  cancel response and terminal result; that code is unchanged from the prior
+  exact 45.25 s cancel-confirmation reproduction.
+- ROS names and limits still come from the standard-manifest accessor, and the
+  canonical mapping/limit boundary test passed.
+- Capability, seed, duration, terminal sequence, lifecycle, event, cause,
+  owner, UUID/stamp, and outcome provenance remain present in results and
+  diagnostics.
 
-All eight prior findings are otherwise resolved by `63f5617`:
+## Build, integration, and safety surface
 
-- **I1, active SIGINT exception:** the exact installed node exited cleanly and
-  within two seconds at queued, started, settling, and completed phases. The
-  aggregate test found neither `terminate called` nor the old missing-goal
-  exception. Goal finalization and user callbacks are now exception-bounded.
-- **I2, incomplete build:** a clean archived checkout with only its pinned
-  upstream linked in a temporary source tree completed `scripts/build.sh
-  --tests`. It built/installed CAN, model, commission, transport, control,
-  `openarm_description`, `openarm_control_msgs`, and `openarm_ik_ros`; both the
-  generated actions and C++ node/CLI are in the fresh install.
-- **I3, reserved/executing cancellation:** the production session tests now
-  reproduce cancel-before-submit, cancel/release, and executing cancel.
-  Reserved cancel disable-stops to `OA_LIFECYCLE_DISARMED`, retains the owner
-  until the accepted command can receive one canceled terminal callback, and
-  rejects restart. Executing cancel likewise returns one canceled result with
-  a refreshed DISARMED snapshot.
-- **I4, legacy diagnostic correlation:** the fresh ROS contract test ran the
-  original legacy-command/concurrent-rejected-goal race. Its terminal record
-  remained atomically correlated as `deprecated_paired_xyz`, the exact legacy
-  owner and request stamp, `outcome=completed`, and matching seed/duration/
-  terminal sequences.
-- **I5, terminal ownership:** a blocking terminal callback test proved a new
-  reservation remains `busy` until the prior terminal callback returns, then
-  succeeds.
-- **M1, CLI cancel wait:** the compiled CLI now waits up to three seconds for
-  the cancel response and five seconds for the original result future before
-  shutting ROS down; ordinary completion/rejection paths passed in the ROS
-  contract test. A dedicated exact timeout reproduction is recorded below.
-- **M2, manifest duplication:** ROS joint names and limits are derived from the
-  public standard-manifest configuration accessor, and the session suite checks
-  canonical mapping and limit boundaries.
-- **M3, provenance:** actions/results and diagnostics now carry capability
-  bits, plan seed sequences, duration, terminal measured sequences, outcome,
-  cause, lifecycle, event, owner, and request identity. Shutdown/fault results
-  preserve the active plan provenance.
-
-The new Important finding above is outside those successful regression tests;
-there is no test for a throwing feedback callback or for adapter reporting
-after a native controller fault.
-
-## Other verified properties
-
-- The fresh runtime graph has one measured-state authority and the duplicate
-  local adapter is rejected. The adapter publishes no TF, target-as-state, or
-  finger joints.
-- The simultaneous identity/provenance race is covered by the legacy/rejected
-  ROS test; reservation/terminal races are covered directly by the session
-  suite. Named-frame, invalid-name, missing-transform, and duplicate-authority
-  rejection paths passed.
-- No adapter or message target links CAN, transport, commission, Python runtime,
-  or physical-control libraries. Source and syscall checks found no CAN device,
-  SocketCAN, calibration, commissioning, persistence, or physical-backend ROS
-  endpoint. `physical_motion_authorized=false` remains explicit.
-- Current `main` is three non-overlapping documentation/portal-launcher commits
-  beyond the merge base `21ab251`; `git merge-tree` reports no conflicts with
-  this branch. Its portal launcher starts the same virtual-only launch and adds
-  no control-core semantic overlap.
+- A clean temporary archive of exact `43687a9`, supplied only the repository's
+  pinned upstream, completed `scripts/build.sh --tests` into empty build and
+  install directories. It built/installed CAN, model, commission, transport,
+  control, `openarm_description`, `openarm_control_msgs`, and `openarm_ik_ros`.
+- `main` is an ancestor of HEAD after `527d25d`. Its added dependency/portal
+  launchers do not change controller ownership or the virtual-only ROS adapter.
+- The ROS node and CLI still have no CAN, transport, commission, calibration,
+  persistence, device, or physical-backend endpoint/linkage. The syscall
+  isolation test passed, and `physical_motion_authorized=false` remains
+  explicit.
+- The fault-fix commit and post-merge report diff pass `git diff --check`; no
+  executable-source whitespace issue was introduced.
 
 ## Fresh test evidence
 
-- Unified clean build: succeeded from a temporary archive of exact `63f5617`.
-- Native tests in the unified build: 14/14 passed (CAN 1, model 4,
-  commission 2, transport 3, control/ABI/install consumer 4).
-- Authored exact-binary ROS aggregate: 9/9 passed, including the expanded
-  9-case session suite, no-CAN syscall isolation, generated URDF, invalid
-  expiry, full ROS contract, four-phase active SIGINT, and helper checks.
-- CLI terminal-timeout reproduction: a deliberately nonterminating isolated
-  action server accepted cancellation; after 45.25 s the exact installed CLI
-  waited for the cancel response and canceled result, printed the server's
-  terminal reason, and exited with the distinct canceled status 6.
-- ASan/UBSan with halt/leak checking: native control 3/3 and production session
-  9/9 passed.
-- TSan with halt-on-error: native control 3/3 and production session 9/9 passed.
-- Exact targeted fault reproductions deterministically exposed I1 above; no
-  sanitizer or race-detector report accompanied either logical failure.
-- `git diff --check be628f9..63f5617` is clean. The total feature diff still
-  contains the two previously noted trailing-space lines in the implementation
-  report `.swarm/ros_control_impl.md`; no executable source has a whitespace
-  error.
+- Unified native CTest: 14/14 passed.
+- Exact installed ROS aggregate: 9/9 passed in 72.52 s.
+- Production session suite: 13/13 passed; the focused five fault cases passed
+  independently in 1.48 s.
+- Fresh ASan/UBSan exact session binary with halt-on-error and leak checking:
+  13/13 passed.
+- Fresh TSan exact session binary with halt-on-error: 13/13 passed.
+- Direct native core fault/stop/snapshot reproduction passed as shown above.
 
-Not claimed: GUI rendering, physical/CAN behavior, exhaustive injected
-freeze/drop/skew matrices, or million-cycle soak.
+Not claimed: GUI/browser rendering, physical/CAN behavior, randomized executor
+campaigns, exhaustive injected fault matrices, or million-cycle soak.
