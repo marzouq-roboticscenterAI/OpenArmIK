@@ -90,30 +90,13 @@ double segment_distance(const Point & p1, const Point & q1, const Point & p2, co
   return norm(subtract(add_scaled(p1, d1, s), add_scaled(p2, d2, t)));
 }
 
-double radial_segment_distance(const Point & a, const Point & b)
+double point_cylinder_distance_squared(
+  const Point & point, double radius, double bottom, double top)
 {
-  const Point d = subtract(b, a);
-  double minimum_t = 0.0;
-  double maximum_t = 1.0;
-  if (std::abs(d[2]) <= 1.0e-18) {
-    if (a[2] < kPoleBottom || a[2] > kPoleTop) {
-      return std::numeric_limits<double>::infinity();
-    }
-  } else {
-    const double at_bottom = (kPoleBottom - a[2]) / d[2];
-    const double at_top = (kPoleTop - a[2]) / d[2];
-    minimum_t = std::max(0.0, std::min(at_bottom, at_top));
-    maximum_t = std::min(1.0, std::max(at_bottom, at_top));
-    if (minimum_t > maximum_t) {
-      return std::numeric_limits<double>::infinity();
-    }
-  }
-  const double denominator = d[0] * d[0] + d[1] * d[1];
-  const double t = denominator > 1.0e-18 ?
-    std::clamp(
-      -(a[0] * d[0] + a[1] * d[1]) / denominator, minimum_t, maximum_t) : minimum_t;
-  const Point p = add_scaled(a, d, t);
-  return std::hypot(p[0], p[1]);
+  const double radial_gap = std::max(0.0, std::hypot(point[0], point[1]) - radius);
+  const double axial_gap = point[2] < bottom ? bottom - point[2] :
+    (point[2] > top ? point[2] - top : 0.0);
+  return radial_gap * radial_gap + axial_gap * axial_gap;
 }
 
 std::vector<std::string_view> split_fields(std::string_view body)
@@ -310,8 +293,8 @@ bool NominalPathGuard::scene_clear(
     points[side][7] = origin(fk[side].hand_tcp);
   }
   clearance = std::numeric_limits<double>::infinity();
-  for (std::size_t left = 1; left < 7; ++left) {
-    for (std::size_t right = 1; right < 7; ++right) {
+  for (std::size_t left = 0; left < 7; ++left) {
+    for (std::size_t right = 0; right < 7; ++right) {
       const double radii = (left == 6 ? kToolRadius : kArmRadius) +
         (right == 6 ? kToolRadius : kArmRadius);
       const double value = segment_distance(
@@ -324,10 +307,16 @@ bool NominalPathGuard::scene_clear(
     }
   }
   for (std::size_t side = 0; side < 2; ++side) {
-    for (std::size_t segment = 2; segment < 7; ++segment) {
-      const double radius = segment == 6 ? kToolRadius : kArmRadius;
-      const double value = radial_segment_distance(
-        points[side][segment], points[side][segment + 1]) - kPoleRadius - radius;
+    for (std::size_t segment = 0; segment < 7; ++segment) {
+      // Canonical link1 begins at J1 and lies wholly outward along the J1
+      // radial axis. Joint1 only rolls its cross-section about that axis, so
+      // no link1 vertex lies radially inward of this centerline. Using the
+      // generic isotropic radius here would fabricate inward mount volume;
+      // the centerline is its conservative shaft-facing envelope.
+      const double radius = segment == 0 ? 0.0 : (segment == 6 ? kToolRadius : kArmRadius);
+      const double value = finite_cylinder_capsule_clearance(
+        points[side][segment], points[side][segment + 1],
+        kPoleRadius, kPoleBottom, kPoleTop, radius);
       clearance = std::min(clearance, value);
       if (std::isnan(value) || value < kRequiredClearance) {
         reason = "nominal central pole keepout clearance is not proven for arm " +
@@ -504,6 +493,43 @@ bool rgb_frame_has_nonblack_pixel(const std::vector<unsigned char> & rgb)
 {
   return rgb.size() >= 3 && rgb.size() % 3 == 0 &&
          std::any_of(rgb.begin(), rgb.end(), [](unsigned char value) {return value != 0;});
+}
+
+double finite_cylinder_capsule_clearance(
+  const Point & a, const Point & b, double cylinder_radius,
+  double cylinder_bottom, double cylinder_top, double capsule_radius)
+{
+  if (!std::all_of(a.begin(), a.end(), [](double value) {return std::isfinite(value);}) ||
+    !std::all_of(b.begin(), b.end(), [](double value) {return std::isfinite(value);}) ||
+    !std::isfinite(cylinder_radius) || !std::isfinite(cylinder_bottom) ||
+    !std::isfinite(cylinder_top) || !std::isfinite(capsule_radius) ||
+    cylinder_radius < 0.0 || cylinder_bottom > cylinder_top || capsule_radius < 0.0)
+  {
+    return -std::numeric_limits<double>::infinity();
+  }
+  const Point direction = subtract(b, a);
+  auto distance_squared = [&](double amount) {
+      return point_cylinder_distance_squared(
+        add_scaled(a, direction, amount), cylinder_radius, cylinder_bottom, cylinder_top);
+    };
+  // Squared distance to a closed convex set is convex along a segment. Ternary
+  // minimization therefore covers the cylindrical side, caps, and rim without
+  // axial clipping holes. Bias the result downward for fail-closed rounding.
+  double low = 0.0;
+  double high = 1.0;
+  for (std::size_t iteration = 0; iteration < 96; ++iteration) {
+    const double first = (2.0 * low + high) / 3.0;
+    const double second = (low + 2.0 * high) / 3.0;
+    if (distance_squared(first) <= distance_squared(second)) {
+      high = second;
+    } else {
+      low = first;
+    }
+  }
+  const double minimum = std::min({
+      distance_squared(0.0), distance_squared(1.0),
+      distance_squared((low + high) / 2.0)});
+  return std::max(0.0, std::sqrt(minimum) - 1.0e-9) - capsule_radius;
 }
 
 std::string json_escape(std::string_view value)

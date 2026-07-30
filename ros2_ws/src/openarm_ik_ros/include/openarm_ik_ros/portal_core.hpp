@@ -115,6 +115,9 @@ bool truecolor_masks_valid(const TrueColorMasks & masks);
 std::array<unsigned char, 3> truecolor_pixel_rgb(
   std::uint64_t pixel, const TrueColorMasks & masks);
 bool rgb_frame_has_nonblack_pixel(const std::vector<unsigned char> & rgb);
+double finite_cylinder_capsule_clearance(
+  const Point & a, const Point & b, double cylinder_radius,
+  double cylinder_bottom, double cylinder_top, double capsule_radius);
 std::string json_escape(std::string_view value);
 
 }  // namespace openarm_ik_ros::portal

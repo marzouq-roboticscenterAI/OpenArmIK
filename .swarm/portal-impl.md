@@ -46,8 +46,13 @@ Status: **DONE_WITH_CONCERNS**
   sampled Cartesian waypoints, requires branch continuity, checks conservative
   left/right link and tool capsules, and checks both arms against the canonical
   60 x 60 mm central shaft's conservative 42.426407 mm circumscribed cylinder
-  over Z `[0.008, 0.758]` plus 25 mm clearance. Both sides are re-solved at
-  each sample to mirror paired-plan behavior. Any IK/FK/numeric/bounds/geometry
+  over Z `[0.008, 0.758]` plus 25 mm clearance. Every moving segment from link1
+  onward is included; only the fixed body-link0 mount is outside the moving
+  chain. The link1 shaft check uses its proven outward-only radial envelope,
+  while link2 onward retain the conservative capsule radii. The finite-cylinder
+  distance includes the shaft side, caps, and diagonal rims rather than treating
+  points above or below the Z interval as clear. Both sides are re-solved at each
+  sample to mirror paired-plan behavior. Any IK/FK/numeric/bounds/geometry
   uncertainty rejects the request; inputs are never clamped.
 - The forms start from current measured TCPs. No preset is represented as
   physically recommended or pre-authorized; every submitted value is evaluated
@@ -116,7 +121,9 @@ Status: **DONE_WITH_CONCERNS**
   JSON parsing/guard acceptance, a nearby inward pole rejection, TrueColor
   mask conversion, invalid/zero masks, and uniform-black-frame rejection. A
   documented nearby posture with Left J3 `+0.15` and Right J3 `-0.15` rad also
-  remains accepted with the unchanged 25 mm threshold.
+  remains accepted with the unchanged 25 mm threshold. Focused finite-shaft
+  tests reject a proximal moving-capsule approach and verify the 25 mm boundary
+  for axial and diagonal approaches just above and below both endcaps.
 - The final focused `test_portal_core` rerun passed; Bash syntax
   checks for the build/launcher entrypoints and `git diff --check` passed after
   the final source changes.
@@ -133,9 +140,10 @@ Status: **DONE_WITH_CONCERNS**
   Its capsule and central-cylinder proxies are conservative product policy,
   not surveyed installation geometry or a calibrated full-mesh scene. It may
   reject useful paths, and it cannot authorize physical motion.
-- The shaft correction removes a proven false projection of the base and upper
-  mounts; it is not complete-body mesh collision checking. The primitive guard
-  still omits exact base/upper-mount shapes, link1/link2 body meshes, oriented
+- The shaft correction removes a proven false projection of the fixed mount and
+  uses conservative moving-segment envelopes; it is not complete-body mesh
+  collision checking. The primitive guard still omits exact base/upper-mount
+  shapes, link1/link2 body meshes, oriented
   hand/finger geometry, payloads, and continuous swept volume. Exact mesh
   investigation found neutral moving geometry clear by at least 29.4746 mm,
   but that evidence does not generalize to arbitrary paths.

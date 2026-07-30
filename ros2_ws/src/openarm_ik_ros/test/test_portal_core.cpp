@@ -208,6 +208,45 @@ TEST(NominalPathGuard, RetainsClearanceForDocumentedNearbyJointThreePosture)
   EXPECT_GE(result.minimum_nominal_clearance_m, 0.025);
 }
 
+TEST(FiniteShaftClearance, RejectsAProximalMovingCapsuleApproach)
+{
+  constexpr double shaft_radius = 0.04242640687119285;
+  constexpr double bottom = 0.008;
+  constexpr double top = 0.758;
+  constexpr double arm_radius = 0.05;
+  const double collision = portal::finite_cylinder_capsule_clearance(
+    {0.16, 0.0, 0.20}, {0.10, 0.0, 0.20},
+    shaft_radius, bottom, top, arm_radius);
+  const double clear = portal::finite_cylinder_capsule_clearance(
+    {0.16, 0.0, 0.20}, {0.13, 0.0, 0.20},
+    shaft_radius, bottom, top, arm_radius);
+  EXPECT_LT(collision, 0.025);
+  EXPECT_GE(clear, 0.025);
+}
+
+TEST(FiniteShaftClearance, IncludesTopAndBottomCapsAndDiagonalRims)
+{
+  constexpr double shaft_radius = 0.04242640687119285;
+  constexpr double bottom = 0.008;
+  constexpr double top = 0.758;
+  constexpr double capsule_radius = 0.05;
+  auto clearance = [&](const portal::Point & point) {
+      return portal::finite_cylinder_capsule_clearance(
+        point, point, shaft_radius, bottom, top, capsule_radius);
+    };
+
+  EXPECT_LT(clearance({0.0, 0.0, top + capsule_radius + 0.024}), 0.025);
+  EXPECT_GE(clearance({0.0, 0.0, top + capsule_radius + 0.026}), 0.025);
+  EXPECT_LT(clearance({0.0, 0.0, bottom - capsule_radius - 0.024}), 0.025);
+  EXPECT_GE(clearance({0.0, 0.0, bottom - capsule_radius - 0.026}), 0.025);
+
+  const double radial = shaft_radius + 0.030;
+  EXPECT_LT(clearance({radial, 0.0, top + 0.065}), 0.025);
+  EXPECT_GE(clearance({radial, 0.0, top + 0.070}), 0.025);
+  EXPECT_LT(clearance({radial, 0.0, bottom - 0.065}), 0.025);
+  EXPECT_GE(clearance({radial, 0.0, bottom - 0.070}), 0.025);
+}
+
 TEST(JsonEscape, EscapesControlAndDelimiterCharacters)
 {
   EXPECT_EQ(portal::json_escape("a\"b\\c\n"), "a\\\"b\\\\c\\n");
