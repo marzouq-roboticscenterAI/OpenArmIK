@@ -1,5 +1,9 @@
 # OpenArm Stage-A controller core
 
+`oa_controller_plan_paired_tcp_with_units` accepts binary64 TCP targets in
+metres, centimetres, or inches. It converts each target once before delegating
+to the metre-native planner; `tcp_tol_m` and plan reports remain metres.
+
 `libopenarm_control` is a C++17 controller behind the versioned ISO-C header
 `include/openarm_control.h`. It has no Python, ROS, shell, `sudo`, or hardware
 write path. The Stage-A backend is a deterministic DaMiao encoder simulator

@@ -93,6 +93,7 @@ include(CTest)
 if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
     set(OA_PUBLIC_HEADERS
         openarm_can.h
+        openarm_units.h
         openarm_model.h
         openarm_transport.h
         openarm_commission.h
@@ -198,7 +199,8 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
 
     add_library(openarm_legacy_control_status OBJECT tests/legacy_control_status.c)
     target_include_directories(openarm_legacy_control_status PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/include")
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../model/include")
     target_compile_features(openarm_legacy_control_status PRIVATE c_std_11)
     set_target_properties(openarm_legacy_control_status PROPERTIES C_EXTENSIONS OFF)
     target_compile_options(openarm_legacy_control_status PRIVATE

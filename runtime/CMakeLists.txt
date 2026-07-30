@@ -90,6 +90,31 @@ if(BUILD_TESTING)
     target_compile_options(openarm_runtime_c11 PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME openarm_runtime_c11 COMMAND openarm_runtime_c11)
 
+    add_executable(openarm_runtime_units_c11 tests/units_consumer.c)
+    target_link_libraries(openarm_runtime_units_c11 PRIVATE openarm_runtime)
+    set_target_properties(openarm_runtime_units_c11 PROPERTIES LINKER_LANGUAGE CXX)
+    target_compile_options(openarm_runtime_units_c11 PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME openarm_runtime_units_c11 COMMAND openarm_runtime_units_c11)
+
+    add_executable(openarm_runtime_units_cxx17 tests/units_consumer.cpp)
+    target_link_libraries(openarm_runtime_units_cxx17 PRIVATE openarm_runtime)
+    target_compile_options(openarm_runtime_units_cxx17 PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME openarm_runtime_units_cxx17 COMMAND openarm_runtime_units_cxx17)
+
+    add_executable(openarm_runtime_units_adapter_test
+        tests/units_adapter_test.c)
+    target_include_directories(openarm_runtime_units_adapter_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    target_link_libraries(openarm_runtime_units_adapter_test PRIVATE OpenArm::Model)
+    set_target_properties(openarm_runtime_units_adapter_test PROPERTIES
+        LINKER_LANGUAGE C)
+    target_compile_options(openarm_runtime_units_adapter_test PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME openarm_runtime_units_adapter_test
+        COMMAND openarm_runtime_units_adapter_test)
+
     add_executable(openarm_runtime_v1_c11 tests/abi_v1_consumer.c)
     target_include_directories(openarm_runtime_v1_c11 BEFORE PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_v1")
@@ -152,7 +177,8 @@ endif()
 install(TARGETS openarm_runtime EXPORT openarm_runtimeTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install(FILES include/openarm_runtime.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES include/openarm_runtime.h include/openarm_runtime_units.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES tests/abi_v1/openarm_runtime.h tests/abi_v1/openarm_commission.h
     tests/abi_v1/layout_contract.h tests/abi_v1/symbol_references.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/openarm_runtime_abi_v1)

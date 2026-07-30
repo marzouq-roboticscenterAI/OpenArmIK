@@ -41,3 +41,14 @@ add_executable(runtime_v1_installed_current_cxx17 consumer.cpp)
 target_compile_definitions(runtime_v1_installed_current_cxx17 PRIVATE OA_RUNTIME_USE_CURRENT_HEADER=1)
 target_link_libraries(runtime_v1_installed_current_cxx17 PRIVATE OpenArm::Runtime)
 target_compile_options(runtime_v1_installed_current_cxx17 PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_executable(runtime_units_installed_c11 ../units_consumer.c)
+target_link_libraries(runtime_units_installed_c11 PRIVATE OpenArm::Runtime)
+set_target_properties(runtime_units_installed_c11 PROPERTIES LINKER_LANGUAGE CXX)
+target_compile_options(runtime_units_installed_c11 PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+
+add_executable(runtime_units_installed_cxx17 ../units_consumer.cpp)
+target_link_libraries(runtime_units_installed_cxx17 PRIVATE OpenArm::Runtime)
+target_compile_options(runtime_units_installed_cxx17 PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)

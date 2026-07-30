@@ -9,6 +9,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "openarm_units.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -129,6 +131,16 @@ oa_model_status oa_ik_position(const oa_model *model, const double target_body_m
 oa_model_status oa_ik_position_v2(const oa_model *model, const double target_body_m[3],
                                   const oa_ik_options *options, uint32_t output_version,
                                   uint32_t output_size, oa_ik_diagnostics *out);
+
+/* target_body is converted once from target_unit to metres before delegating
+ * to oa_ik_position_v2. Options, diagnostics, and tolerances remain SI/metres. */
+oa_model_status oa_ik_position_with_units(const oa_model *model,
+                                          const oa_vec3d *target_body,
+                                          oa_length_unit target_unit,
+                                          const oa_ik_options *options,
+                                          uint32_t output_version,
+                                          uint32_t output_size,
+                                          oa_ik_diagnostics *out);
 
 #ifdef __cplusplus
 }

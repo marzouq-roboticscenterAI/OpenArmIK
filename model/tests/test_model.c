@@ -54,6 +54,58 @@ static void check_diagnostics(const oa_ik_diagnostics *diagnostics) {
     for (i = 0; i < 16; ++i) CHECK(isfinite(diagnostics->achieved_hand_tcp.m[i]));
 }
 
+static void test_unit_aware_ik(const oa_model *model) {
+    static const oa_length_unit units[] = {
+        OA_LENGTH_UNIT_METRES,
+        OA_LENGTH_UNIT_CENTIMETRES,
+        OA_LENGTH_UNIT_INCHES
+    };
+    double seed[OA_DOF] = {0.0};
+    double target_m[3];
+    oa_ik_options options;
+    size_t index;
+
+    pose_position(model, seed, target_m);
+    options_default(&options, seed);
+    for (index = 0; index < 3; ++index) {
+        const oa_vec3d metres = {target_m[0], target_m[1], target_m[2]};
+        oa_vec3d input;
+        oa_vec3d converted_m;
+        double direct_target_m[3];
+        oa_ik_diagnostics direct;
+        oa_ik_diagnostics unit_aware;
+        oa_model_status direct_status;
+        oa_model_status unit_status;
+
+        CHECK(oa_vec3d_convert(&metres, OA_LENGTH_UNIT_METRES, units[index],
+                               &input) == OA_UNITS_OK);
+        CHECK(oa_vec3d_convert(&input, units[index], OA_LENGTH_UNIT_METRES,
+                               &converted_m) == OA_UNITS_OK);
+        direct_target_m[0] = converted_m.x;
+        direct_target_m[1] = converted_m.y;
+        direct_target_m[2] = converted_m.z;
+        direct_status = solve(model, direct_target_m, &options, &direct);
+        unit_status = oa_ik_position_with_units(
+            model, &input, units[index], &options,
+            OA_IK_DIAGNOSTICS_VERSION, OA_IK_DIAGNOSTICS_SIZE, &unit_aware);
+        CHECK(unit_status == direct_status);
+        CHECK(memcmp(&unit_aware, &direct, sizeof(direct)) == 0);
+    }
+
+    {
+        const oa_vec3d invalid_target = {target_m[0], target_m[1], target_m[2]};
+        oa_ik_diagnostics guarded;
+        oa_ik_diagnostics expected;
+        memset(&guarded, 0xa5, sizeof(guarded));
+        expected = guarded;
+        CHECK(oa_ik_position_with_units(
+                  model, &invalid_target, UINT32_MAX, &options,
+                  OA_IK_DIAGNOSTICS_VERSION, OA_IK_DIAGNOSTICS_SIZE,
+                  &guarded) == OA_MODEL_EINVAL);
+        CHECK(memcmp(&guarded, &expected, sizeof(guarded)) == 0);
+    }
+}
+
 static void test_metadata(const oa_model *model) {
     double lower, upper;
     size_t i;
@@ -245,6 +297,7 @@ int main(void) {
         test_metadata(models[i]);
         test_fk_jacobian(models[i]);
         test_status_and_determinism(models[i]);
+        test_unit_aware_ik(models[i]);
         test_randomized_bounds(models[i]);
     }
     test_every_status();

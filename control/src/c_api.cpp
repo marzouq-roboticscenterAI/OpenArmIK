@@ -430,6 +430,45 @@ extern "C" oa_control_status oa_controller_plan_paired_tcp(
     });
 }
 
+extern "C" oa_control_status oa_controller_plan_paired_tcp_with_units(
+    oa_controller *controller, const oa_paired_tcp_move_with_units *request,
+    oa_motion_plan **out) {
+    if (!valid_record(request) || request->reserved0 != 0U || out == nullptr) {
+        return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1
+                   ? OA_CONTROL_EABI
+                   : OA_CONTROL_EINVAL;
+    }
+    oa_vec3d left_m{};
+    oa_vec3d right_m{};
+    if (oa_vec3d_convert(&request->left_tcp, request->coordinate_unit,
+                         OA_LENGTH_UNIT_METRES, &left_m) != OA_UNITS_OK ||
+        oa_vec3d_convert(&request->right_tcp, request->coordinate_unit,
+                         OA_LENGTH_UNIT_METRES, &right_m) != OA_UNITS_OK) {
+        return OA_CONTROL_EINVAL;
+    }
+
+    oa_paired_tcp_move converted{};
+    converted.struct_size = sizeof(converted);
+    converted.abi_version = OA_CONTROL_ABI_V1;
+    converted.expiry_ns = request->expiry_ns;
+    std::copy_n(request->required_feedback_seq, 2U,
+                converted.required_feedback_seq);
+    converted.left_tcp_m[0] = left_m.x;
+    converted.left_tcp_m[1] = left_m.y;
+    converted.left_tcp_m[2] = left_m.z;
+    converted.right_tcp_m[0] = right_m.x;
+    converted.right_tcp_m[1] = right_m.y;
+    converted.right_tcp_m[2] = right_m.z;
+    converted.velocity_scale = request->velocity_scale;
+    converted.acceleration_scale = request->acceleration_scale;
+    converted.jerk_scale = request->jerk_scale;
+    converted.tcp_tol_m = request->tcp_tol_m;
+    converted.collision_scene_revision = request->collision_scene_revision;
+    converted.max_branch_step_rad = request->max_branch_step_rad;
+    converted.min_singular_value = request->min_singular_value;
+    return oa_controller_plan_paired_tcp(controller, &converted, out);
+}
+
 extern "C" oa_control_status oa_motion_plan_get_report(const oa_motion_plan *plan,
                                                  oa_motion_plan_report *out) {
     if (!valid_record(out)) {

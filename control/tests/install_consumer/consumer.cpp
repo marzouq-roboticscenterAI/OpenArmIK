@@ -3,6 +3,14 @@
 #include <openarm_control.h>
 #include <openarm_model.h>
 
+#include <type_traits>
+
+using plan_with_units_signature = oa_control_status (*)(
+    oa_controller *, const oa_paired_tcp_move_with_units *, oa_motion_plan **);
+static_assert(std::is_same_v<decltype(&oa_controller_plan_paired_tcp_with_units),
+                             plan_with_units_signature>);
+static_assert(std::is_same_v<decltype(oa_vec3d::x), double>);
+
 int main() {
     const oa_model *model = oa_model_right_v10_bimanual();
     double lower = 0.0;

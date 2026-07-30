@@ -14,6 +14,10 @@ _Static_assert(sizeof(oa_model_status) == sizeof(int32_t),
                "model status representation changed");
 _Static_assert(sizeof(oa_control_status) == sizeof(uint32_t),
                "control status representation changed");
+_Static_assert(sizeof(((oa_vec3d *)0)->x) == sizeof(double),
+               "coordinate type narrowed");
+_Static_assert(sizeof(oa_vec3d) == 3 * sizeof(double),
+               "coordinate layout changed");
 _Static_assert((oa_model_status)-1 < 0, "model status signedness changed");
 _Static_assert((oa_control_status)-1 > 0, "control status signedness changed");
 _Static_assert(offsetof(oa_ik_diagnostics, status) == 8,

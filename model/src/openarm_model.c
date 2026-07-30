@@ -414,3 +414,28 @@ oa_model_status oa_ik_position_v2(const oa_model *model, const double target[3],
     out->status = status;
     return status;
 }
+
+oa_model_status oa_ik_position_with_units(const oa_model *model,
+                                          const oa_vec3d *target_body,
+                                          oa_length_unit target_unit,
+                                          const oa_ik_options *options,
+                                          uint32_t output_version,
+                                          uint32_t output_size,
+                                          oa_ik_diagnostics *out) {
+    oa_vec3d target_m;
+    double target_array_m[3];
+    const oa_units_status conversion =
+        oa_vec3d_convert(target_body, target_unit, OA_LENGTH_UNIT_METRES,
+                         &target_m);
+    if (conversion == OA_UNITS_ENONFINITE || conversion == OA_UNITS_EOVERFLOW) {
+        return OA_MODEL_ENONFINITE;
+    }
+    if (conversion != OA_UNITS_OK) {
+        return OA_MODEL_EINVAL;
+    }
+    target_array_m[0] = target_m.x;
+    target_array_m[1] = target_m.y;
+    target_array_m[2] = target_m.z;
+    return oa_ik_position_v2(model, target_array_m, options, output_version,
+                             output_size, out);
+}

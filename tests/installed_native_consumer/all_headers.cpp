@@ -1,10 +1,12 @@
 #define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1
 #include "openarm_control.h"
+#include "openarm_units.h"
 #include "openarm_transport.h"
 #include "openarm_commission.h"
 #include "openarm_model.h"
 #include "openarm_can.h"
 #include "openarm_runtime.h"
+#include "openarm_runtime_units.h"
 
 #include <cstdint>
 

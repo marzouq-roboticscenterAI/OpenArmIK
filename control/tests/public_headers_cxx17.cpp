@@ -15,6 +15,8 @@
 
 static_assert(std::is_same_v<oa_model_status, std::int32_t>);
 static_assert(std::is_same_v<oa_control_status, std::uint32_t>);
+static_assert(std::is_same_v<decltype(oa_vec3d::x), double>);
+static_assert(sizeof(oa_vec3d) == 3 * sizeof(double));
 static_assert(offsetof(oa_ik_diagnostics, status) == 8);
 static_assert(offsetof(oa_event, cause) == 40);
 static_assert(OA_MODEL_OK == 0 && OA_MODEL_EBUDGET == 7);

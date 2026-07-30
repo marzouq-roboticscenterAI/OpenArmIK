@@ -226,6 +226,31 @@ oa_paired_tcp_move paired_move(const Fixture &fixture) {
     return move;
 }
 
+oa_paired_tcp_move_with_units paired_move_with_units(
+    const oa_paired_tcp_move &source, const oa_length_unit unit) {
+    oa_paired_tcp_move_with_units move{};
+    init(move);
+    move.coordinate_unit = unit;
+    move.expiry_ns = source.expiry_ns;
+    std::copy_n(source.required_feedback_seq, 2U, move.required_feedback_seq);
+    const oa_vec3d left_m{source.left_tcp_m[0], source.left_tcp_m[1],
+                         source.left_tcp_m[2]};
+    const oa_vec3d right_m{source.right_tcp_m[0], source.right_tcp_m[1],
+                          source.right_tcp_m[2]};
+    CHECK(oa_vec3d_convert(&left_m, OA_LENGTH_UNIT_METRES, unit,
+                           &move.left_tcp) == OA_UNITS_OK);
+    CHECK(oa_vec3d_convert(&right_m, OA_LENGTH_UNIT_METRES, unit,
+                           &move.right_tcp) == OA_UNITS_OK);
+    move.velocity_scale = source.velocity_scale;
+    move.acceleration_scale = source.acceleration_scale;
+    move.jerk_scale = source.jerk_scale;
+    move.tcp_tol_m = source.tcp_tol_m;
+    move.collision_scene_revision = source.collision_scene_revision;
+    move.max_branch_step_rad = source.max_branch_step_rad;
+    move.min_singular_value = source.min_singular_value;
+    return move;
+}
+
 std::uint64_t execute(Fixture &fixture, oa_motion_plan *plan,
                       const oa_motion_plan_report &report,
                       const std::uint64_t extra_ns = 1000000000ULL) {
@@ -725,6 +750,47 @@ void test_paired_tcp_measured_convergence() {
         CHECK(std::sqrt(squared) < move.tcp_tol_m);
     }
     oa_motion_plan_destroy(plan);
+}
+
+void test_unit_aware_paired_tcp_equivalence() {
+    static constexpr std::array<oa_length_unit, 3> units{
+        OA_LENGTH_UNIT_METRES,
+        OA_LENGTH_UNIT_CENTIMETRES,
+        OA_LENGTH_UNIT_INCHES};
+    Fixture fixture;
+    const auto metre_move = paired_move(fixture);
+
+    oa_motion_plan *metre_plan = nullptr;
+    CHECK(oa_controller_plan_paired_tcp(fixture.controller, &metre_move,
+                                        &metre_plan) == OA_CONTROL_OK);
+    const auto metre_report = plan_report(metre_plan);
+    oa_motion_plan_destroy(metre_plan);
+
+    for (const auto unit : units) {
+        auto move = paired_move_with_units(metre_move, unit);
+        oa_motion_plan *unit_plan = nullptr;
+        CHECK(oa_controller_plan_paired_tcp_with_units(
+                  fixture.controller, &move, &unit_plan) == OA_CONTROL_OK);
+        const auto unit_report = plan_report(unit_plan);
+        CHECK(std::memcmp(&metre_report, &unit_report,
+                          sizeof(metre_report)) == 0);
+        oa_motion_plan_destroy(unit_plan);
+    }
+
+    auto invalid = paired_move_with_units(metre_move, OA_LENGTH_UNIT_METRES);
+    invalid.coordinate_unit = 0U;
+    oa_motion_plan *unchanged = reinterpret_cast<oa_motion_plan *>(
+        static_cast<std::uintptr_t>(0x100U));
+    CHECK(oa_controller_plan_paired_tcp_with_units(
+              fixture.controller, &invalid, &unchanged) == OA_CONTROL_EINVAL);
+    CHECK(unchanged == reinterpret_cast<oa_motion_plan *>(
+                           static_cast<std::uintptr_t>(0x100U)));
+    invalid.coordinate_unit = OA_LENGTH_UNIT_METRES;
+    invalid.left_tcp.x = std::numeric_limits<double>::infinity();
+    CHECK(oa_controller_plan_paired_tcp_with_units(
+              fixture.controller, &invalid, &unchanged) == OA_CONTROL_EINVAL);
+    CHECK(unchanged == reinterpret_cast<oa_motion_plan *>(
+                           static_cast<std::uintptr_t>(0x100U)));
 }
 
 void test_faults_gate_arming_and_idle_motion() {
@@ -2022,6 +2088,7 @@ int main() {
     test_stale_feedback_and_paired_fault_stop();
     test_collision_rejection_and_limits();
     test_paired_tcp_measured_convergence();
+    test_unit_aware_paired_tcp_equivalence();
     test_faults_gate_arming_and_idle_motion();
     test_plan_ownership_and_start_drift();
     test_coherent_feedback_skew_and_partial_send();

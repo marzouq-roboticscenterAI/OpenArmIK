@@ -1,5 +1,11 @@
 # OpenArm v1.0 bimanual model
 
+`openarm_units.h` owns the native length-unit contract. `oa_vec3d` is three
+IEEE binary64 `double` values; `oa_vec3d_convert` supports metres, centimetres,
+and inches without writing its output on invalid, non-finite, or overflowing
+input. `oa_ik_position_with_units` converts its target once at ingress, while
+all IK tolerances and diagnostics remain metres.
+
 This is a dependency-free ISO C11 forward-kinematics, geometric-Jacobian, and bounded position-IK library. It models exactly two chains from `openarm_body_link0` through the named `openarm_{left,right}_hand_tcp` frames in the flattened canonical bimanual v1.0 URDF.
 
 The immutable data is generated from `enactic/openarm_description` commit `6c7b720f1ba48e8bafa3a3dc752c45f397b42221`. The generator requires a clean checkout, verifies the known full canonical source hash, makes a temporary ament index that points `openarm_description` directly at that checkout, flattens the current entry xacro with `bimanual:=true`, and parses the resulting current `link7 -> hand -> hand_tcp` chain. It never reads the stale checked-in example URDF. The flattened URDF is archived under `generated/`; model-data, flattened-URDF, and full v1 arm/parallel-gripper source hashes are exposed by the API. The model-data hash and provenance also bind generator version/source hash and the xacro version/implementation hash.

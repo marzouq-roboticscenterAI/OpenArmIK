@@ -1,5 +1,9 @@
 # OpenArm runtime facade
 
+Include `openarm_runtime_units.h` for the header-only binary64 paired-TCP unit
+adapter. It preserves the frozen Runtime V1 header and archive symbol contract,
+converts targets once to metres, and leaves tolerances and reports in metres.
+
 Runtime ABI V1 freezes at the current reviewed header in
 `tests/abi_v1/openarm_runtime.h`. Earlier Runtime feature headers before
 `987f512` were unpublished pre-release drafts, not the V1 compatibility

@@ -40,7 +40,8 @@ if(NOT result EQUAL 0)
     message(FATAL_ERROR "Installed consumer build failed: ${result}")
 endif()
 foreach(canary IN ITEMS runtime_v1_installed_c11 runtime_v1_installed_cxx17
-        runtime_v1_installed_current_c11 runtime_v1_installed_current_cxx17)
+        runtime_v1_installed_current_c11 runtime_v1_installed_current_cxx17
+        runtime_units_installed_c11 runtime_units_installed_cxx17)
     execute_process(COMMAND "${consumer_build}/${canary}" RESULT_VARIABLE result)
     if(NOT result EQUAL 0)
         message(FATAL_ERROR "${canary} failed: ${result}")
