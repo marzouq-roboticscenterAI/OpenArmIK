@@ -2,6 +2,7 @@
 #include "openarm_ik_ros/portal_core.hpp"
 
 #include <gtest/gtest.h>
+#include <openarm_control_msgs/action/move_paired_tcp.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -11,9 +12,15 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <unistd.h>
 
 namespace portal = openarm_ik_ros::portal;
+using PairedAction = openarm_control_msgs::action::MovePairedTcp;
+
+static_assert(std::is_same_v<portal::Point::value_type, double>);
+static_assert(std::is_same_v<decltype(PairedAction::Goal{}.left_tcp_m.x), double>);
+static_assert(std::is_same_v<decltype(PairedAction::Goal{}.right_tcp_m.z), double>);
 
 namespace
 {
@@ -84,6 +91,128 @@ TEST(StrictJson, AcceptsOnlyExactMoveSchema)
   EXPECT_FALSE(portal::StrictJson::parse_move(
     R"({"side":"left","x":0.2,"x":0.3,"y":0.3,"z":0.8})", request, reason));
   EXPECT_FALSE(portal::StrictJson::parse_move("  ", request, reason));
+  EXPECT_FALSE(portal::StrictJson::parse_move(
+    R"({"side":"left","unit":"m","x":0.2,"y":0.3,"z":0.8})", request, reason));
+}
+
+TEST(StrictJson, V2RequiresExactExplicitCoordinateUnitSchema)
+{
+  portal::UnitMoveRequest request;
+  std::string reason;
+  EXPECT_TRUE(portal::StrictJson::parse_move_v2(
+    R"({"side":"right","unit":"cm","x":2.54,"y":-14.25,"z":9.6})", request,
+    reason)) << reason;
+  EXPECT_EQ(request.side, portal::MoveRequest::Side::right);
+  EXPECT_EQ(request.coordinate_unit, OA_LENGTH_UNIT_CENTIMETRES);
+  EXPECT_DOUBLE_EQ(request.target.x, 2.54);
+  EXPECT_FALSE(portal::StrictJson::parse_move_v2(
+    R"({"side":"left","x":2,"y":3,"z":4})", request, reason));
+  EXPECT_FALSE(portal::StrictJson::parse_move_v2(
+    R"({"side":"left","unit":"feet","x":2,"y":3,"z":4})", request, reason));
+  EXPECT_FALSE(portal::StrictJson::parse_move_v2(
+    R"({"side":"left","unit":"m","unit":"cm","x":2,"y":3,"z":4})", request,
+    reason));
+  EXPECT_FALSE(portal::StrictJson::parse_move_v2(
+    R"({"side":"left","unit":"in","x":"2","y":3,"z":4})", request, reason));
+  EXPECT_FALSE(portal::StrictJson::parse_move_v2(
+    R"({"side":"left","unit":"m","x":0x10,"y":3,"z":4})", request, reason));
+}
+
+TEST(CoordinateUnits, V2NormalizesMetresCentimetresAndInchesOnce)
+{
+  struct Example
+  {
+    const char * json;
+    oa_length_unit unit;
+  };
+  const Example examples[] = {
+    {R"({"side":"left","unit":"m","x":0.0254,"y":-0.0508,"z":0.0762})",
+      OA_LENGTH_UNIT_METRES},
+    {R"({"side":"left","unit":"cm","x":2.54,"y":-5.08,"z":7.62})",
+      OA_LENGTH_UNIT_CENTIMETRES},
+    {R"({"side":"left","unit":"in","x":1,"y":-2,"z":3})", OA_LENGTH_UNIT_INCHES},
+  };
+  for (const Example & example : examples) {
+    portal::UnitMoveRequest request;
+    portal::MoveRequest normalized;
+    std::string reason;
+    ASSERT_TRUE(portal::StrictJson::parse_move_v2(example.json, request, reason)) << reason;
+    EXPECT_EQ(request.coordinate_unit, example.unit);
+    ASSERT_TRUE(portal::normalise_move_to_metres(request, normalized, reason)) << reason;
+    EXPECT_NEAR(normalized.target[0], 0.0254, 2.0e-17);
+    EXPECT_NEAR(normalized.target[1], -0.0508, 2.0e-17);
+    EXPECT_NEAR(normalized.target[2], 0.0762, 2.0e-17);
+  }
+}
+
+TEST(CoordinateUnits, Binary64SurvivesJsonNormalizationAndRosActionAssignment)
+{
+  constexpr double precise = 0.12345678901234566;
+  const std::string encoded = portal::json_number(precise);
+  double decoded = 0.0;
+  const auto parsed = std::from_chars(encoded.data(), encoded.data() + encoded.size(), decoded);
+  ASSERT_EQ(parsed.ec, std::errc{});
+  ASSERT_EQ(parsed.ptr, encoded.data() + encoded.size());
+  EXPECT_DOUBLE_EQ(decoded, precise);
+  EXPECT_NE(decoded, static_cast<double>(static_cast<float>(decoded)));
+
+  portal::UnitMoveRequest request;
+  std::string reason;
+  ASSERT_TRUE(portal::StrictJson::parse_move_v2(
+    std::string{"{\"side\":\"left\",\"unit\":\"m\",\"x\":"} + encoded +
+    R"(,"y":0.2,"z":0.3})", request, reason)) << reason;
+  portal::MoveRequest normalized;
+  ASSERT_TRUE(portal::normalise_move_to_metres(request, normalized, reason)) << reason;
+  PairedAction::Goal goal;
+  goal.left_tcp_m.x = normalized.target[0];
+  EXPECT_DOUBLE_EQ(goal.left_tcp_m.x, precise);
+  EXPECT_NE(goal.left_tcp_m.x, static_cast<double>(static_cast<float>(goal.left_tcp_m.x)));
+}
+
+TEST(CoordinateUnits, StateJsonDeclaresMetresAndRoundTripsBinary64)
+{
+  constexpr double precise = 0.12345678901234566;
+  const std::array<portal::Point, 2> tcp{{
+    {precise, -0.25, 0.75}, {0.5, -precise, 1.0}}};
+  const std::string state = portal::portal_state_json(
+    true, false, tcp, "fresh \"state\"", "no command");
+  EXPECT_NE(state.find("\"coordinate_unit\":\"m\""), std::string::npos);
+  EXPECT_NE(state.find(portal::json_number(precise)), std::string::npos);
+  EXPECT_NE(state.find("fresh \\\"state\\\""), std::string::npos);
+  EXPECT_EQ(state.find(std::to_string(static_cast<float>(precise))), std::string::npos);
+}
+
+TEST(PortalPage, DefaultsToCentimetresAndPreservesCanonicalMetreTargets)
+{
+  const std::string page = portal::portal_page("test-token");
+  EXPECT_NE(page.find("Coordinate display units"), std::string::npos);
+  EXPECT_NE(page.find("value=\"cm\" checked"), std::string::npos);
+  EXPECT_NE(page.find("value=\"in\""), std::string::npos);
+  EXPECT_NE(page.find("let unit='cm'"), std::string::npos);
+  EXPECT_NE(page.find("const targetsM="), std::string::npos);
+  EXPECT_NE(page.find("function selectUnit(next){if(!allFieldsValid())"), std::string::npos);
+  EXPECT_NE(page.find("unit=next;updateUnitText();renderAll()"), std::string::npos);
+  EXPECT_NE(page.find("const metresPerUnit={cm:0.01,in:0.0254}"), std::string::npos);
+  EXPECT_NE(page.find("const unitsPerMetre={cm:100,in:1/0.0254}"), std::string::npos);
+  EXPECT_NE(page.find("post('/api/v2/move',{side,unit:'m',x:target[0],y:target[1],z:target[2]})"),
+    std::string::npos);
+  EXPECT_NE(page.find("const target=targetsM[side]"), std::string::npos);
+  EXPECT_EQ(page.find("__CSRF__"), std::string::npos);
+  EXPECT_NE(page.find("const csrf='test-token'"), std::string::npos);
+}
+
+TEST(PortalPage, CarriesStrictInputAndSafetyContracts)
+{
+  const std::string page = portal::portal_page("token");
+  EXPECT_NE(page.find("const decimalPattern=/^[+-]?"), std::string::npos);
+  EXPECT_NE(page.find("Blanks, whitespace, commas, hexadecimal, NaN, and infinity are not accepted."),
+    std::string::npos);
+  EXPECT_NE(page.find("Virtual simulation only."), std::string::npos);
+  EXPECT_NE(page.find("not physically safe coordinates"), std::string::npos);
+  EXPECT_NE(page.find("Controller collision checked: <strong>NO</strong>"), std::string::npos);
+  EXPECT_NE(page.find("not a hardwired E-stop"), std::string::npos);
+  EXPECT_NE(page.find("ROS and RViz geometry remains metric"), std::string::npos);
+  EXPECT_NE(page.find("no portal-switchable coordinate grid"), std::string::npos);
 }
 
 TEST(MutationPolicy, RequiresExactLocalOriginAuthorityTokenAndType)

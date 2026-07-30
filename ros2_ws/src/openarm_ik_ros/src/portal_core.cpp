@@ -6,7 +6,9 @@
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -145,6 +147,36 @@ bool parse_number(std::string_view value, double & out)
   return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() &&
          std::isfinite(out);
 }
+
+bool parse_side(std::string_view value, MoveRequest::Side & side)
+{
+  if (value == "\"left\"") {
+    side = MoveRequest::Side::left;
+    return true;
+  }
+  if (value == "\"right\"") {
+    side = MoveRequest::Side::right;
+    return true;
+  }
+  return false;
+}
+
+bool parse_length_unit(std::string_view value, oa_length_unit & unit)
+{
+  if (value == "\"m\"") {
+    unit = OA_LENGTH_UNIT_METRES;
+    return true;
+  }
+  if (value == "\"cm\"") {
+    unit = OA_LENGTH_UNIT_CENTIMETRES;
+    return true;
+  }
+  if (value == "\"in\"") {
+    unit = OA_LENGTH_UNIT_INCHES;
+    return true;
+  }
+  return false;
+}
 }  // namespace
 
 bool StrictJson::parse_move(std::string_view body, MoveRequest & out, std::string & reason)
@@ -196,6 +228,71 @@ bool StrictJson::parse_move(std::string_view body, MoveRequest & out, std::strin
     reason = "side, x, y, and z are required";
     return false;
   }
+  return true;
+}
+
+bool StrictJson::parse_move_v2(
+  std::string_view body, UnitMoveRequest & out, std::string & reason)
+{
+  if (body.size() < 2 || body.size() > 512) {
+    reason = "JSON body length is invalid";
+    return false;
+  }
+  body = trim(body);
+  if (body.size() < 2 || body.front() != '{' || body.back() != '}') {
+    reason = "JSON object required";
+    return false;
+  }
+  body.remove_prefix(1);
+  body.remove_suffix(1);
+  UnitMoveRequest parsed;
+  bool have_side = false;
+  bool have_unit = false;
+  std::array<bool, 3> have_axis{};
+  for (std::string_view field : split_fields(body)) {
+    const std::size_t colon = field.find(':');
+    if (colon == std::string_view::npos || field.find(':', colon + 1) != std::string_view::npos) {
+      reason = "malformed JSON field";
+      return false;
+    }
+    const std::string_view key = trim(field.substr(0, colon));
+    const std::string_view value = trim(field.substr(colon + 1));
+    if (key == "\"side\"") {
+      if (have_side || !parse_side(value, parsed.side)) {
+        reason = "side must be unique and left or right";
+        return false;
+      }
+      have_side = true;
+      continue;
+    }
+    if (key == "\"unit\"") {
+      if (have_unit || !parse_length_unit(value, parsed.coordinate_unit)) {
+        reason = "unit must be unique and m, cm, or in";
+        return false;
+      }
+      have_unit = true;
+      continue;
+    }
+    std::size_t axis = 3;
+    if (key == "\"x\"") {axis = 0;} else if (key == "\"y\"") {axis = 1;} else if (
+      key == "\"z\"") {axis = 2;}
+    double coordinate = 0.0;
+    if (axis == 3 || have_axis[axis] || !parse_number(value, coordinate)) {
+      reason = "only unique finite numeric x, y, z fields are allowed";
+      return false;
+    }
+    if (axis == 0) {parsed.target.x = coordinate;} else if (axis == 1) {
+      parsed.target.y = coordinate;
+    } else {
+      parsed.target.z = coordinate;
+    }
+    have_axis[axis] = true;
+  }
+  if (!have_side || !have_unit || !have_axis[0] || !have_axis[1] || !have_axis[2]) {
+    reason = "side, unit, x, y, and z are required";
+    return false;
+  }
+  out = parsed;
   return true;
 }
 
@@ -512,12 +609,56 @@ bool xcomposite_version_supported(int major, int minor)
   return major > 0 || (major == 0 && minor >= 2);
 }
 
+bool normalise_move_to_metres(
+  const UnitMoveRequest & input, MoveRequest & output, std::string & reason)
+{
+  oa_vec3d metres{};
+  const oa_units_status status = oa_vec3d_convert(
+    &input.target, input.coordinate_unit, OA_LENGTH_UNIT_METRES, &metres);
+  if (status != OA_UNITS_OK) {
+    reason = status == OA_UNITS_ENONFINITE ?
+      "target XYZ must contain only finite coordinates" :
+      (status == OA_UNITS_EOVERFLOW ? "target XYZ conversion overflowed" :
+      "target XYZ coordinate unit is invalid");
+    return false;
+  }
+  MoveRequest converted;
+  converted.side = input.side;
+  converted.target = {metres.x, metres.y, metres.z};
+  output = converted;
+  return true;
+}
+
 NominalTestSamples nominal_test_samples(MoveRequest::Side side)
 {
   if (side == MoveRequest::Side::left) {
     return {{0.019973, 0.143469, 0.096000}, {0.029973, 0.143469, 0.106000}};
   }
   return {{0.020081, -0.143527, 0.096000}, {0.030081, -0.143527, 0.106000}};
+}
+
+std::string json_number(double value)
+{
+  std::ostringstream output;
+  output.imbue(std::locale::classic());
+  output << std::setprecision(std::numeric_limits<double>::max_digits10) << value;
+  return output.str();
+}
+
+std::string portal_state_json(
+  bool state_fresh, bool command_active, const std::array<Point, 2> & tcp,
+  std::string_view summary, std::string_view command)
+{
+  std::ostringstream output;
+  output.imbue(std::locale::classic());
+  output << "{\"coordinate_unit\":\"m\",\"state_fresh\":" <<
+    (state_fresh ? "true" : "false") << ",\"command_active\":" <<
+    (command_active ? "true" : "false") << ",\"left\":[" <<
+    json_number(tcp[0][0]) << ',' << json_number(tcp[0][1]) << ',' <<
+    json_number(tcp[0][2]) << "],\"right\":[" << json_number(tcp[1][0]) << ',' <<
+    json_number(tcp[1][1]) << ',' << json_number(tcp[1][2]) << "],\"summary\":\"" <<
+    json_escape(summary) << "\",\"command\":\"" << json_escape(command) << "\"}";
+  return output.str();
 }
 
 bool truecolor_masks_valid(const TrueColorMasks & masks)

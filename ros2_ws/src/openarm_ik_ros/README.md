@@ -79,6 +79,12 @@ Motion eligibility rechecks producer timestamps, local receipt ages, and
 unchanged joint/diagnostic generations immediately before action submission.
 
 The portal offers Current, Small forward/up, and Medium forward/up buttons for
-each arm. They only fill target fields. The page labels metres in
-`openarm_body_link0` (+X forward, +Y left, +Z up) and explicitly treats these
-as virtual-model, sampled-nominal-guard test values—not physically safe poses.
+each arm. They only fill target fields. XYZ values default to centimetres and
+can be displayed and entered in inches; the page keeps canonical metre values,
+and the versioned portal endpoint normalizes explicit `m`, `cm`, or `in` input
+to metres before the unchanged guard and ROS action path. `/api/move` remains
+the compatibility metre-only endpoint, while `/api/state` explicitly reports
+`coordinate_unit: "m"`. The frame is `openarm_body_link0` (+X forward, +Y
+left, +Z up). These presets remain virtual-model, sampled-nominal-guard test
+values—not physically safe poses. Stock RViz and ROS remain metric, and the
+captured RViz configuration has no portal-switchable coordinate grid.

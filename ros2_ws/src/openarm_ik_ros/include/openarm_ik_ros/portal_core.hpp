@@ -31,6 +31,13 @@ struct MoveRequest
   Point target{};
 };
 
+struct UnitMoveRequest
+{
+  MoveRequest::Side side{MoveRequest::Side::left};
+  oa_length_unit coordinate_unit{OA_LENGTH_UNIT_METRES};
+  oa_vec3d target{};
+};
+
 struct GuardInput
 {
   std::array<JointVector, 2> measured_q{};
@@ -87,6 +94,7 @@ class StrictJson
 {
 public:
   static bool parse_move(std::string_view body, MoveRequest & out, std::string & reason);
+  static bool parse_move_v2(std::string_view body, UnitMoveRequest & out, std::string & reason);
   static bool empty_object(std::string_view body);
 };
 
@@ -127,7 +135,14 @@ bool guard_handoff_valid(
   std::int64_t now_time_ns, std::int64_t now_steady_ns,
   std::int64_t state_maximum_age_ns, std::int64_t diagnostic_maximum_age_ns);
 bool xcomposite_version_supported(int major, int minor);
+bool normalise_move_to_metres(
+  const UnitMoveRequest & input, MoveRequest & output, std::string & reason);
 NominalTestSamples nominal_test_samples(MoveRequest::Side side);
+std::string json_number(double value);
+std::string portal_state_json(
+  bool state_fresh, bool command_active, const std::array<Point, 2> & tcp,
+  std::string_view summary, std::string_view command);
+std::string portal_page(std::string_view csrf);
 bool truecolor_masks_valid(const TrueColorMasks & masks);
 std::array<unsigned char, 3> truecolor_pixel_rgb(
   std::uint64_t pixel, const TrueColorMasks & masks);

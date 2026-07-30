@@ -31,6 +31,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -44,6 +45,9 @@ namespace http = beast::http;
 using tcp = asio::ip::tcp;
 using Action = openarm_control_msgs::action::MovePairedTcp;
 using GoalHandle = rclcpp_action::ClientGoalHandle<Action>;
+static_assert(std::is_same_v<Point::value_type, double>);
+static_assert(std::is_same_v<decltype(Action::Goal{}.left_tcp_m.x), double>);
+static_assert(std::is_same_v<decltype(Action::Goal{}.right_tcp_m.z), double>);
 constexpr auto kStateFreshness = std::chrono::milliseconds(500);
 constexpr auto kDiagnosticFreshness = std::chrono::milliseconds(1500);
 volatile std::sig_atomic_t stop_requested = 0;
@@ -75,44 +79,6 @@ std::string number(double value)
   std::ostringstream output;
   output << std::fixed << std::setprecision(6) << value;
   return output.str();
-}
-
-std::string page(std::string_view csrf)
-{
-  std::string html = R"HTML(<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OpenArm virtual portal</title><style>
-:root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;background:#0b1018;color:#e9eef6}*{box-sizing:border-box}body{margin:0}main{display:grid;grid-template-columns:minmax(320px,420px) 1fr;min-height:100vh}.controls{padding:24px;background:#121a26;border-right:1px solid #2a3545;overflow:auto}.viewer{display:flex;flex-direction:column;padding:18px;min-width:0}.truth{background:#402713;border:1px solid #b36b27;border-radius:8px;padding:12px;margin:0 0 16px;line-height:1.4}.card{background:#192331;border:1px solid #304055;border-radius:10px;padding:14px;margin-bottom:12px}h1{font-size:1.4rem;margin:0 0 8px}h2{font-size:1rem;margin:0 0 10px}.xyz{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.presets{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}label{font-size:.75rem;color:#aeb9c8}input{width:100%;margin-top:4px;padding:9px;background:#0e1621;color:#fff;border:1px solid #41516a;border-radius:6px}button{width:100%;padding:10px;margin-top:10px;border:0;border-radius:7px;background:#2d77d0;color:white;font-weight:650;cursor:pointer}button.preset{background:#3f526c;font-size:.72rem;padding:8px}button.stop{background:#a13636}button.verify{background:#526275}button:disabled{opacity:.45;cursor:not-allowed}.status{font-family:ui-monospace,monospace;font-size:.82rem;white-space:pre-wrap;line-height:1.5}.frame{flex:1;display:flex;align-items:center;justify-content:center;background:#06090e;border:1px solid #2b3747;border-radius:10px;overflow:hidden;min-height:280px}.frame img{max-width:100%;max-height:calc(100vh - 80px);object-fit:contain}.caption{color:#9eabbc;font-size:.8rem;margin-top:8px}@media(max-width:900px){main{grid-template-columns:1fr}.controls{border-right:0}.viewer{min-height:55vh}.frame img{max-height:70vh}}
-</style></head><body><main><section class="controls"><h1>OpenArm virtual portal</h1>
-<div class="truth"><strong>Virtual simulation only.</strong><br>Controller collision checked: <strong>NO</strong>.<br>The portal uses sampled nominal capsules and a central keepout. This is not physical collision certification. A path is rejected unless that limited guard can prove its checks.</div>
-<div class="card"><h2>Measured TCP / target — metres, openarm_body_link0</h2><div class="caption">+X forward, +Y left, +Z up. Presets are virtual-model, sampled-nominal-guard test values only—not physically safe coordinates. Preset buttons only fill fields; they never submit motion.</div><div id="age" class="caption">Waiting for encoder-derived joint state…</div></div>
-<div class="card"><h2>Left target (orientation unconstrained)</h2><div class="xyz"><label>X<input id="lx" inputmode="decimal"></label><label>Y<input id="ly" inputmode="decimal"></label><label>Z<input id="lz" inputmode="decimal"></label></div><div class="presets"><button class="preset" data-side="left" data-preset="current">Current measured</button><button class="preset" data-side="left" data-preset="small">Small forward/up</button><button class="preset" data-side="left" data-preset="medium">Medium forward/up</button></div><button id="left">Move Left (Right target = freshest measured TCP)</button></div>
-<div class="card"><h2>Right target (orientation unconstrained)</h2><div class="xyz"><label>X<input id="rx" inputmode="decimal"></label><label>Y<input id="ry" inputmode="decimal"></label><label>Z<input id="rz" inputmode="decimal"></label></div><div class="presets"><button class="preset" data-side="right" data-preset="current">Current measured</button><button class="preset" data-side="right" data-preset="small">Small forward/up</button><button class="preset" data-side="right" data-preset="medium">Medium forward/up</button></div><button id="right">Move Right (Left target = freshest measured TCP)</button></div>
-<div class="card"><button class="verify" id="verify">Auto Calibrate — simulation verification only</button><div class="caption">Nonmoving model/state verification; it performs no physical calibration.</div><button class="stop" id="stop">Request software stop (not a hardwired E-stop)</button><div class="caption">Cancels the active portal goal. It is not safety-rated and cannot replace a hardwired E-stop.</div></div>
-<div class="card"><h2>Measured command progress/result</h2><div id="status" class="status">No portal command.</div></div></section>
-<section class="viewer"><h2>Actual launcher-owned stock RViz pixels</h2><div class="frame"><img id="rviz" alt="RViz capture unavailable"></div><div class="caption">XComposite snapshot from the exact launcher PID. Image freshness is never used as control feedback.</div></section></main>
-<script>const csrf='__CSRF__';const samples={left:{small:[__LSX__,__LSY__,__LSZ__],medium:[__LMX__,__LMY__,__LMZ__]},right:{small:[__RSX__,__RSY__,__RSZ__],medium:[__RMX__,__RMY__,__RMZ__]}};let seeded=false,measured=null;const $=id=>document.getElementById(id);function fill(side,v){const p=side==='left'?'l':'r';for(const [axis,value] of [['x',v[0]],['y',v[1]],['z',v[2]]])$(p+axis).value=Number(value).toFixed(6)}function preset(side,name){const value=name==='current'?(measured&&measured[side]):samples[side][name];if(!value){$('status').textContent='Fresh measured state is not available for that preset.';return}fill(side,value);$('status').textContent='Fields filled only; review values and press Move to submit.'}async function state(){try{const r=await fetch('/api/state',{cache:'no-store'}),s=await r.json();$('status').textContent=s.command;const ok=s.state_fresh&&!s.command_active;$('left').disabled=!ok;$('right').disabled=!ok;$('age').textContent=s.summary;if(s.state_fresh){measured={left:s.left,right:s.right};if(!seeded){fill('left',s.left);fill('right',s.right);seeded=true}}}catch(e){$('age').textContent='State unavailable';$('left').disabled=true;$('right').disabled=true}}async function post(path,body={}){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.error||'request rejected');$('status').textContent=j.message}function move(side){const p=side==='left'?'l':'r';post('/api/move',{side,x:Number($(p+'x').value),y:Number($(p+'y').value),z:Number($(p+'z').value)}).catch(e=>$('status').textContent=e.message)}document.querySelectorAll('button.preset').forEach(b=>b.onclick=()=>preset(b.dataset.side,b.dataset.preset));$('left').onclick=()=>move('left');$('right').onclick=()=>move('right');$('stop').onclick=()=>post('/api/stop').catch(e=>$('status').textContent=e.message);$('verify').onclick=()=>post('/api/verify').catch(e=>$('status').textContent=e.message);setInterval(state,250);state();const im=$('rviz');setInterval(()=>{im.src='/api/rviz.jpg?t='+Date.now()},350);im.src='/api/rviz.jpg';</script></body></html>)HTML";
-  const NominalTestSamples left = nominal_test_samples(MoveRequest::Side::left);
-  const NominalTestSamples right = nominal_test_samples(MoveRequest::Side::right);
-  const auto replace = [&html](std::string_view key, std::string_view value) {
-      const std::size_t position = html.find(key);
-      if (position == std::string::npos) {throw std::logic_error("portal page placeholder missing");}
-      html.replace(position, key.size(), value);
-    };
-  replace("__CSRF__", csrf);
-  replace("__LSX__", number(left.small_forward_up[0]));
-  replace("__LSY__", number(left.small_forward_up[1]));
-  replace("__LSZ__", number(left.small_forward_up[2]));
-  replace("__LMX__", number(left.medium_forward_up[0]));
-  replace("__LMY__", number(left.medium_forward_up[1]));
-  replace("__LMZ__", number(left.medium_forward_up[2]));
-  replace("__RSX__", number(right.small_forward_up[0]));
-  replace("__RSY__", number(right.small_forward_up[1]));
-  replace("__RSZ__", number(right.small_forward_up[2]));
-  replace("__RMX__", number(right.medium_forward_up[0]));
-  replace("__RMY__", number(right.medium_forward_up[1]));
-  replace("__RMZ__", number(right.medium_forward_up[2]));
-  return html;
 }
 
 template<typename Body>
@@ -193,15 +159,10 @@ public:
     std::string reason;
     const bool fresh = state(input, tcp, reason);
     std::lock_guard<std::mutex> lock(mutex_);
-    std::ostringstream output;
-    output << "{\"state_fresh\":" << (fresh ? "true" : "false") <<
-      ",\"command_active\":" << (goal_active_ ? "true" : "false") <<
-      ",\"left\":[" << number(tcp[0][0]) << ',' << number(tcp[0][1]) << ',' <<
-      number(tcp[0][2]) << "],\"right\":[" << number(tcp[1][0]) << ',' <<
-      number(tcp[1][1]) << ',' << number(tcp[1][2]) << "],\"summary\":\"" <<
-      json_escape(fresh ? "Fresh encoder-derived virtual state; controller collision_checked=false" : reason) <<
-      "\",\"command\":\"" << json_escape(command_) << "\"}";
-    return output.str();
+    return portal_state_json(
+      fresh, goal_active_, tcp,
+      fresh ? "Fresh encoder-derived virtual state; controller collision_checked=false" : reason,
+      command_);
   }
 
   bool move(
@@ -480,7 +441,7 @@ public:
   : context_(1), acceptor_(context_), node_(std::move(node)),
     capture_(rviz_pid, rviz_start_ticks, std::move(rviz_executable)),
     csrf_(token()), authority_("127.0.0.1:" + std::to_string(port)), policy_(authority_, csrf_),
-    page_(page(csrf_))
+    page_(portal_page(csrf_))
   {
     const tcp::endpoint endpoint{asio::ip::make_address_v4("127.0.0.1"), port};
     acceptor_.open(endpoint.protocol());
@@ -599,7 +560,8 @@ private:
       return;
     }
     if (request.method() != http::verb::post ||
-      (target != "/api/move" && target != "/api/stop" && target != "/api/verify"))
+      (target != "/api/move" && target != "/api/v2/move" &&
+      target != "/api/stop" && target != "/api/verify"))
     {
       write_json(stream, http::status::not_found, "{\"error\":\"route not found\"}");
       return;
@@ -629,10 +591,21 @@ private:
       return;
     }
     MoveRequest move;
-    if (!StrictJson::parse_move(request.body(), move, reason)) {
-      write_json(stream, http::status::bad_request,
-        "{\"error\":\"" + json_escape(reason) + "\"}");
-      return;
+    if (target == "/api/v2/move") {
+      UnitMoveRequest unit_move;
+      if (!StrictJson::parse_move_v2(request.body(), unit_move, reason) ||
+        !normalise_move_to_metres(unit_move, move, reason))
+      {
+        write_json(stream, http::status::bad_request,
+          "{\"error\":\"" + json_escape(reason) + "\"}");
+        return;
+      }
+    } else {
+      if (!StrictJson::parse_move(request.body(), move, reason)) {
+        write_json(stream, http::status::bad_request,
+          "{\"error\":\"" + json_escape(reason) + "\"}");
+        return;
+      }
     }
     GuardInput input;
     std::array<Point, 2> tcp{};

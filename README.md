@@ -68,6 +68,11 @@ ownership. Robot models always come from the fetched
 different description.
 The portal and standalone RViz launchers also share one per-user GUI lock, so
 they cannot start duplicate ROS and RViz stacks together.
+Portal XYZ fields and their field-only test presets default to centimetres and
+offer an inches display/input toggle. This is a browser presentation boundary:
+the portal normalizes explicit units once, while the model, guard, ROS action,
+controller, and runtime remain binary64 metres. The captured stock RViz view
+has no coordinate grid controlled by this toggle.
 Each direct launcher runs one bounded incremental build by default. Its
 `--no-build` mode fails closed unless an atomic current-source stamp, pinned
 description identity, artifact hashes, and live Runtime/session authority
