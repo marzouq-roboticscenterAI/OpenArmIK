@@ -1,12 +1,14 @@
 # OpenArm runtime facade
 
-`openarm_runtime` is the stable ISO-C orchestration boundary over the CAN,
-model, commissioning, transport, and control modules. It provides deterministic
-virtual state, calibration, and explicitly unchecked virtual motion. Its real
-SocketCAN backend is read-only: it may enumerate local CAN links and issue only
-typed register queries through `openarm_transport`. Physical configuration,
-calibration actuation, enable, zero, save, motion, and collision-authorized
-motion are always unsupported.
+`openarm_runtime` is the stable ISO-C orchestration boundary over the model,
+commissioning, and control modules. It provides deterministic virtual state,
+calibration, and explicitly unchecked virtual motion. The legacy
+`OA_RUNTIME_BACKEND_SOCKETCAN_QUERY` name remains for ABI compatibility, but
+the runtime has no CAN-codec or transport dependency and cannot open SocketCAN
+or transmit frames. It may enumerate local CAN link metadata read-only through
+sysfs. Physical motor query, evidence, configuration preview/apply, calibration
+actuation, enable, zero, save, motion, and collision-authorized motion are
+always unsupported.
 
 Runtime V1 uses SI units. Model joints and output-shaft feedback are radians,
 radians/second, and Newton-metre estimates. XYZ is metres in
@@ -36,9 +38,16 @@ Only one unexecuted plan may own that quiescence authority. A second plan
 returns `OA_RUNTIME_EBUSY`.
 
 The virtual inventory contains exactly two interfaces and fourteen motors.
-Physical query evidence never assigns a side or joint: it reports
-`unresolved_assignment`, presence, ambiguity, timestamps, and the values that
-were actually correlated. Interface absence yields an immutable empty result.
+`oa_runtime_inventory_query()` remains successful for that virtual backend.
+On the legacy physical backend it clears `out_inventory` and immediately
+returns `OA_RUNTIME_EUNSUPPORTED`, regardless of query-option contents. It does
+not open a CAN socket, transmit, wait, or start work. Physical
+`oa_runtime_configuration_preview_physical()` similarly returns an initialized
+invalid, non-armable preview whose validation status is
+`OA_RUNTIME_EUNSUPPORTED`; local link metadata is never promoted into motor,
+fingerprint, mapping, or configuration evidence. The corresponding capability
+bits are clear. Metadata enumeration inspects at most 256 local link entries
+and returns at most `OA_RUNTIME_MAX_INTERFACES` CAN rows.
 
 ## Manifest format
 

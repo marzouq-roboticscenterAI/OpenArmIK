@@ -26,6 +26,10 @@ constexpr double kPoleRadius = 0.04242640687119285;
 constexpr double kPoleBottom = 0.008;
 constexpr double kPoleTop = 0.758;
 constexpr std::size_t kSamples = 17;
+// DaMiao position feedback has a 25/65535 = 3.8148e-4 rad code step.  Keep
+// handoff equivalence far below one encoder code while covering floating-point
+// publication/serialization noise; an actual adjacent-code change still fails.
+constexpr double kGuardJointEquivalenceTolerance = 1.0e-6;
 
 double dot(const Point & a, const Point & b)
 {
@@ -449,6 +453,58 @@ bool fresh_at_use(
   }
   return now_time_ns - evidence.producer_time_ns <= maximum_age_ns &&
          now_steady_ns - evidence.receipt_steady_ns <= maximum_age_ns;
+}
+
+bool guard_handoff_valid(
+  const GuardInput & guarded, const GuardHandoffEvidence & current,
+  std::int64_t now_time_ns, std::int64_t now_steady_ns,
+  std::int64_t state_maximum_age_ns, std::int64_t diagnostic_maximum_age_ns)
+{
+  auto monotonic_generation = [](
+      std::uint64_t guarded_sequence, const FreshnessEvidence & guarded_freshness,
+      std::uint64_t current_sequence, const FreshnessEvidence & current_freshness)
+    {
+      if (guarded_sequence == 0 || current_sequence < guarded_sequence) {return false;}
+      if (current_sequence == guarded_sequence) {
+        return current_freshness.producer_time_ns == guarded_freshness.producer_time_ns &&
+               current_freshness.receipt_steady_ns == guarded_freshness.receipt_steady_ns;
+      }
+      return current_freshness.producer_time_ns > guarded_freshness.producer_time_ns &&
+             current_freshness.receipt_steady_ns > guarded_freshness.receipt_steady_ns;
+    };
+  if (!current.have_state || !current.diagnostic_valid ||
+    !fresh_at_use(
+      current.state_freshness, now_time_ns, now_steady_ns, state_maximum_age_ns) ||
+    !fresh_at_use(
+      current.diagnostic_freshness, now_time_ns, now_steady_ns,
+      diagnostic_maximum_age_ns) ||
+    !monotonic_generation(
+      guarded.state_sequence, guarded.state_freshness,
+      current.state_sequence, current.state_freshness) ||
+    !monotonic_generation(
+      guarded.diagnostic_sequence, guarded.diagnostic_freshness,
+      current.diagnostic_sequence, current.diagnostic_freshness))
+  {
+    return false;
+  }
+  for (std::size_t side = 0; side < current.measured_q.size(); ++side) {
+    const oa_model * model = side == 0 ? oa_model_left_v10_bimanual() :
+      oa_model_right_v10_bimanual();
+    for (std::size_t joint = 0; joint < current.measured_q[side].size(); ++joint) {
+      const double guarded_value = guarded.measured_q[side][joint];
+      const double current_value = current.measured_q[side][joint];
+      double lower = 0.0;
+      double upper = 0.0;
+      if (!std::isfinite(guarded_value) || !std::isfinite(current_value) ||
+        oa_model_limits(model, joint, &lower, &upper) != OA_MODEL_OK ||
+        current_value < lower || current_value > upper ||
+        std::abs(current_value - guarded_value) > kGuardJointEquivalenceTolerance)
+      {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 bool xcomposite_version_supported(int major, int minor)

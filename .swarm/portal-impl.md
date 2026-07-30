@@ -32,14 +32,20 @@ Status: **DONE_WITH_CONCERNS**
   collision unchecked. Both TCPs are recomputed with public `oa_fk`. The two
   XYZ forms are initially populated from that measured state.
 - Producer ROS stamps and steady receipt times are retained for both joint
-  state and diagnostics. Both clocks and unchanged state/diagnostic generations
-  are revalidated under one mutex immediately before `async_send_goal`, so a
-  delayed, replayed, queued, updated, or aged-out message cannot remain eligible.
+  state and diagnostics. After the expensive guard runs without the state
+  mutex, the handoff requires monotonic, fresh producer/receipt evidence and
+  current healthy idle diagnostics (`lifecycle=4`, `executing=false`). A newer
+  encoder generation is eligible only when every joint remains within
+  `1e-6 rad` of the guarded snapshot. That tolerance is less than 0.3% of the
+  `25/65535 rad` encoder code step: it covers numeric transport noise without
+  treating an adjacent encoder code as unchanged. The same evidence is
+  revalidated under one mutex immediately before `async_send_goal`; nonfinite
+  values, real drift, stale/faulted data, and older or replayed evidence reject.
 - A Left or Right request snapshots both arms once, guards the selected target,
-  and sends one `MovePairedTcp` goal with the other target set to its freshest
-  measured TCP. Browser values are never used for the opposite target. A state
-  generation is rechecked after guard evaluation and before send, rejecting an
-  intervening state update. Action feedback displays measured progress; the
+  and sends one `MovePairedTcp` goal with the other target set to its guarded
+  measured TCP. Browser values are never used for the opposite target. The
+  guarded-handoff policy permits only numerically equivalent newer encoder
+  generations before send. Action feedback displays measured progress; the
   terminal text displays the controller's `collision_checked` result.
 - The pure nominal guard validates finite targets and measured joint/model
   bounds, uses measured seeds and public `oa_ik_position_v2`/`oa_fk` at 17
@@ -131,7 +137,10 @@ Status: **DONE_WITH_CONCERNS**
   `openarm_runtime`, `openarm_runtime_tests`, and the strict-C11 consumer; its
   registered CTest suite passed **2/2**. The portal package reconfigured with
   **13 registered CTests**, `openarm_portal` and `test_portal_core` rebuilt, and
-  the focused portal executable passed all **15 internal cases**. Existing
+  the focused portal executable passed all **15 internal cases**. The subsequent
+  guarded-handoff correction rebuilt both portal targets and passed all **18
+  internal cases**, including newer equivalent generations, one-joint drift,
+  replay, and stale/faulted diagnostics. Existing
   colcon `stderr.log` files remained empty and the merged diff checks passed.
 - No GUI, RViz, Firefox, browser, portal process, screenshot, X display, CAN
   interface, commissioning, hardware, or physical command was started.

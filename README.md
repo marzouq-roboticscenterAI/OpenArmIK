@@ -19,10 +19,13 @@ The repository also contains:
 - [commission/README.md](commission/README.md): manual and supervised
   commissioning building blocks.
 - [control/README.md](control/README.md): the virtual controller core.
+- [runtime/README.md](runtime/README.md): the ISO-C virtual orchestration facade;
+  physical query ABI names are retained but fail closed without CAN transport.
 
 Automatic CAN discovery cannot establish physical joint identity, side, sign,
 zero, gearing, firmware, or a safe motor mapping. Consequently this revision
-does not configure or move physical arms. A physical backend must remain
+does not query, configure, or move physical arms through the runtime. A
+physical backend must remain
 disarmed until those facts are commissioned and an independent E-stop and
 watchdog are installed.
 

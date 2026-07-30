@@ -4,10 +4,8 @@
 
 #define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1
 #include "openarm_runtime.h"
-#include "openarm_can.h"
 #include "openarm_control.h"
 #include "openarm_model.h"
-#include "openarm_transport.h"
 
 #include <array>
 #include <atomic>
@@ -226,8 +224,6 @@ void control_init(T &record) {
 std::uint64_t now_ns();
 oa_runtime_status map_control(oa_control_status status);
 oa_runtime_status map_commission(oa_commission_status status);
-oa_runtime_status map_can(oa_can_status status);
-oa_runtime_status map_transport(oa_transport_status status);
 void set_error(const std::shared_ptr<RuntimeData> &runtime, oa_runtime_status status,
                oa_runtime_facility facility, std::uint32_t lower_code,
                std::uint32_t system_error = 0U);

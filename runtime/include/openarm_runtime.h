@@ -53,6 +53,8 @@ typedef uint32_t oa_runtime_facility;
 
 typedef uint32_t oa_runtime_backend;
 #define OA_RUNTIME_BACKEND_VIRTUAL UINT32_C(1)
+/* Legacy ABI name for the physical-observation backend. Runtime V1 retains
+ * interface metadata enumeration only; motor query is disabled. */
 #define OA_RUNTIME_BACKEND_SOCKETCAN_QUERY UINT32_C(2)
 #define OA_RUNTIME_BACKEND_OFFLINE UINT32_C(3)
 
@@ -103,6 +105,7 @@ typedef uint64_t oa_runtime_capability;
 #define OA_RUNTIME_CAP_VIRTUAL_MANUAL_CALIBRATION (UINT64_C(1) << 6)
 #define OA_RUNTIME_CAP_VIRTUAL_SUPERVISED_CALIBRATION (UINT64_C(1) << 7)
 #define OA_RUNTIME_CAP_INTERFACE_ENUMERATION (UINT64_C(1) << 8)
+/* Reserved compatibility bit. Runtime V1 never advertises it. */
 #define OA_RUNTIME_CAP_PHYSICAL_REGISTER_QUERY (UINT64_C(1) << 9)
 #define OA_RUNTIME_CAP_MANIFEST_PREVIEW (UINT64_C(1) << 10)
 #define OA_RUNTIME_CAP_MANIFEST_PERSISTENCE (UINT64_C(1) << 11)
@@ -566,9 +569,15 @@ oa_runtime_status oa_runtime_now_monotonic_ns(const oa_runtime *runtime,
 oa_runtime_status oa_runtime_get_last_error(const oa_runtime *runtime,
                                             oa_runtime_error_detail *out_detail);
 
+/* The legacy physical backend enumerates local CAN link metadata read-only.
+ * Zero bitrate/FD fields mean that sysfs did not provide authoritative values;
+ * interface rows are not motor or configuration evidence. */
 oa_runtime_status oa_runtime_list_interfaces(const oa_runtime *runtime,
                                              oa_runtime_interface *interfaces,
                                              size_t capacity, size_t *out_count);
+/* On OA_RUNTIME_BACKEND_SOCKETCAN_QUERY this ABI entry point clears
+ * out_inventory and returns OA_RUNTIME_EUNSUPPORTED without opening SocketCAN,
+ * transmitting, or starting asynchronous work. */
 oa_runtime_status oa_runtime_inventory_query(oa_runtime *runtime,
                                              const oa_runtime_inventory_query_options *options,
                                              oa_runtime_inventory **out_inventory);
@@ -637,6 +646,8 @@ oa_runtime_status oa_runtime_calibration_recipe_commit(
 oa_runtime_status oa_runtime_calibration_abort(oa_runtime_calibration *calibration);
 void oa_runtime_calibration_destroy(oa_runtime_calibration *calibration);
 
+/* Physical preview initializes an invalid, non-armable result with
+ * validation_status == OA_RUNTIME_EUNSUPPORTED, then returns that status. */
 oa_runtime_status oa_runtime_configuration_preview_physical(
     const oa_runtime_manifest *manifest, const oa_runtime_inventory *inventory,
     oa_runtime_manifest_preview *out_preview);

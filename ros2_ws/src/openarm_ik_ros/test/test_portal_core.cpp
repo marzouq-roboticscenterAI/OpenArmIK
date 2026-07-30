@@ -283,6 +283,70 @@ TEST(Freshness, RevalidatesProducerAndReceiptAgesAtUseTime)
   EXPECT_FALSE(portal::fresh_at_use({0, 20 * second}, 10 * second, 20 * second, 1000));
 }
 
+TEST(GuardHandoff, AcceptsEquivalentNewerHealthyGenerations)
+{
+  portal::GuardInput guarded;
+  guarded.state_sequence = 4;
+  guarded.diagnostic_sequence = 7;
+  guarded.state_freshness = {9000, 19000};
+  guarded.diagnostic_freshness = {9000, 19000};
+  portal::GuardHandoffEvidence current;
+  current.measured_q = guarded.measured_q;
+  current.measured_q[1][6] += 0.5e-6;
+  current.state_sequence = 5;
+  current.diagnostic_sequence = 8;
+  current.state_freshness = {10000, 20000};
+  current.diagnostic_freshness = {10000, 20000};
+  current.have_state = true;
+  current.diagnostic_valid = true;
+  EXPECT_TRUE(portal::guard_handoff_valid(guarded, current, 10500, 20500, 1000, 1000));
+}
+
+TEST(GuardHandoff, RejectsOneJointDriftAndReplayedEvidence)
+{
+  portal::GuardInput guarded;
+  guarded.state_sequence = 4;
+  guarded.diagnostic_sequence = 7;
+  guarded.state_freshness = {9000, 19000};
+  guarded.diagnostic_freshness = {9000, 19000};
+  portal::GuardHandoffEvidence current;
+  current.measured_q = guarded.measured_q;
+  current.measured_q[0][3] += 2.0e-6;
+  current.state_sequence = 5;
+  current.diagnostic_sequence = 8;
+  current.state_freshness = {10000, 20000};
+  current.diagnostic_freshness = {10000, 20000};
+  current.have_state = true;
+  current.diagnostic_valid = true;
+  EXPECT_FALSE(portal::guard_handoff_valid(guarded, current, 10500, 20500, 1000, 1000));
+
+  current.measured_q = guarded.measured_q;
+  current.state_freshness = guarded.state_freshness;
+  EXPECT_FALSE(portal::guard_handoff_valid(guarded, current, 9500, 19500, 1000, 1000));
+}
+
+TEST(GuardHandoff, RejectsStaleOrFaultedDiagnostics)
+{
+  portal::GuardInput guarded;
+  guarded.state_sequence = 4;
+  guarded.diagnostic_sequence = 7;
+  guarded.state_freshness = {9000, 19000};
+  guarded.diagnostic_freshness = {9000, 19000};
+  portal::GuardHandoffEvidence current;
+  current.measured_q = guarded.measured_q;
+  current.state_sequence = 5;
+  current.diagnostic_sequence = 8;
+  current.state_freshness = {10000, 20000};
+  current.diagnostic_freshness = {9499, 19499};
+  current.have_state = true;
+  current.diagnostic_valid = true;
+  EXPECT_FALSE(portal::guard_handoff_valid(guarded, current, 10500, 20500, 1000, 1000));
+
+  current.diagnostic_freshness = {10000, 20000};
+  current.diagnostic_valid = false;
+  EXPECT_FALSE(portal::guard_handoff_valid(guarded, current, 10500, 20500, 1000, 1000));
+}
+
 TEST(XCompositeVersion, RequiresNamedPixmapProtocolMinimum)
 {
   EXPECT_FALSE(portal::xcomposite_version_supported(0, 1));
