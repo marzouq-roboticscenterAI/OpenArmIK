@@ -122,7 +122,8 @@ The installed viewer payload includes the pinned upstream Apache-2.0 license
 beside its manifest and mesh directory.
 
 The standalone RViz launch starts `robot_state_publisher`, the virtual adapter,
-and RViz. The web launcher starts only the controller and portal.
+and RViz. The web launcher starts the controller, `robot_state_publisher`, and
+portal, but does not start RViz.
 `robot_state_publisher` is the only TF authority. The pinned
 `openarm_description` package supplies mesh URI resolution. Launch uses a
 derived visualization-only URDF with fixed, explicitly unmeasured fingers;

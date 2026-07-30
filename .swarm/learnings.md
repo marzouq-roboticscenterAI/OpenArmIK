@@ -69,3 +69,19 @@
   native suites, portal 24/24, ROS 14/14, and production launch-integrity green.
   Physical CAN, calibration, actuator motion, and safety acceptance remain
   unsupported and untested.
+- The web launcher should use the browser-native WebGL2 measured-pose visual
+  proxy, not RViz/X capture. Keep `scripts/launch_rviz.sh` as the separate stock
+  engineering viewer; do not add VNC/noVNC or translate browser input into X11.
+  Camera interaction stays local and the nine presets per arm remain field-fill
+  values whose exact IDs, labels, coordinates, and virtual execution are tested.
+- Viewer timing claims must name the measured stage. The server publishes a
+  bounded 30 Hz latest authoritative pose, while the acceptance browser measured
+  60.01 visible-tab draw FPS at 1920x1080; foreground `requestAnimationFrame` and
+  WebGL draw submissions do not prove compositor presentation or physical scanout.
+- Viewer assets are a pinned Stage-A/collision-mesh visual proxy with exact
+  manifest, size/hash, upstream provenance, and Apache-2.0 license closure. Keep
+  static and API work in separate bounded lanes, use asynchronous pre-route reads
+  with a real deadline and oldest-incomplete eviction, and test partial-body stop,
+  shutdown, FD, and thread cleanup. The completed ROS inventory is 15/15; physical
+  CAN, calibration, motion, collision safety, and emergency-stop acceptance remain
+  unsupported and untested.

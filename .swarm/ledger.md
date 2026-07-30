@@ -51,6 +51,9 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   cache-tree containment independently verified clean through `59590d1`.
 - [x] Strict-C binary64 coordinate units, additive native unit-aware ingress,
   and centimetre/inch portal presentation completed through `a6c011d`.
+- [x] Browser-native measured-pose WebGL visual proxy, audited per-arm presets,
+  pinned viewer assets, bounded request lanes, and 15-test closure completed
+  through `bd06a30`; standalone RViz remains available separately.
 - [ ] Physical hardware acceptance remains intentionally unperformed and physical
   motion remains unavailable.
 
@@ -169,6 +172,25 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   suites, portal 24/24, full ROS 14/14, and production launch-integrity checks
   passed. These tests used no connected CAN hardware and do not enable physical
   discovery, calibration, or motion.
+- 2026-07-30: Commits `6f645d5..bd06a30` replaced RViz/X capture only in the web
+  launcher with a browser-native WebGL2 measured-pose visual proxy. The separate
+  stock RViz launcher is retained; the portal starts no VNC/noVNC service and
+  forwards no browser pointer or keyboard input to X11. Exact labels, IDs, and
+  coordinates for nine field-fill presets per arm were validated, including the
+  1,800-case endpoint matrix and all 18 virtual selected-arm sessions.
+- 2026-07-30: The portal exposes a bounded 30 Hz latest measured-pose snapshot;
+  a visible Firefox run measured 60.01 WebGL draw FPS at a 1920x1080 backing
+  buffer. That result measures foreground `requestAnimationFrame`/draw submission,
+  not compositor presentation or physical display scanout. The viewer uses the
+  pinned Stage-A URDF and 11 allowlisted collision-proxy STLs, with exact
+  size/SHA-256 checks, manifest provenance, and the redistributed pinned upstream
+  Apache-2.0 license.
+- 2026-07-30: One loopback listener now separates bounded static and API work;
+  pre-route intake is asynchronous with a real 500 ms deadline, at most 16 retained
+  sessions, and oldest-incomplete eviction. Sixteen partial bodies left authenticated
+  stop available in 12 ms, deadline cleanup restored baseline FD/thread counts, and
+  SIGTERM completed in 121 ms. Full ROS CTest passed 15/15. These remain virtual,
+  hardware-free results; every physical-control limitation below is unchanged.
 
 ## Open items
 

@@ -92,6 +92,7 @@ for variable in SNAP SNAP_ARCH SNAP_COMMON SNAP_CONTEXT SNAP_COOKIE SNAP_DATA SN
 done
 source /opt/ros/lyrical/setup.bash
 source "$output_root/install/setup.bash"
+export PYTHONDONTWRITEBYTECODE=1
 package_prefix=$(ros2 pkg prefix openarm_ik_ros 2>/dev/null || true)
 [[ -n "$package_prefix" ]] || {
   printf '%s\n' 'The installed openarm_ik_ros package was not found.' >&2

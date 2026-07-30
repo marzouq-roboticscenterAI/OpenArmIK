@@ -153,6 +153,7 @@ set +u
 source /opt/ros/lyrical/setup.bash
 source "$install_setup"
 set -u
+export PYTHONDONTWRITEBYTECODE=1
 
 package_prefix=$(ros2 pkg prefix openarm_ik_ros 2>/dev/null || true)
 [[ -n "$package_prefix" ]] || {

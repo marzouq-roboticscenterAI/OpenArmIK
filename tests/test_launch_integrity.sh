@@ -65,7 +65,8 @@ printf '# generated setup helper\n' > "$output/install/_local_setup_util_sh.py"
 mkdir -p "$output/install/share/ament_index/resource_index/packages"
 printf '%s\n' "$output/install/openarm_ik_ros" > \
   "$output/install/share/ament_index/resource_index/packages/openarm_ik_ros"
-printf '# launch\n' > "$output/install/openarm_ik_ros/share/openarm_ik_ros/launch/openarm_ik_rviz.launch.py"
+cp "$root_dir/ros2_ws/src/openarm_ik_ros/launch/openarm_ik_rviz.launch.py" \
+  "$output/install/openarm_ik_ros/share/openarm_ik_ros/launch/openarm_ik_rviz.launch.py"
 printf '# rviz\n' > "$output/install/openarm_ik_ros/share/openarm_ik_ros/rviz/openarm_ik.rviz"
 for asset in portal.css portal.js viewer.js; do
   printf 'viewer asset %s\n' "$asset" > "$output/install/openarm_ik_ros/share/openarm_ik_ros/web/$asset"
@@ -111,6 +112,40 @@ openarm_build_state_publish_completed "$output/build" "$ros_request" \
 fingerprint=$(openarm_compute_launch_source_fingerprint "$fixture_root" "$description" Release)
 openarm_write_launch_stamp "$fixture_root" "$output" "$description" "$fingerprint" Release
 openarm_assert_current_launch_tree "$fixture_root" "$output" Release
+
+# Importing an installed Python launch file must not mutate the install closure.
+# Both production launchers export this child contract, and the ROS contract
+# test applies it to its own direct ros2-launch subprocess.
+grep -Fxq 'export PYTHONDONTWRITEBYTECODE=1' \
+  "$root_dir/scripts/launch_web_portal.sh"
+grep -Fxq 'export PYTHONDONTWRITEBYTECODE=1' \
+  "$root_dir/scripts/launch_rviz.sh"
+grep -Fq 'environment["PYTHONDONTWRITEBYTECODE"] = "1"' \
+  "$root_dir/ros2_ws/src/openarm_ik_ros/test/test_ros_contract.py"
+installed_launch="$output/install/openarm_ik_ros/share/openarm_ik_ros/launch/openarm_ik_rviz.launch.py"
+install_before_launch=$(openarm_compute_install_manifest_digest "$output")
+for _ in 1 2; do
+  (
+    set +u
+    source /opt/ros/lyrical/setup.bash
+    set -u
+    PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c \
+      'import importlib.util, sys; spec = importlib.util.spec_from_file_location("openarm_installed_launch", sys.argv[1]); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)' \
+      "$installed_launch"
+  )
+done
+if find "$output/install" \( -type d -name __pycache__ -o \
+    -type f \( -name '*.pyc' -o -name '*.pyo' \) \) -print -quit | grep -q .; then
+  printf 'Installed Python launch import emitted bytecode into the install tree\n' >&2
+  exit 1
+fi
+install_after_launch=$(openarm_compute_install_manifest_digest "$output")
+[[ "$install_before_launch" == "$install_after_launch" ]]
+openarm_ensure_current_launch_tree "$fixture_root" "$output" never ''
+openarm_close_shared_lock_fds
+openarm_ensure_current_launch_tree "$fixture_root" "$output" never ''
+openarm_close_shared_lock_fds
+
 printf 'CMAKE_C_FLAGS:STRING=-DCACHE_TAMPER\n' >> \
   "$output/native_build/can/CMakeCache.txt"
 if openarm_assert_current_launch_tree "$fixture_root" "$output" Release \
