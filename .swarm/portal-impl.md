@@ -127,6 +127,12 @@ Status: **DONE_WITH_CONCERNS**
 - The final focused `test_portal_core` rerun passed; Bash syntax
   checks for the build/launcher entrypoints and `git diff --check` passed after
   the final source changes.
+- After merging the unified runtime, the affected runtime configured and built
+  `openarm_runtime`, `openarm_runtime_tests`, and the strict-C11 consumer; its
+  registered CTest suite passed **2/2**. The portal package reconfigured with
+  **13 registered CTests**, `openarm_portal` and `test_portal_core` rebuilt, and
+  the focused portal executable passed all **15 internal cases**. Existing
+  colcon `stderr.log` files remained empty and the merged diff checks passed.
 - No GUI, RViz, Firefox, browser, portal process, screenshot, X display, CAN
   interface, commissioning, hardware, or physical command was started.
 
