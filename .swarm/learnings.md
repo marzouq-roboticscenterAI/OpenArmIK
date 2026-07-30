@@ -42,3 +42,12 @@
   launch/resource regressions, Runtime 9/9, and the bounded one-job three-package
   ROS build passed. Physical bus timing, motion, collision safety, stop distance,
   thermal behavior, and emergency-stop acceptance remain untested.
+- Reusable CMake caches need transactional requested/actual provenance. Bind
+  compiler and linker launcher arguments, canonical paths, and bytes, and reject
+  component directories or cache files that are not physically contained below
+  the selected build root.
+- Recursive cleanup must be limited to explicit output children or marker-owned
+  trees; caller-controlled generic deletion is not an acceptable internal API.
+  `59590d1` is the independently CLEAN cache-hardening baseline after the
+  `669ab88` integration and C1/I1/I2 cross-confirmation. Physical limitations
+  above remain unchanged.

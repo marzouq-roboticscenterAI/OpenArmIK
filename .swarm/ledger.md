@@ -47,6 +47,8 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   canonical resource locks, bounded signal cleanup, and secure lock directories.
 - [x] Final pin/freshness/ABI hardening and independent Runtime ABI review clean
   at `1ece782`.
+- [x] Cache provenance, constrained cleanup, launcher binding, and physical
+  cache-tree containment independently verified clean through `59590d1`.
 - [ ] Physical hardware acceptance remains intentionally unperformed and physical
   motion remains unavailable.
 
@@ -140,6 +142,18 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   authority, and freezes Runtime V1 plus Commission 0.1.0 and all 50 Runtime
   symbols. Hardware-free focused suites, Runtime 9/9, and the final one-job
   three-package ROS build passed.
+- 2026-07-30: `669ab88` integrated transactional requested/actual CMake cache
+  provenance. Fresh reviewers cross-confirmed C1 arbitrary cleanup reachability,
+  I1 incomplete compiler/linker launcher provenance, and I2 missing physical
+  component/cache containment.
+- 2026-07-30: `59590d1` remediated C1/I1/I2 with owned/allowlisted cleanup APIs,
+  requested/actual launcher argument, path, and byte binding, and canonical
+  component/cache containment. A same-round independent re-review and fresh
+  verification were CLEAN.
+- 2026-07-30: Focused cache/resource/launch/pin suites and Runtime ABI CTest 9/9
+  passed. The default one-job path (`OPENARM_BUILD_JOBS=1`) rebuilt all three ROS
+  packages; completed cache records, the V2 stamp, exact prefix, and no-build
+  launch gate then passed. These remain hardware-free results.
 
 ## Open items
 
