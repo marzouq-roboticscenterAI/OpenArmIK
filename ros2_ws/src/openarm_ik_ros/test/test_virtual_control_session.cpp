@@ -281,7 +281,7 @@ TEST(VirtualControlSession, CompletionRetainsOwnershipThroughTerminalCallback)
   command.owner = "completion-owner";
   command.side = openarm_ik_ros::kLeftSide;
   command.joint = 3U;
-  command.target_rad = 0.02;
+  command.target_rad = 0.0;
   command.terminal = [&](const CommandResult & value) {
       {
         std::lock_guard<std::mutex> lock(terminal_mutex);
@@ -572,5 +572,87 @@ TEST(VirtualControlSession, ActiveShutdownStopsAndReportsMeasuredProvenanceOnce)
     recorder.result->terminal_feedback_seq[0], recorder.result->seed_feedback_seq[0]);
   EXPECT_GE(
     recorder.result->terminal_feedback_seq[1], recorder.result->seed_feedback_seq[1]);
+}
+
+TEST(VirtualControlSession, CapturedCancelHasExactlyOneTerminalResult)
+{
+  Recorder recorder;
+  std::mutex barrier_mutex;
+  std::condition_variable barrier_condition;
+  bool captured = false;
+  bool release = false;
+  VirtualControlSession session(
+    [&recorder](const MeasuredState & value) {return recorder.state(value);}, []() {});
+  std::string reason;
+  ASSERT_TRUE(session.reserve("completion-boundary", reason));
+  SessionCommand command;
+  command.kind = SessionCommand::Kind::joint;
+  command.owner = "completion-boundary";
+  command.side = openarm_ik_ros::kLeftSide;
+  command.joint = 3U;
+  command.target_rad = 0.0;
+  command.terminal = [&recorder](const CommandResult & value) {return recorder.terminal(value);};
+  command.cancel_captured_for_test = [&](std::uint64_t command_id) {
+      EXPECT_EQ(command_id, 1U);
+      std::unique_lock<std::mutex> lock(barrier_mutex);
+      captured = true;
+      barrier_condition.notify_all();
+      barrier_condition.wait(lock, [&]() {return release;});
+    };
+  ASSERT_TRUE(session.submit(std::move(command), reason));
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+      return health.adapter_state == openarm_ik_ros::AdapterState::executing;
+    }, 10s));
+  ASSERT_TRUE(session.cancel("completion-boundary"));
+  {
+    std::unique_lock<std::mutex> lock(barrier_mutex);
+    ASSERT_TRUE(barrier_condition.wait_for(lock, 2s, [&]() {return captured;}));
+  }
+  std::this_thread::sleep_for(40ms);
+  {
+    std::lock_guard<std::mutex> lock(barrier_mutex);
+    release = true;
+    barrier_condition.notify_all();
+  }
+  ASSERT_TRUE(recorder.wait_result(5s));
+  EXPECT_EQ(recorder.terminal_count, 1U);
+  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::canceled);
+  EXPECT_TRUE(wait_health(session, [](const auto & health) {
+      return health.adapter_state == openarm_ik_ros::AdapterState::stopped_requires_restart;
+    }, 2s));
+  EXPECT_FALSE(session.reserve("after-cancel", reason));
+  EXPECT_EQ(reason, "stopped_requires_restart");
+}
+
+TEST(VirtualControlSession, ReentrantHealthCallbackNeverRunsUnderSessionMutex)
+{
+  Recorder recorder;
+  VirtualControlSession * session_ptr = nullptr;
+  std::atomic<std::size_t> callbacks{};
+  VirtualControlSession session(
+    [&recorder](const MeasuredState & value) {return recorder.state(value);},
+    [&]() {
+      if (session_ptr != nullptr) {
+        (void)session_ptr->health();
+        ++callbacks;
+      }
+    });
+  session_ptr = &session;
+  std::string reason;
+  ASSERT_TRUE(session.reserve("reentrant-health", reason));
+  ASSERT_TRUE(wait_health(session, [&](const auto &) {return callbacks.load() >= 1U;}));
+  SessionCommand command;
+  command.kind = SessionCommand::Kind::joint;
+  command.owner = "reentrant-health";
+  command.side = openarm_ik_ros::kLeftSide;
+  command.joint = 3U;
+  command.target_rad = 0.02;
+  command.terminal = [&recorder](const CommandResult & value) {return recorder.terminal(value);};
+  ASSERT_TRUE(session.submit(std::move(command), reason));
+  ASSERT_TRUE(recorder.wait_result(10s));
+  EXPECT_GE(callbacks.load(), 2U);
+  const auto begin = std::chrono::steady_clock::now();
+  session.close();
+  EXPECT_LT(std::chrono::steady_clock::now() - begin, 2s);
 }
 }

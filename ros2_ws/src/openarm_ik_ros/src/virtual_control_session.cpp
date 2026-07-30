@@ -252,25 +252,31 @@ private:
         {
           std::unique_lock<std::mutex> lock(mutex_);
           cv_.wait_until(lock, next_poll, [this]() {
-            return closing_ || pending_.has_value() || !cancel_owner_.empty();
+            return closing_ || pending_.has_value() || !cancel_owner_.empty() ||
+                   health_notification_pending_;
           });
           if (!closing_ && health_.adapter_state == AdapterState::stopped_requires_restart &&
             !pending_.has_value() && cancel_owner_.empty())
           {
             cv_.wait(lock, [this]() {
-              return closing_ || pending_.has_value() || !cancel_owner_.empty();
+              return closing_ || pending_.has_value() || !cancel_owner_.empty() ||
+                     health_notification_pending_;
             });
           }
           should_close = closing_;
         }
         if (should_close) {
           shutdown_on_owner_thread();
+          dispatch_health_notifications();
           break;
         }
+
+        dispatch_health_notifications();
 
         process_cancel();
         process_pending();
         if (adapter_faulted()) {
+          dispatch_health_notifications();
           break;
         }
         {
@@ -286,6 +292,7 @@ private:
         }
         drain_events();
         if (adapter_faulted()) {
+          dispatch_health_notifications();
           break;
         }
         if (!heartbeat()) {
@@ -301,12 +308,14 @@ private:
         }
         drain_events();
         if (adapter_faulted()) {
+          dispatch_health_notifications();
           break;
         }
         next_poll += std::chrono::nanoseconds(kPollCycleNs);
         if (next_poll <= steady_now) {
           next_poll = steady_now + std::chrono::nanoseconds(kPollCycleNs);
         }
+        dispatch_health_notifications();
       }
     } catch (...) {
       try {
@@ -314,6 +323,8 @@ private:
       } catch (...) {
       }
     }
+
+    dispatch_health_notifications();
     destroy_handles();
   }
 
@@ -854,11 +865,10 @@ private:
       if (terminal_ok) {
         health_.adapter_state = AdapterState::idle;
         health_.reason = "completed";
+        notify_health_unlocked();
       }
     }
-    if (terminal_ok) {
-      invoke_health_callback();
-    } else {
+    if (!terminal_ok) {
       fault_local(OA_RUNTIME_EFAULT, "terminal_callback_failed");
     }
   }
@@ -933,6 +943,15 @@ private:
       }
     }
 
+    if (active_command && command->cancel_captured_for_test) {
+      try {
+        command->cancel_captured_for_test(command_id);
+      } catch (...) {
+        fault_local(OA_RUNTIME_EFAULT, "cancel_test_barrier_failed");
+        return;
+      }
+    }
+
     oa_runtime_status stop_status = OA_RUNTIME_OK;
     if (snapshot_.lifecycle == kLifecycleArmedIdle || snapshot_.lifecycle == kLifecycleExecuting) {
       stop_status = oa_runtime_stop(runtime_, OA_RUNTIME_STOP_DISABLE);
@@ -941,6 +960,20 @@ private:
       }
       drain_events();
       if (adapter_faulted()) {
+        return;
+      }
+    }
+
+    // Completion wins if stop/drain consumed this exact command. A copied
+    // pre-drain command is never terminal authority.
+    if (active_command) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!active_ || active_->command_id != command_id) {
+        return;
+      }
+    } else if (command) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!pending_ || pending_->owner != owner) {
         return;
       }
     }
@@ -1247,8 +1280,27 @@ private:
 
   void notify_health_unlocked()
   {
+    health_notification_pending_ = true;
     cv_.notify_all();
-    invoke_health_callback();
+  }
+
+  void dispatch_health_notifications() noexcept
+  {
+    HealthCallback callback;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!health_notification_pending_) {
+        return;
+      }
+      health_notification_pending_ = false;
+      callback = health_callback_;
+    }
+    try {
+      if (callback) {
+        callback();
+      }
+    } catch (...) {
+    }
   }
 
   oa_runtime_status invoke_state_callback(const MeasuredState & state) noexcept
@@ -1260,16 +1312,6 @@ private:
       return state_callback_(state) ? OA_RUNTIME_OK : OA_RUNTIME_ETIMEOUT;
     } catch (...) {
       return OA_RUNTIME_EFAULT;
-    }
-  }
-
-  void invoke_health_callback() noexcept
-  {
-    try {
-      if (health_callback_) {
-        health_callback_();
-      }
-    } catch (...) {
     }
   }
 
@@ -1291,6 +1333,7 @@ private:
   std::thread worker_;
   bool startup_complete_{};
   bool closing_{};
+  bool health_notification_pending_{};
   std::string startup_error_;
   std::string cancel_owner_;
   std::string cancelled_reservation_owner_;

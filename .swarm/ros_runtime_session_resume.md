@@ -66,3 +66,18 @@ No physical CAN interface, transmission, physical backend, GUI, RViz capture,
 or hardware was used. Runtime remains virtual-only and collision unchecked;
 the portal guard is not collision certification. The verification build trees
 under `.verification/` are intentionally untracked local artifacts.
+
+## Follow-up independent-review closure
+
+The cancellation path now rechecks the active command id after `stop` and
+event draining. If a completion event has already removed that command,
+completion is terminal and cancellation returns without publishing a stale
+second result or forcing the adapter into restart/fault state. A captured-cancel
+boundary regression asserts exactly one terminal result and stable post-cancel
+lifecycle state; the command-id recheck covers the completion-drained branch.
+
+Health notifications are now marked under the session mutex and dispatched by
+the owner worker only after it has released that mutex. A reentrant callback
+regression calls `health()` from both a reserve notification and an active
+worker transition, then verifies bounded shutdown. The focused session suite
+contains 15 passing tests after these additions.

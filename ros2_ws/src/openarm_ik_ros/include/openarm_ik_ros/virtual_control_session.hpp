@@ -82,6 +82,8 @@ struct SessionCommand
   std::array<double, 3> right_tcp_m{};
   std::function<bool(const CommandFeedback &)> feedback;
   std::function<bool(const CommandResult &)> terminal;
+  // Internal deterministic lifecycle-test barrier. Production callers leave it empty.
+  std::function<void(std::uint64_t)> cancel_captured_for_test;
 };
 
 struct SessionHealth
