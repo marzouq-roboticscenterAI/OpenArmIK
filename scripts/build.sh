@@ -4,6 +4,8 @@ set -euo pipefail
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$root_dir/scripts/build_lock.sh"
 source "$root_dir/scripts/lib/build_native_body.sh"
+source "$root_dir/scripts/lib/description_pin.sh"
+source "$root_dir/scripts/lib/launch_integrity.sh"
 output_root="$root_dir/ros2_ws"
 build_type=Release
 run_tests=0
@@ -19,7 +21,7 @@ packages. The default output root remains ros2_ws for launch compatibility.
 
 Options:
   --tests             Run native CTests and verify all ROS tests are registered
-  --incremental       Reuse existing build and install directories
+  --incremental       Reuse build caches; recreate the complete install tree
   --output-root PATH  Put native, ROS, log, and install output under PATH
   --build-type TYPE   CMake build type (default: Release)
   --jobs JOBS         Maximum concurrent build jobs (default: OPENARM_BUILD_JOBS or 2)
@@ -103,10 +105,11 @@ esac
 }
 
 description_dir="$root_dir/upstream/openarm_description"
-if [[ ! -f "$description_dir/package.xml" ]]; then
-  printf 'Missing pinned upstream. Run %s/scripts/fetch_upstreams.sh first.\n' "$root_dir" >&2
+openarm_validate_description_pin "$description_dir" || {
+  printf 'Pinned description validation failed. Run %s/scripts/fetch_upstreams.sh when online.\n' \
+    "$root_dir" >&2
   exit 1
-fi
+}
 [[ -f /opt/ros/lyrical/setup.bash ]] || {
   printf 'Missing ROS setup: /opt/ros/lyrical/setup.bash\n' >&2
   exit 1
@@ -120,6 +123,8 @@ fi
     /opt/ros/lyrical/lib/python3.14/site-packages >&2
   exit 1
 }
+input_fingerprint=$(openarm_compute_launch_source_fingerprint \
+  "$root_dir" "$description_dir" "$build_type" "$run_tests")
 
 native_build="$output_root/native_build"
 install_prefix="$output_root/install"
@@ -129,22 +134,27 @@ export CTEST_PARALLEL_LEVEL="$jobs"
 
 openarm_build_all_body() {
   local root_dir=$1 output_root=$2 build_type=$3 run_tests=$4 clean=$5 jobs=$6
+  local input_fingerprint=$7
   local native_build="$output_root/native_build"
   local ros_build="$output_root/build"
   local install_prefix="$output_root/install"
   local ros_log="$output_root/log"
   local description_dir="$root_dir/upstream/openarm_description"
   local reuse_build_trees=0 tests_flag=OFF session_archive session_undefined
-  local ros_test_listing registered_ros_tests resolved requested
+  local ros_test_listing registered_ros_tests native_request native_request_after
+  local ros_request ros_request_after coverage_mode=${OPENARM_IK_ROS_COVERAGE:-0}
   local -a coverage_args=() colcon_args=()
+  local -a native_components=(can model commission transport control runtime)
+  ((run_tests == 0)) || native_components+=(installed_native_consumer)
 
   openarm_build_clean_child() {
+    local requested resolved
     requested=$1
     resolved=$(realpath -m -- "$requested")
     case "$resolved" in
-      "$output_root"/*) ;;
+      "$native_build"|"$ros_build"|"$install_prefix"|"$ros_log") ;;
       *)
-        printf 'Refusing cleanup outside output root: %s\n' "$resolved" >&2
+        printf 'Refusing cleanup of unknown output path: %s\n' "$resolved" >&2
         return 2
         ;;
     esac
@@ -153,19 +163,49 @@ openarm_build_all_body() {
       return 2
     }
     rm -rf --one-file-system -- "$resolved"
+    [[ ! -e "$resolved" && ! -L "$resolved" ]] || {
+      printf 'Output path was not fully recreated from empty: %s\n' \
+        "$resolved" >&2
+      return 1
+    }
   }
 
-  if ((clean)); then
-    openarm_build_clean_child "$native_build"
-    openarm_build_clean_child "$ros_build"
-    openarm_build_clean_child "$install_prefix"
-    openarm_build_clean_child "$ros_log"
-  else
+  mkdir -p -- "$output_root"
+  rm -f -- "$output_root/$OPENARM_LAUNCH_STAMP_NAME" \
+    "$output_root/$OPENARM_LEGACY_LAUNCH_STAMP_NAME"
+
+  native_request=$(openarm_build_state_requested_digest native "$build_type" \
+    "$run_tests" 0 "$install_prefix") || return 1
+  ros_request=$(openarm_build_state_requested_digest ros "$build_type" \
+    "$run_tests" "$coverage_mode" "$install_prefix") || return 1
+  if ((!clean)) && openarm_build_state_read_completed "$native_build" \
+      "$native_request" "${native_components[@]}" \
+      >/dev/null 2>&1 && openarm_build_state_read_completed "$ros_build" \
+      "$ros_request" openarm_control_msgs openarm_description openarm_ik_ros \
+      >/dev/null 2>&1; then
     reuse_build_trees=1
+  else
+    openarm_build_clean_child "$native_build" || return
+    openarm_build_clean_child "$ros_build" || return
+    openarm_build_clean_child "$ros_log" || return
   fi
+  # Install trees are launch authority, not caches. Recreate the unified native
+  # and ROS install prefix under the exclusive output/native/install leases so
+  # removed install rules cannot survive an otherwise incremental rebuild.
+  openarm_build_clean_child "$install_prefix"
+  openarm_build_state_write "$native_build" pending "$native_request" || return 1
+  openarm_build_state_write "$ros_build" pending "$ros_request" || return 1
 
   openarm_build_native_body "$root_dir" "$native_build" "$install_prefix" \
     "$build_type" "$run_tests" "$reuse_build_trees" "$jobs"
+  native_request_after=$(openarm_build_state_requested_digest native "$build_type" \
+    "$run_tests" 0 "$install_prefix") || return 1
+  [[ "$native_request_after" == "$native_request" ]] || {
+    printf 'Requested native toolchain changed during the build\n' >&2
+    return 1
+  }
+  openarm_build_state_publish_completed "$native_build" "$native_request" \
+    "${native_components[@]}" || return 1
 
   set +u
   source /opt/ros/lyrical/setup.bash
@@ -229,10 +269,22 @@ openarm_build_all_body() {
     fi
   fi
 
+  ros_request_after=$(openarm_build_state_requested_digest ros "$build_type" \
+    "$run_tests" "$coverage_mode" "$install_prefix") || return 1
+  [[ "$ros_request_after" == "$ros_request" ]] || {
+    printf 'Requested ROS toolchain changed during the build\n' >&2
+    return 1
+  }
+  openarm_build_state_publish_completed "$ros_build" "$ros_request" \
+    openarm_control_msgs openarm_description openarm_ik_ros || return 1
+
+  openarm_write_launch_stamp "$root_dir" "$output_root" "$description_dir" \
+    "$input_fingerprint" "$build_type" "$run_tests"
+
   printf 'OpenArm build complete. Source %s/setup.bash\n' "$install_prefix"
 }
 
 openarm_run_with_locks \
   "$output_root" "$native_build" "$install_prefix" -- \
   openarm_build_all_body "$root_dir" "$output_root" "$build_type" \
-  "$run_tests" "$clean" "$jobs"
+  "$run_tests" "$clean" "$jobs" "$input_fingerprint"

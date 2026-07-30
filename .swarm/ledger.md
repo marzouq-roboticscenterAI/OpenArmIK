@@ -34,7 +34,21 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
 - [x] RViz live-resize renderer workaround, centered camera, single-instance guard, and graceful Ctrl+C/window-close lifecycle verified.
 - [x] Encoder-closed-loop controller protocol research independently cross-verified.
 - [x] C ABI/C++ OOP controller design independently critiqued and approved for staged implementation.
-- [ ] Stage A fail-closed runtime, simulator, calibration workflows, and measured-state joint/TCP planning in implementation.
+- [x] Stage A control codecs, fail-closed commissioning, query-only SocketCAN
+  transport, encoder-driven controller, deterministic simulator feedback, and
+  measured-state joint/TCP planning implemented and independently reviewed.
+- [x] Native/ROS packaging unified; installed strict C11/C++ consumers and
+  dependency-prefix reuse regressions pass.
+- [x] Secure compiled portal and measured ROS virtual actions implemented; ROS
+  control/session paths use `OpenArm::Runtime` as their sole authority.
+- [x] Unified Runtime facade, authenticated checkpoint persistence, bounded
+  planning epochs, and physical-query fail-closed boundary completed.
+- [x] Public builds have bounded parallelism, sequential ROS package execution,
+  canonical resource locks, bounded signal cleanup, and secure lock directories.
+- [x] Final pin/freshness/ABI hardening and independent Runtime ABI review clean
+  at `1ece782`.
+- [ ] Physical hardware acceptance remains intentionally unperformed and physical
+  motion remains unavailable.
 
 ## Decisions and evidence
 
@@ -95,6 +109,37 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   versioned C ABI with one owner, two bus workers, immutable measured snapshots,
   bounded trajectories, explicit lifecycle/watchdogs, fail-closed collision
   policy, a deterministic motor simulator, and a separate commissioning product.
+- 2026-07-29: The staged physical-control foundation is complete: verified
+  DaMiao codecs, fail-closed calibration sessions, query-only SocketCAN,
+  coherent encoder-driven control, cause-aware fault stops, watchdog gating,
+  and deterministic feedback retirement/overflow behavior all passed their
+  independent reviews. This is a software safety result, not hardware acceptance.
+- 2026-07-29: The unified native/ROS build installs the reviewed dependency graph
+  and strict consumers. The compiled portal and ROS actions consume measured
+  virtual state. Runtime facade persistence uses authenticated checkpoint-backed
+  recovery, and breaking V1 API/transitive Commission changes require V2 or an
+  explicit compatibility adapter.
+- 2026-07-29: Physical Runtime discovery was deliberately disabled. Inventory
+  queries clear outputs and return `OA_RUNTIME_EUNSUPPORTED`; preview is invalid
+  and non-armable; apply/calibration/motion remain unsupported. Runtime has no
+  CAN/transport linkage. At most bounded local `/sys/class/net` CAN-link metadata
+  is exposed, never motor identity or evidence.
+- 2026-07-29: ROS production control was migrated to a single
+  `OpenArm::Runtime` session authority. Its archive has required `oa_runtime_*`
+  references and no direct controller/plan/manifest APIs; startup, completion,
+  cancel, stop, heartbeat, event, and shutdown arbitration are bounded and
+  independently reviewed. No physical ROS endpoint is exposed.
+- 2026-07-29: Bounded-memory build supervision merged at `53bfd80`: positive job
+  limits propagate through CMake/CTest, ROS packages build sequentially, and a
+  waiting supervisor owns canonical output/build/install locks while callbacks
+  run in an isolated process group with bounded signal escalation.
+- 2026-07-29: Final hardening through `1ece782` pins and authenticates the detached
+  description source, recreates launcher-facing installs from empty while
+  retaining build caches, binds full install/source/toolchain closure in an
+  atomic stamp, holds shared launch leases, enforces exact installed package
+  authority, and freezes Runtime V1 plus Commission 0.1.0 and all 50 Runtime
+  symbols. Hardware-free focused suites, Runtime 9/9, and the final one-job
+  three-package ROS build passed.
 
 ## Open items
 
@@ -105,6 +150,13 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   ROS defaults during physical commissioning; the codec does not silently choose.
 - The upstream v1 ROS hardware stack targeted Humble. Its sources are pinned here,
   but it is not represented as a validated Lyrical physical-control backend.
-- The user has now requested a compiled, modular physical controller. Until it is
-  implemented and hardware acceptance is performed, the prior physical-motion
-  boundary remains in force.
+- The compiled modular controller foundation is implemented, but it has not been
+  connected to or accepted against physical arms. No result in this ledger
+  validates torque/position output, real bus timing, limit behavior, collision
+  avoidance, stop distance, thermal behavior, or emergency-stop effectiveness.
+- The portal's sampled nominal virtual prefilter is not a verified scene or
+  physical collision certificate; Runtime reports `collision_checked=false`.
+- Physical enablement requires a separately reviewed backend plus witnessed
+  commissioning and acceptance with correct adapters, both arms, exact
+  side/joint/ID/model/polarity/zero mapping, verified electrical/mechanical
+  limits, watchdogs, and a physical emergency stop.

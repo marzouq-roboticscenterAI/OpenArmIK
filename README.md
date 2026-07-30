@@ -53,8 +53,10 @@ and run every registered hardware-free native CTest while verifying that all
 The transport `vcan0` smoke test is not registered in this hardware-free
 profile. Standalone transport builds retain that test by default. `--incremental`
 reuses compatible native and ROS build trees while reconfiguring them, and is
-what `./run.sh` uses to keep normal source-fresh launches inexpensive. A clean
-build remains the supported reset for removed install artifacts. Top-level
+what `./run.sh` uses to keep normal source-fresh launches inexpensive. Every
+top-level build recreates the unified native/ROS install prefix from empty under
+the exclusive build lease, so removed install rules cannot leave stale launch
+artifacts even when compilation caches are reused. Top-level
 `scripts/build.sh` invocations sharing the same canonical output root are
 serialized. Direct native builds serialize on both their canonical build root
 and install prefix; distinct roots and prefixes are not globally serialized.
@@ -66,6 +68,18 @@ ownership. Robot models always come from the fetched
 different description.
 The portal and standalone RViz launchers also share one per-user GUI lock, so
 they cannot start duplicate ROS and RViz stacks together.
+Each direct launcher runs one bounded incremental build by default. Its
+`--no-build` mode fails closed unless an atomic current-source stamp, pinned
+description identity, artifact hashes, and live Runtime/session authority
+audits all match; a legacy or partially built install is never accepted.
+The stamp is bound to the canonical output root, the effective compiler/wrapper,
+binutils, generator backend, toolchain file, build profile, every regular
+file/symlink in the build-consumed source roots, and the complete installed
+launch closure. Broken or escaping install/source symlinks fail closed, and the
+portal executable is always the audited binary in the exact installed package
+prefix. Launchers retain shared leases on
+the build output through the ROS/RViz/portal lifetime, preventing a builder
+from mutating the audited tree before or during use.
 A disposable build
 can be isolated with `--output-root /tmp/openarmik-build`; its setup file is
 then `/tmp/openarmik-build/install/setup.bash`. Output roots may contain spaces,
@@ -86,7 +100,8 @@ isolated temporary fixture, plus narrow command shims for top-level argument
 propagation. It checks process-group signal cleanup, lock-FD noninheritance,
 recursive contention, pinned description identity, job propagation,
 incremental tree reuse, and build-root/install-prefix locking without compiling
-the project or running sanitizers:
+the project or running sanitizers. It also proves that deleting a tracked launch
+input cannot survive in the freshly recreated incremental install:
 
 ```bash
 ./tests/test_build_resource_controls.sh

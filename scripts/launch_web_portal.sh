@@ -2,18 +2,22 @@
 set -euo pipefail
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$root_dir/scripts/lib/description_pin.sh"
+source "$root_dir/scripts/build_lock.sh"
+source "$root_dir/scripts/lib/launch_integrity.sh"
 output_root="$root_dir/ros2_ws"
 port=8080
 open_browser=1
 browser_command=xdg-open
 build_mode=auto
 renderer=${OPENARM_RVIZ_RENDERER:-auto}
+jobs=
 
 usage() {
   cat <<'EOF'
 Usage: scripts/launch_web_portal.sh [OPTIONS]
 
-Build if necessary, then launch the virtual OpenArm controller, stock RViz,
+Incrementally build the current virtual OpenArm controller, then launch stock RViz
 and the compiled loopback-only web portal. Ctrl+C shuts down the portal,
 RViz, and ROS processes in that order.
 
@@ -21,15 +25,18 @@ Options:
   --port PORT        Loopback HTTP port (default: 8080)
   --output-root PATH Build/install root (default: ros2_ws)
   --build            Force an incremental build before launch
-  --no-build         Never build; fail if installed products are missing
+  --no-build         Never build; require a current stamped and gated install
+  --jobs JOBS        Maximum concurrent build jobs (default: build default)
   --no-browser       Print the URL without opening the browser
   --firefox          Open the portal specifically with Firefox
   --renderer MODE    auto, software, integrated, or nvidia
   -h, --help         Show this help
 
 This launcher is virtual-only. It does not open SocketCAN or control physical
-motors. Portal motion remains disabled unless the installed controller reports
-a verified collision scene containing both arms and the central support pole.
+motors. Portal motion uses a limited sampled nominal virtual prefilter and
+central keepout. Controller collision checking remains unavailable
+(collision_checked=false); this is not physical collision certification or a
+verified scene.
 EOF
 }
 
@@ -52,6 +59,14 @@ while (($#)); do
     --no-build)
       build_mode=never
       shift
+      ;;
+    --jobs)
+      (($# >= 2)) && [[ -n "$2" ]] || {
+        printf '%s requires a positive integer\n' "$1" >&2
+        exit 2
+      }
+      jobs=$2
+      shift 2
       ;;
     --no-browser)
       open_browser=0
@@ -90,6 +105,10 @@ case "$renderer" in
     exit 2
     ;;
 esac
+[[ -z "$jobs" || "$jobs" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'Jobs must be a positive integer: %s\n' "$jobs" >&2
+  exit 2
+}
 
 if [[ "$output_root" != /* ]]; then
   output_root="$PWD/$output_root"
@@ -139,16 +158,8 @@ if ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .; then
 fi
 
 install_setup="$output_root/install/setup.bash"
-
-build_stack() {
-  "$root_dir/scripts/build.sh" --incremental --output-root "$output_root"
-}
-
-if [[ "$build_mode" == always ]]; then
-  build_stack
-elif [[ ! -r "$install_setup" && "$build_mode" == auto ]]; then
-  build_stack
-fi
+openarm_ensure_current_launch_tree \
+  "$root_dir" "$output_root" "$build_mode" "$jobs"
 
 [[ -r "$install_setup" ]] || {
   printf 'Missing install setup: %s\n' "$install_setup" >&2
@@ -167,9 +178,16 @@ package_prefix=$(ros2 pkg prefix openarm_ik_ros 2>/dev/null || true)
   printf '%s\n' 'The installed openarm_ik_ros package was not found.' >&2
   exit 1
 }
+package_prefix=$(realpath -e -- "$package_prefix")
+expected_package_prefix=$(realpath -e -- "$output_root/install/openarm_ik_ros")
+[[ "$package_prefix" == "$expected_package_prefix" ]] || {
+  printf 'Sourced package prefix escaped the audited output root: %s\n' \
+    "$package_prefix" >&2
+  exit 1
+}
 share_dir="$package_prefix/share/openarm_ik_ros"
 close_helper="$package_prefix/lib/openarm_ik_ros/close_rviz_window"
-portal_binary=${OPENARM_PORTAL_BINARY:-"$package_prefix/lib/openarm_ik_ros/openarm_portal"}
+portal_binary="$package_prefix/lib/openarm_ik_ros/openarm_portal"
 rviz_package_prefix=$(ros2 pkg prefix rviz2 2>/dev/null || true)
 [[ -n "$rviz_package_prefix" ]] || {
   printf '%s\n' 'The installed stock rviz2 package was not found.' >&2
@@ -188,13 +206,6 @@ case "$rviz_executable" in
     exit 1
     ;;
 esac
-
-if [[ ! -x "$portal_binary" && "$build_mode" == auto ]]; then
-  build_stack
-  set +u
-  source "$install_setup"
-  set -u
-fi
 
 [[ -x "$portal_binary" ]] || {
   printf 'Missing compiled portal executable: %s\n' "$portal_binary" >&2
@@ -364,8 +375,12 @@ if ((open_browser)); then
     printf 'Browser executable not found: %s\n' "$browser_command" >&2
     exit 1
   }
-  "$browser_command" "$url" 9>&- >/dev/null 2>&1 || \
-    printf 'Could not open a browser automatically; visit %s\n' "$url" >&2
+  (
+    exec 9>&-
+    openarm_close_shared_lock_fds
+    exec "$browser_command" "$url"
+  ) >/dev/null 2>&1 || \
+      printf 'Could not open a browser automatically; visit %s\n' "$url" >&2
 fi
 
 set +e

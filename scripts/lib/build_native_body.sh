@@ -138,9 +138,9 @@ openarm_build_native_body() {
     printf 'Installed runtime archive exposes test-only symbols\n' >&2
     return 1
   fi
-  if [[ "$runtime_references" == *'oa_can_'* ||
-        "$runtime_references" == *'oa_transport_'* ]]; then
-    printf 'Installed runtime archive reaches CAN codec or transport symbols\n' >&2
+  if grep -Eq '(^|[[:space:]])U[[:space:]]+(oa_can_|oa_transport_|socket(@|$)|send(to|msg)?(@|$)|recv(from|msg)?(@|$))' \
+      <<<"$runtime_references"; then
+    printf 'Installed runtime archive reaches CAN, transport, or socket I/O symbols\n' >&2
     return 1
   fi
 

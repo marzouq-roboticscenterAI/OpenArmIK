@@ -1,7 +1,69 @@
 #!/usr/bin/env bash
-set -eo pipefail
+set -euo pipefail
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$root_dir/scripts/lib/description_pin.sh"
+source "$root_dir/scripts/build_lock.sh"
+source "$root_dir/scripts/lib/launch_integrity.sh"
+output_root="$root_dir/ros2_ws"
+build_mode=auto
+jobs=
+launcher_arguments=()
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/launch_rviz.sh [OPTIONS] [ROS_LAUNCH_ARGUMENTS]
+
+Incrementally build the current virtual stack, then launch it with stock RViz.
+
+Options:
+  --output-root PATH  Build/install root (default: ros2_ws)
+  --build             Force the default incremental build policy
+  --no-build          Require a current stamped and gated install without building
+  --jobs JOBS         Maximum concurrent build jobs (default: build default)
+  -h, --help          Show this help
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --output-root)
+      (($# >= 2)) || { printf '%s requires a path\n' "$1" >&2; exit 2; }
+      output_root=$2
+      shift 2
+      ;;
+    --build) build_mode=always; shift ;;
+    --no-build) build_mode=never; shift ;;
+    --jobs)
+      (($# >= 2)) && [[ -n "$2" ]] || {
+        printf '%s requires a positive integer\n' "$1" >&2
+        exit 2
+      }
+      jobs=$2
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    --)
+      shift
+      launcher_arguments+=("$@")
+      break
+      ;;
+    *) launcher_arguments+=("$1"); shift ;;
+  esac
+done
+[[ -z "$jobs" || "$jobs" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'Jobs must be a positive integer: %s\n' "$jobs" >&2
+  exit 2
+}
+if [[ "$output_root" != /* ]]; then
+  output_root="$PWD/$output_root"
+fi
+output_root=$(realpath -m -- "$output_root")
+if [[ "$output_root" == *:* || "$output_root" == *\;* ]]; then
+  printf 'Output roots containing : or ; are unsupported: %s\n' "$output_root" >&2
+  exit 2
+fi
+
 runtime_dir=${XDG_RUNTIME_DIR:-}
 if [[ -z "$runtime_dir" || ! -d "$runtime_dir" || ! -w "$runtime_dir" ]]; then
   runtime_dir="/tmp/openarmik-runtime-$UID"
@@ -23,12 +85,25 @@ if ! flock -n 9; then
   printf 'An OpenArm GUI is already running; close it or press Ctrl+C in its terminal.\n' >&2
   exit 3
 fi
+openarm_ensure_current_launch_tree \
+  "$root_dir" "$output_root" "$build_mode" "$jobs"
 for variable in SNAP SNAP_ARCH SNAP_COMMON SNAP_CONTEXT SNAP_COOKIE SNAP_DATA SNAP_INSTANCE_KEY SNAP_LIBRARY_PATH SNAP_NAME SNAP_REAL_HOME SNAP_REEXEC SNAP_REVISION SNAP_USER_COMMON SNAP_USER_DATA GTK_PATH GTK_EXE_PREFIX GTK_IM_MODULE_FILE GDK_PIXBUF_MODULEDIR GDK_PIXBUF_MODULE_FILE GIO_MODULE_DIR QT_PLUGIN_PATH QT_QPA_PLATFORMTHEME XDG_DATA_DIRS; do
   unset "$variable" || true
 done
 source /opt/ros/lyrical/setup.bash
-source "$root_dir/ros2_ws/install/setup.bash"
-set -u
+source "$output_root/install/setup.bash"
+package_prefix=$(ros2 pkg prefix openarm_ik_ros 2>/dev/null || true)
+[[ -n "$package_prefix" ]] || {
+  printf '%s\n' 'The installed openarm_ik_ros package was not found.' >&2
+  exit 1
+}
+package_prefix=$(realpath -e -- "$package_prefix")
+expected_package_prefix=$(realpath -e -- "$output_root/install/openarm_ik_ros")
+[[ "$package_prefix" == "$expected_package_prefix" ]] || {
+  printf 'Sourced package prefix escaped the audited output root: %s\n' \
+    "$package_prefix" >&2
+  exit 1
+}
 
 # RViz/Ogre on this Wayland desktop requires XWayland/GLX.  Its Ogre render
 # window can flicker after a HiDPI resize when Qt uses devicePixelRatio=2, so
@@ -83,7 +158,7 @@ esac
 
 rviz_enabled=1
 launch_arguments=()
-for argument in "$@"; do
+for argument in "${launcher_arguments[@]}"; do
   if [[ "$argument" == rviz:=* ]]; then
     rviz_value=${argument#rviz:=}
     case "${rviz_value,,}" in
@@ -104,7 +179,6 @@ if (( ! rviz_enabled )); then
     rviz:=false "${launch_arguments[@]}"
 fi
 
-package_prefix=$(ros2 pkg prefix openarm_ik_ros)
 share_dir="$package_prefix/share/openarm_ik_ros"
 close_helper="$package_prefix/lib/openarm_ik_ros/close_rviz_window"
 if [[ ! -x "$close_helper" ]]; then

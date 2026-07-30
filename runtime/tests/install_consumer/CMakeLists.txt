@@ -1,0 +1,43 @@
+cmake_minimum_required(VERSION 3.16)
+project(openarm_runtime_v1_installed_consumer LANGUAGES C CXX)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+find_package(openarm_commission 0.1.0 EXACT CONFIG REQUIRED)
+find_package(openarm_runtime 1 CONFIG REQUIRED)
+if(NOT openarm_runtime_V1_INCLUDE_DIR)
+    message(FATAL_ERROR "Runtime V1 frozen include directory was not exported")
+endif()
+get_filename_component(runtime_v1_include_real
+    "${openarm_runtime_V1_INCLUDE_DIR}" REALPATH)
+get_filename_component(expected_runtime_v1_include_real
+    "${OA_EXPECTED_RUNTIME_V1_INCLUDE}" REALPATH)
+if(NOT runtime_v1_include_real STREQUAL expected_runtime_v1_include_real)
+    message(FATAL_ERROR
+        "Runtime V1 include escaped its split prefix: ${runtime_v1_include_real}")
+endif()
+add_executable(runtime_v1_installed_c11 consumer.c)
+target_include_directories(runtime_v1_installed_c11 BEFORE PRIVATE
+    "${openarm_runtime_V1_INCLUDE_DIR}")
+target_link_libraries(runtime_v1_installed_c11 PRIVATE OpenArm::Runtime)
+set_target_properties(runtime_v1_installed_c11 PROPERTIES LINKER_LANGUAGE CXX)
+target_compile_options(runtime_v1_installed_c11 PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_executable(runtime_v1_installed_cxx17 consumer.cpp)
+target_include_directories(runtime_v1_installed_cxx17 BEFORE PRIVATE
+    "${openarm_runtime_V1_INCLUDE_DIR}")
+target_link_libraries(runtime_v1_installed_cxx17 PRIVATE OpenArm::Runtime)
+target_compile_options(runtime_v1_installed_cxx17 PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_executable(runtime_v1_installed_current_c11 consumer.c)
+target_compile_definitions(runtime_v1_installed_current_c11 PRIVATE OA_RUNTIME_USE_CURRENT_HEADER=1)
+target_link_libraries(runtime_v1_installed_current_c11 PRIVATE OpenArm::Runtime)
+set_target_properties(runtime_v1_installed_current_c11 PROPERTIES LINKER_LANGUAGE CXX)
+target_compile_options(runtime_v1_installed_current_c11 PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_executable(runtime_v1_installed_current_cxx17 consumer.cpp)
+target_compile_definitions(runtime_v1_installed_current_cxx17 PRIVATE OA_RUNTIME_USE_CURRENT_HEADER=1)
+target_link_libraries(runtime_v1_installed_current_cxx17 PRIVATE OpenArm::Runtime)
+target_compile_options(runtime_v1_installed_current_cxx17 PRIVATE -Wall -Wextra -Wpedantic -Werror)

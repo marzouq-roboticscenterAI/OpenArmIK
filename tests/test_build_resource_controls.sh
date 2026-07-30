@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$root_dir/scripts/lib/build_cache_state.sh"
 work_root=$(mktemp -d "${TMPDIR:-/tmp}/openarmik-build-controls.XXXXXX")
 cleanup() { rm -rf -- "$work_root"; }
 trap cleanup EXIT
@@ -294,45 +295,116 @@ done < "$work_root/stubborn.pids"
 # repository with pinned description identity and narrow argument shims.
 mini_repo="$work_root/mini-repo"
 mkdir -p "$mini_repo/scripts/lib" "$mini_repo/upstream/openarm_description" \
-  "$mini_repo/ros2_ws/src"
+  "$mini_repo/ros2_ws/src" "$mini_repo/tests"
 cp "$root_dir/scripts/build.sh" "$mini_repo/scripts/build.sh"
 cp "$root_dir/scripts/build_native.sh" "$mini_repo/scripts/build_native.sh"
 cp "$root_dir/scripts/build_lock.sh" "$mini_repo/scripts/build_lock.sh"
 cp "$root_dir/scripts/lib/build_native_body.sh" \
   "$mini_repo/scripts/lib/build_native_body.sh"
+cp "$root_dir/scripts/lib/build_cache_state.sh" \
+  "$mini_repo/scripts/lib/build_cache_state.sh"
+cp "$root_dir/scripts/lib/description_pin.sh" \
+  "$mini_repo/scripts/lib/description_pin.sh"
+cp "$root_dir/scripts/lib/launch_integrity.sh" \
+  "$mini_repo/scripts/lib/launch_integrity.sh"
+git -C "$mini_repo/upstream/openarm_description" init -q
+git -C "$mini_repo/upstream/openarm_description" config user.name fixture
+git -C "$mini_repo/upstream/openarm_description" config user.email fixture@example.invalid
 touch "$mini_repo/upstream/openarm_description/package.xml"
+git -C "$mini_repo/upstream/openarm_description" add package.xml
+git -C "$mini_repo/upstream/openarm_description" commit -qm pinned-fixture
+git -C "$mini_repo/upstream/openarm_description" remote add origin \
+  https://example.invalid/openarm_description.git
+git -C "$mini_repo/upstream/openarm_description" checkout -q --detach
+mini_description_commit=$(git -C "$mini_repo/upstream/openarm_description" rev-parse HEAD)
+mini_description_tree=$(git -C "$mini_repo/upstream/openarm_description" rev-parse 'HEAD^{tree}')
+cat >> "$mini_repo/scripts/lib/description_pin.sh" <<EOF
+openarm_validate_description_pin() {
+  openarm_validate_description_repository "\$1" \
+    "$mini_description_commit" https://example.invalid/openarm_description.git \
+    "$mini_description_tree" 1 none
+}
+EOF
 for component in can model commission transport control runtime; do
   mkdir -p "$mini_repo/$component"
 done
+mkdir -p "$mini_repo/ros2_ws/src/openarm_ik_ros/launch"
+printf '# removable tracked launch fixture\n' > \
+  "$mini_repo/ros2_ws/src/openarm_ik_ros/launch/removable.launch.py"
+printf 'upstream/\n' > "$mini_repo/.gitignore"
+git -C "$mini_repo" init -q
+git -C "$mini_repo" config user.name fixture
+git -C "$mini_repo" config user.email fixture@example.invalid
+git -C "$mini_repo" add .
+git -C "$mini_repo" commit -qm source-fixture
 
 fake_bin="$work_root/bin"
 command_log="$work_root/commands.log"
 mkdir -p "$fake_bin"
 : > "$command_log"
+cat > "$fake_bin/openarm-write-cache" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cache=$1 project=$2 prefix=$3 build_type=$4 testing=${5:-OFF} python=${6:-}
+mkdir -p "$(dirname "$cache")"
+{
+  printf 'CMAKE_PROJECT_NAME:STATIC=%s\n' "$project"
+  printf 'CMAKE_GENERATOR:INTERNAL=Unix Makefiles\n'
+  printf 'CMAKE_GENERATOR_INSTANCE:INTERNAL=\nCMAKE_GENERATOR_PLATFORM:INTERNAL=\nCMAKE_GENERATOR_TOOLSET:INTERNAL=\n'
+  printf 'CMAKE_BUILD_TYPE:STRING=%s\nCMAKE_INSTALL_PREFIX:PATH=%s\n' "$build_type" "$prefix"
+  printf 'CMAKE_C_COMPILER:FILEPATH=/usr/bin/cc\nCMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++\n'
+  printf 'CMAKE_MAKE_PROGRAM:FILEPATH=/usr/bin/make\nCMAKE_AR:FILEPATH=/usr/bin/ar\n'
+  printf 'CMAKE_RANLIB:FILEPATH=/usr/bin/ranlib\nCMAKE_LINKER:FILEPATH=/usr/bin/ld\n'
+  printf 'CMAKE_NM:FILEPATH=/usr/bin/nm\nCMAKE_STRIP:FILEPATH=/usr/bin/strip\nCMAKE_OBJCOPY:FILEPATH=/usr/bin/objcopy\n'
+  for language in C CXX; do
+    value=CFLAGS; [[ "$language" == CXX ]] && value=CXXFLAGS
+    printf 'CMAKE_%s_FLAGS:STRING=%s\n' "$language" "${!value:-}"
+    printf 'CMAKE_%s_FLAGS_DEBUG:STRING=-g\n' "$language"
+    printf 'CMAKE_%s_FLAGS_RELEASE:STRING=-O3 -DNDEBUG\n' "$language"
+    printf 'CMAKE_%s_FLAGS_RELWITHDEBINFO:STRING=-O2 -g -DNDEBUG\n' "$language"
+    printf 'CMAKE_%s_FLAGS_MINSIZEREL:STRING=-Os -DNDEBUG\n' "$language"
+  done
+  for kind in EXE SHARED MODULE STATIC; do
+    printf 'CMAKE_%s_LINKER_FLAGS:STRING=%s\n' "$kind" "${LDFLAGS:-}"
+    for config in DEBUG RELEASE RELWITHDEBINFO MINSIZEREL; do
+      printf 'CMAKE_%s_LINKER_FLAGS_%s:STRING=\n' "$kind" "$config"
+    done
+  done
+  printf 'BUILD_TESTING:BOOL=%s\n' "$testing"
+  [[ -z "$python" ]] || printf 'Python3_EXECUTABLE:UNINITIALIZED=%s\n' "$python"
+  [[ -z ${CMAKE_TOOLCHAIN_FILE:-} ]] || printf 'CMAKE_TOOLCHAIN_FILE:FILEPATH=%s\n' "$CMAKE_TOOLCHAIN_FILE"
+} > "$cache"
+EOF
 cat > "$fake_bin/cmake" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'cmake' >> "$OPENARM_BUILD_TEST_LOG"
 printf ' <%s>' "$@" >> "$OPENARM_BUILD_TEST_LOG"
 printf '\n' >> "$OPENARM_BUILD_TEST_LOG"
-if [[ -n ${OPENARM_BUILD_TEST_GATE:-} ]] &&
+if [[ ${1:-} == -S && -n ${OPENARM_BUILD_TEST_GATE:-} ]] &&
    mkdir "$OPENARM_BUILD_TEST_GATE.claim" 2>/dev/null; then
   touch "$OPENARM_BUILD_TEST_GATE.ready"
   while [[ ! -e "$OPENARM_BUILD_TEST_GATE.release" ]]; do sleep 0.02; done
 fi
 case "$1" in
+  --version) printf 'cmake version fixture\n' ;;
   -E) [[ "$2" == remove_directory ]]; rm -rf -- "$3" ;;
   -S)
-    build_dir=; declare -A definitions=()
+    build_dir= source_dir=; declare -A definitions=()
     while (($#)); do
       case "$1" in
+        -S) source_dir=$2; shift 2; continue ;;
         -B) build_dir=$2; shift 2; continue ;;
         -D*) definition=${1#-D}; definitions[${definition%%=*}]=${definition#*=} ;;
       esac
       shift
     done
-    mkdir -p "$build_dir"; : > "$build_dir/CMakeCache.txt"
+    project=$(basename "$source_dir")
+    openarm-write-cache "$build_dir/CMakeCache.txt" "$project" \
+      "${definitions[CMAKE_INSTALL_PREFIX]}" "${definitions[CMAKE_BUILD_TYPE]}" \
+      "${definitions[BUILD_TESTING]:-OFF}" "${definitions[Python3_EXECUTABLE]:-}"
     for key in "${!definitions[@]}"; do
+      case "$key" in CMAKE_INSTALL_PREFIX|CMAKE_BUILD_TYPE|BUILD_TESTING|Python3_EXECUTABLE) continue ;; esac
       printf '%s:STRING=%s\n' "$key" "${definitions[$key]}" \
         >> "$build_dir/CMakeCache.txt"
     done
@@ -356,27 +428,56 @@ set -euo pipefail
 printf 'colcon MAKEFLAGS=%s CMAKE_BUILD_PARALLEL_LEVEL=%s' \
   "${MAKEFLAGS:-}" "${CMAKE_BUILD_PARALLEL_LEVEL:-}" >> "$OPENARM_BUILD_TEST_LOG"
 printf ' <%s>' "$@" >> "$OPENARM_BUILD_TEST_LOG"; printf '\n' >> "$OPENARM_BUILD_TEST_LOG"
-build_base=
+[[ ${OPENARM_BUILD_TEST_FAIL_COLCON:-0} != 1 ]] || exit 7
+build_base= install_base= build_type=Release testing=OFF python=
 while (($#)); do
-  case "$1" in --build-base) build_base=$2; shift 2; continue ;; esac
+  case "$1" in
+    --build-base) build_base=$2; shift 2; continue ;;
+    --install-base) install_base=$2; shift 2; continue ;;
+    -DCMAKE_BUILD_TYPE=*) build_type=${1#*=} ;;
+    -DBUILD_TESTING=*) testing=${1#*=} ;;
+    -DPython3_EXECUTABLE=*) python=${1#*=} ;;
+  esac
   shift
 done
 mkdir -p "$build_base/openarm_ik_ros"
+for package in openarm_control_msgs openarm_description openarm_ik_ros; do
+  openarm-write-cache "$build_base/$package/CMakeCache.txt" "$package" \
+    "$install_base/$package" "$build_type" "$testing" "$python"
+done
 : > "$build_base/openarm_ik_ros/libopenarm_virtual_control_session.a"
+output_root=$(dirname "$build_base")
+mkdir -p "$output_root/install/openarm_ik_ros/lib/openarm_ik_ros" \
+  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/launch" \
+  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/rviz"
+touch "$output_root/install/setup.bash" \
+  "$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_ik_ros_node" \
+  "$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_portal" \
+  "$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/close_rviz_window" \
+  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/launch/openarm_ik_rviz.launch.py" \
+  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/rviz/openarm_ik.rviz"
+if [[ -f "$OPENARM_BUILD_TEST_SOURCE/ros2_ws/src/openarm_ik_ros/launch/removable.launch.py" ]]; then
+  touch "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/launch/removable.launch.py"
+fi
+chmod +x "$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_ik_ros_node" \
+  "$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_portal" \
+  "$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/close_rviz_window"
 EOF
 cat > "$fake_bin/nm" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == -u && "$2" == *libopenarm_virtual_control_session.a ]]; then
   printf '                 U oa_runtime_create\n'
+  printf '                 U oa_runtime_get_capabilities\n'
 fi
 EOF
-chmod +x "$fake_bin/cmake" "$fake_bin/colcon" "$fake_bin/nm"
+chmod +x "$fake_bin/openarm-write-cache" "$fake_bin/cmake" "$fake_bin/colcon" "$fake_bin/nm"
 
 decoy_description="$work_root/decoy-description"
 mkdir -p "$decoy_description"
 touch "$decoy_description/package.xml"
 run_top() {
   PATH="$fake_bin:$PATH" OPENARM_BUILD_TEST_LOG="$command_log" \
+    OPENARM_BUILD_TEST_SOURCE="$mini_repo" \
     OPENARM_DESCRIPTION_DIR="$decoy_description" XDG_RUNTIME_DIR="$runtime_dir" \
     OPENARM_BUILD_JOBS=2 "$mini_repo/scripts/build.sh" "$@"
 }
@@ -416,6 +517,53 @@ run_top --incremental --output-root "$output_root" --jobs 2
 [[ -e "$output_root/native_build/can/incremental-marker" ]]
 ! grep -Fq '<-E> <remove_directory>' "$command_log"
 ! grep -Fq '<--cmake-clean-cache>' "$command_log"
+
+# Incremental compilation retains caches, but every successful top-level build
+# recreates the complete launcher-facing install. Removed tracked install rules
+# therefore cannot survive and cannot be blessed by a new stamp.
+removable_source="$mini_repo/ros2_ws/src/openarm_ik_ros/launch/removable.launch.py"
+removable_install="$output_root/install/openarm_ik_ros/share/openarm_ik_ros/launch/removable.launch.py"
+[[ -f "$removable_install" ]]
+rm "$removable_source"
+: > "$command_log"
+run_top --incremental --output-root "$output_root" --jobs 2
+[[ -e "$output_root/native_build/can/incremental-marker" ]]
+[[ ! -e "$removable_install" ]]
+PATH="$fake_bin:$PATH" OPENARM_BUILD_TEST_LOG="$command_log" \
+  XDG_RUNTIME_DIR="$runtime_dir" bash -c '
+  set -euo pipefail
+  source "$1/scripts/lib/description_pin.sh"
+  source "$1/scripts/lib/launch_integrity.sh"
+  openarm_assert_current_launch_tree "$1" "$2" Release
+' _ "$mini_repo" "$output_root"
+touch "$removable_install"
+if PATH="$fake_bin:$PATH" OPENARM_BUILD_TEST_LOG="$command_log" \
+    XDG_RUNTIME_DIR="$runtime_dir" bash -c '
+    set -euo pipefail
+    source "$1/scripts/lib/description_pin.sh"
+    source "$1/scripts/lib/launch_integrity.sh"
+    openarm_assert_current_launch_tree "$1" "$2" Release
+  ' _ "$mini_repo" "$output_root" >/dev/null 2>&1; then
+  printf 'Reintroduced stale launch path unexpectedly matched fresh stamp\n' >&2
+  exit 1
+fi
+rm "$removable_install"
+
+# A failed top-level transaction leaves no launch stamp and a pending ROS
+# record. The next same-request incremental run must discard both cache roots
+# before reuse rather than trusting the interrupted generation.
+touch "$output_root/build/openarm_ik_ros/interrupted-marker"
+set +e
+OPENARM_BUILD_TEST_FAIL_COLCON=1 run_top --incremental \
+  --output-root "$output_root" --jobs 2 >/dev/null 2>&1
+failed_top_status=$?
+set -e
+[[ "$failed_top_status" != 0 ]]
+[[ ! -e "$output_root/.openarm-launch-stamp-v2" ]]
+grep -Fxq 'phase pending' "$output_root/build/$OPENARM_BUILD_STATE_FILE"
+run_top --incremental --output-root "$output_root" --jobs 2
+[[ ! -e "$output_root/build/openarm_ik_ros/interrupted-marker" ]]
+[[ -f "$output_root/.openarm-launch-stamp-v2" ]]
 
 # A gated top-level body owns the output, native, and install resources while
 # directly composing exactly one source-only native sequence.
@@ -479,6 +627,10 @@ cp "$mini_repo/scripts/build_native.sh" "$missing_repo/scripts/build_native.sh"
 cp "$mini_repo/scripts/build_lock.sh" "$missing_repo/scripts/build_lock.sh"
 cp "$mini_repo/scripts/lib/build_native_body.sh" \
   "$missing_repo/scripts/lib/build_native_body.sh"
+cp "$mini_repo/scripts/lib/description_pin.sh" \
+  "$missing_repo/scripts/lib/description_pin.sh"
+cp "$mini_repo/scripts/lib/launch_integrity.sh" \
+  "$missing_repo/scripts/lib/launch_integrity.sh"
 : > "$command_log"
 set +e
 PATH="$fake_bin:$PATH" OPENARM_BUILD_TEST_LOG="$command_log" \
@@ -498,7 +650,8 @@ set -e
   "$root_dir/scripts"
 
 # Browser is intentionally unmanaged and closes GUI descriptor 9.
-grep -Fq '"$browser_command" "$url" 9>&-' \
+grep -Fq 'exec 9>&-' "$root_dir/scripts/launch_web_portal.sh"
+grep -Fq 'openarm_close_shared_lock_fds' \
   "$root_dir/scripts/launch_web_portal.sh"
 exec 9>"$work_root/browser-lock"
 bash -c '[[ ! -e /proc/self/fd/9 ]]' 9>&-

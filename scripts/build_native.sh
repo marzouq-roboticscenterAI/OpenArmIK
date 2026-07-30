@@ -4,6 +4,8 @@ set -euo pipefail
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$root_dir/scripts/build_lock.sh"
 source "$root_dir/scripts/lib/build_native_body.sh"
+source "$root_dir/scripts/lib/build_cache_state.sh"
+source "$root_dir/scripts/lib/description_pin.sh"
 build_root=
 install_prefix=
 build_type=Release
@@ -124,10 +126,11 @@ done
 }
 
 description_dir="$root_dir/upstream/openarm_description"
-if [[ ! -f "$description_dir/package.xml" ]]; then
-  printf 'Missing pinned upstream. Run %s/scripts/fetch_upstreams.sh first.\n' "$root_dir" >&2
+openarm_validate_description_pin "$description_dir" || {
+  printf 'Pinned description validation failed. Run %s/scripts/fetch_upstreams.sh when online.\n' \
+    "$root_dir" >&2
   exit 1
-fi
+}
 [[ -x /opt/ros/lyrical/bin/xacro ]] || {
   printf 'Missing ROS xacro executable: %s\n' /opt/ros/lyrical/bin/xacro >&2
   exit 1
@@ -138,6 +141,34 @@ fi
   exit 1
 }
 
-openarm_run_with_locks "$build_root" "$install_prefix" -- \
+openarm_build_native_transaction() {
+  local root_dir=$1 build_root=$2 install_prefix=$3 build_type=$4
+  local run_tests=$5 requested_reuse=$6 jobs=$7 request request_after
+  local effective_reuse=0
+  local -a components=(can model commission transport control runtime)
+  ((run_tests == 0)) || components+=(installed_native_consumer)
+  request=$(openarm_build_state_requested_digest native "$build_type" \
+    "$run_tests" 0 "$install_prefix") || return 1
+  if ((requested_reuse)) && openarm_build_state_read_completed "$build_root" \
+      "$request" "${components[@]}" >/dev/null 2>&1; then
+    effective_reuse=1
+  else
+    openarm_build_state_remove_tree "$root_dir" "$build_root" || return
+  fi
+  openarm_build_state_remove_tree "$root_dir" "$install_prefix" || return
+  openarm_build_state_write "$build_root" pending "$request" || return 1
   openarm_build_native_body "$root_dir" "$build_root" "$install_prefix" \
+    "$build_type" "$run_tests" "$effective_reuse" "$jobs" || return
+  request_after=$(openarm_build_state_requested_digest native "$build_type" \
+    "$run_tests" 0 "$install_prefix") || return 1
+  [[ "$request_after" == "$request" ]] || {
+    printf 'Requested native toolchain changed during the build\n' >&2
+    return 1
+  }
+  openarm_build_state_publish_completed "$build_root" "$request" \
+    "${components[@]}"
+}
+
+openarm_run_with_locks "$build_root" "$install_prefix" -- \
+  openarm_build_native_transaction "$root_dir" "$build_root" "$install_prefix" \
   "$build_type" "$run_tests" "$reuse_build_trees" "$jobs"

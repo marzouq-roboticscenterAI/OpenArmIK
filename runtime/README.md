@@ -1,5 +1,19 @@
 # OpenArm runtime facade
 
+Runtime ABI V1 freezes at the current reviewed header in
+`tests/abi_v1/openarm_runtime.h`. Earlier Runtime feature headers before
+`987f512` were unpublished pre-release drafts, not the V1 compatibility
+baseline. The frozen record layouts, signatures (including
+`oa_runtime_manifest_save`), and symbols are now the compatibility contract.
+Runtime V1 also freezes the Commission 0.1.0 records exposed by its six public
+calibration operations; the package requires that exact dependency and installs
+the frozen Commission header beside the Runtime snapshot. A breaking Commission
+record change therefore requires Runtime V2 names or an explicit V1 compatibility
+adapter.
+Future breaking changes require V2 names, a new ABI version, and an explicit
+compatibility path; the obsolete pre-release persistence signature must not be
+restored.
+
 `openarm_runtime` is the stable ISO-C orchestration boundary over the model,
 commissioning, and control modules. It provides deterministic virtual state,
 calibration, and explicitly unchecked virtual motion. The legacy

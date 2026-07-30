@@ -78,6 +78,40 @@ openarm_lock_file() {
   printf '%s/%s.lock\n' "$lock_dir" "$digest"
 }
 
+# Shared launch leases use the same canonical keys as exclusive builders and
+# remain open in the launcher and its ROS/RViz/portal descendants.
+OPENARM_SHARED_LOCK_FDS=()
+
+openarm_close_shared_lock_fds() {
+  local lock_fd
+  for lock_fd in "${OPENARM_SHARED_LOCK_FDS[@]:-}"; do
+    [[ -n "$lock_fd" ]] && exec {lock_fd}>&-
+  done
+  OPENARM_SHARED_LOCK_FDS=()
+}
+
+openarm_acquire_shared_locks() {
+  local lock_dir lock_file lock_fd resource canonical
+  local -A seen_resources=()
+  OPENARM_SHARED_LOCK_FDS=()
+  lock_dir=$(openarm_lock_dir) || return $?
+  for resource in "$@"; do
+    canonical=$(realpath -m -- "$resource") || return 1
+    [[ -z "${seen_resources[$canonical]+present}" ]] || continue
+    seen_resources[$canonical]=1
+    lock_file=$(openarm_lock_file "$lock_dir" "$canonical") || return 1
+    if ! exec {lock_fd}>"$lock_file"; then
+      openarm_close_shared_lock_fds
+      return 1
+    fi
+    OPENARM_SHARED_LOCK_FDS+=("$lock_fd")
+    if ! flock -s "$lock_fd"; then
+      openarm_close_shared_lock_fds
+      return 1
+    fi
+  done
+}
+
 openarm_lock_forward_signal() {
   local signal=$1 status=$2
   if ((openarm_lock_signal_status == 0)); then
