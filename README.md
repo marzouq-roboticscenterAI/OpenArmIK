@@ -58,6 +58,12 @@ build remains the supported reset for removed install artifacts. Top-level
 `scripts/build.sh` invocations sharing the same canonical output root are
 serialized. Direct native builds serialize on both their canonical build root
 and install prefix; distinct roots and prefixes are not globally serialized.
+The lock descriptors stay in a waiting supervisor and are closed in the build
+process before cleanup, CMake, CTest, colcon, or test executables run. Recursive
+public build requests therefore contend normally instead of inheriting lock
+ownership. Robot models always come from the fetched
+`upstream/openarm_description` checkout; ambient variables cannot substitute a
+different description.
 The portal and standalone RViz launchers also share one per-user GUI lock, so
 they cannot start duplicate ROS and RViz stacks together.
 A disposable build
@@ -77,8 +83,10 @@ reuse_root=$(mktemp -d /tmp/openarmik-prefix-reuse.XXXXXX)
 
 The fast resource-control regression uses real `flock`, CMake, and CTest in an
 isolated temporary fixture, plus narrow command shims for top-level argument
-propagation. It checks job propagation, incremental tree reuse, and build-root
-and install-prefix locking without compiling the project or running sanitizers:
+propagation. It checks process-group signal cleanup, lock-FD noninheritance,
+recursive contention, pinned description identity, job propagation,
+incremental tree reuse, and build-root/install-prefix locking without compiling
+the project or running sanitizers:
 
 ```bash
 ./tests/test_build_resource_controls.sh
