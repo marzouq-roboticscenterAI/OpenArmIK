@@ -67,12 +67,13 @@ ownership. Robot models always come from the fetched
 `upstream/openarm_description` checkout; ambient variables cannot substitute a
 different description.
 The portal and standalone RViz launchers also share one per-user GUI lock, so
-they cannot start duplicate ROS and RViz stacks together.
+they cannot start duplicate ROS stacks together.
 Portal XYZ fields and their field-only test presets default to centimetres and
 offer an inches display/input toggle. This is a browser presentation boundary:
 the portal normalizes explicit units once, while the model, guard, ROS action,
-controller, and runtime remain binary64 metres. The captured stock RViz view
-has no coordinate grid controlled by this toggle.
+controller, and runtime remain binary64 metres. The portal's browser-native
+measured-pose visual proxy has no coordinate grid controlled by this toggle;
+stock RViz remains a separate engineering launcher.
 Each direct launcher runs one bounded incremental build by default. Its
 `--no-build` mode fails closed unless an atomic current-source stamp, pinned
 description identity, artifact hashes, and live Runtime/session authority
@@ -83,7 +84,7 @@ file/symlink in the build-consumed source roots, and the complete installed
 launch closure. Broken or escaping install/source symlinks fail closed, and the
 portal executable is always the audited binary in the exact installed package
 prefix. Launchers retain shared leases on
-the build output through the ROS/RViz/portal lifetime, preventing a builder
+the build output through the ROS/portal or ROS/RViz lifetime, preventing a builder
 from mutating the audited tree before or during use.
 A disposable build
 can be isolated with `--output-root /tmp/openarmik-build`; its setup file is
@@ -112,16 +113,14 @@ input cannot survive in the freshly recreated incremental install:
 ./tests/test_build_resource_controls.sh
 ```
 
-On this Wayland hybrid-GPU laptop the launcher uses Mesa software OpenGL with
-the XWayland/GLX backend required by this RViz/Ogre build. Hardware GLX remains
-available with `OPENARM_RVIZ_RENDERER=nvidia` or `integrated`, but it flickers
-during live window resize on this host. The launcher also disables HiDPI render
-target scaling for RViz only, closes the RViz window before stopping ROS so
-`Ctrl+C` shuts down cleanly, and holds a single-instance lock to prevent
-duplicate joint-state/TF publishers. The window-close path is a compiled C++17
-Xlib utility installed with the ROS package; it has no Python runtime dependency.
+The standalone RViz launcher retains its XWayland/GLX renderer controls and
+compiled Xlib close helper. The web portal does not start RViz, XComposite, or
+a JPEG encoder; it uses a same-origin WebGL2 measured-pose visual proxy backed
+by the pinned Stage-A URDF and 11 allowlisted collision STL files. The proxy is
+explicitly not collision checking and is not a claim of RViz pixel fidelity.
 
-The launch starts only `robot_state_publisher`, the virtual adapter, and RViz.
+The standalone RViz launch starts `robot_state_publisher`, the virtual adapter,
+and RViz. The web launcher starts only the controller and portal.
 `robot_state_publisher` is the only TF authority. The pinned
 `openarm_description` package supplies mesh URI resolution. Launch uses a
 derived visualization-only URDF with fixed, explicitly unmeasured fingers;

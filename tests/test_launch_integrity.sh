@@ -15,7 +15,9 @@ output="$work_root/output"
 mkdir -p "$fixture_root/scripts" "$description" "$output/build/openarm_ik_ros" \
   "$output/install/openarm_ik_ros/lib/openarm_ik_ros" "$output/install/lib" \
   "$output/install/openarm_ik_ros/share/openarm_ik_ros/launch" \
-  "$output/install/openarm_ik_ros/share/openarm_ik_ros/rviz"
+  "$output/install/openarm_ik_ros/share/openarm_ik_ros/rviz" \
+  "$output/install/openarm_ik_ros/share/openarm_ik_ros/web" \
+  "$output/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh"
 mkdir -p "$fixture_root/can" "$fixture_root/model" "$fixture_root/commission" \
   "$fixture_root/transport" "$fixture_root/control" "$fixture_root/runtime" \
   "$fixture_root/ros2_ws/src" "$fixture_root/tests"
@@ -65,6 +67,14 @@ printf '%s\n' "$output/install/openarm_ik_ros" > \
   "$output/install/share/ament_index/resource_index/packages/openarm_ik_ros"
 printf '# launch\n' > "$output/install/openarm_ik_ros/share/openarm_ik_ros/launch/openarm_ik_rviz.launch.py"
 printf '# rviz\n' > "$output/install/openarm_ik_ros/share/openarm_ik_ros/rviz/openarm_ik.rviz"
+for asset in portal.css portal.js viewer.js; do
+  printf 'viewer asset %s\n' "$asset" > "$output/install/openarm_ik_ros/share/openarm_ik_ros/web/$asset"
+done
+printf '{"schema":1}\n' > "$output/install/openarm_ik_ros/share/openarm_ik_ros/viewer/manifest.json"
+printf '<robot/>\n' > "$output/install/openarm_ik_ros/share/openarm_ik_ros/viewer/stage_a.urdf"
+for mesh in body_link0_symp link0_symp link1_symp link2_symp link3_symp link4_symp link5_symp link6_symp link7_symp hand finger; do
+  printf 'mesh %s\n' "$mesh" > "$output/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/$mesh.stl"
+done
 
 # A launch stamp requires completed, verifiable native and ROS CMake selections.
 cache_source="$work_root/cache-source"

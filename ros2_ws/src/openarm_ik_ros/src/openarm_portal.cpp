@@ -11,29 +11,30 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
-#include "openarm_ik_ros/rviz_capture.hpp"
-
 #include <array>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
+#include <filesystem>
 #include <iomanip>
 #include <memory>
 #include <limits>
 #include <mutex>
-#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <type_traits>
 #include <utility>
-#include <vector>
+#include <sys/random.h>
+#include <unistd.h>
 
 namespace openarm_ik_ros::portal
 {
@@ -65,11 +66,23 @@ std::int64_t steady_now_ns()
 
 std::string token()
 {
-  std::random_device source;
+  std::array<unsigned char, 32> bytes{};
+  std::size_t offset = 0;
+  while (offset < bytes.size()) {
+    const ssize_t received = getrandom(bytes.data() + offset, bytes.size() - offset, 0);
+    if (received < 0) {
+      if (errno == EINTR) {continue;}
+      throw std::runtime_error("getrandom failed while creating CSRF token");
+    }
+    if (received == 0) {
+      throw std::runtime_error("getrandom returned no CSRF token bytes");
+    }
+    offset += static_cast<std::size_t>(received);
+  }
   std::ostringstream output;
   output << std::hex << std::setfill('0');
-  for (std::size_t index = 0; index < 32; ++index) {
-    output << std::setw(2) << (source() & 0xffU);
+  for (const unsigned char value : bytes) {
+    output << std::setw(2) << static_cast<unsigned int>(value);
   }
   return output.str();
 }
@@ -87,6 +100,11 @@ void write_response(beast::tcp_stream & stream, http::response<Body> & response)
   response.keep_alive(false);
   response.set(http::field::server, "openarm-portal");
   response.set(http::field::cache_control, "no-store");
+  response.set(http::field::x_content_type_options, "nosniff");
+  response.set(http::field::referrer_policy, "no-referrer");
+  response.set(http::field::content_security_policy,
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
+    "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   response.prepare_payload();
   beast::error_code error;
   http::write(stream, response, error);
@@ -99,6 +117,152 @@ void write_json(beast::tcp_stream & stream, http::status status, std::string bod
   response.body() = std::move(body);
   write_response(stream, response);
 }
+
+std::string_view header_view(beast::string_view value)
+{
+  return {value.data(), value.size()};
+}
+
+bool ascii_iequals(std::string_view left, std::string_view right)
+{
+  return left.size() == right.size() && std::equal(
+    left.begin(), left.end(), right.begin(),
+    [](unsigned char a, unsigned char b) {
+      return std::tolower(a) == std::tolower(b);
+    });
+}
+
+template<typename Request>
+SafeRequestHeaders safe_headers(const Request & request)
+{
+  SafeRequestHeaders headers;
+  for (const auto & field : request.base()) {
+    const std::string_view name = header_view(field.name_string());
+    if (ascii_iequals(name, "Host")) {
+      ++headers.host_count;
+      if (headers.host_count == 1) {headers.host = header_view(field.value());}
+    } else if (ascii_iequals(name, "Origin")) {
+      ++headers.origin_count;
+      if (headers.origin_count == 1) {headers.origin = header_view(field.value());}
+    } else if (ascii_iequals(name, "Sec-Fetch-Site")) {
+      ++headers.sec_fetch_site_count;
+      if (headers.sec_fetch_site_count == 1) {headers.sec_fetch_site = header_view(field.value());}
+    }
+  }
+  return headers;
+}
+
+template<typename Request>
+bool unique_header(const Request & request, std::string_view expected, std::string_view & value)
+{
+  std::size_t count = 0;
+  for (const auto & field : request.base()) {
+    if (ascii_iequals(header_view(field.name_string()), expected)) {
+      ++count;
+      if (count == 1) {value = header_view(field.value());}
+    }
+  }
+  return count == 1;
+}
+
+std::filesystem::path installed_share_directory()
+{
+  std::array<char, 4096> executable{};
+  const ssize_t length = readlink("/proc/self/exe", executable.data(), executable.size() - 1);
+  if (length <= 0) {
+    throw std::runtime_error("cannot resolve portal executable for installed viewer assets");
+  }
+  const std::filesystem::path path(std::string(executable.data(), static_cast<std::size_t>(length)));
+  const std::filesystem::path prefix = path.parent_path().parent_path().parent_path();
+  return prefix / "share" / "openarm_ik_ros";
+}
+
+struct StaticAsset
+{
+  std::string_view route;
+  std::string_view relative;
+  std::string_view content_type;
+  std::uintmax_t maximum_size;
+  std::uintmax_t exact_size;
+};
+
+class ViewerAssets
+{
+public:
+  explicit ViewerAssets(std::filesystem::path share_directory)
+  : share_directory_(std::move(share_directory))
+  {
+    validate();
+  }
+
+  bool ready() const {return ready_;}
+  const std::string & reason() const {return reason_;}
+
+  const StaticAsset * find(std::string_view route) const
+  {
+    for (const StaticAsset & asset : assets()) {
+      if (asset.route == route) {return &asset;}
+    }
+    return nullptr;
+  }
+
+  const std::filesystem::path path(const StaticAsset & asset) const
+  {
+    return share_directory_ / asset.relative;
+  }
+
+private:
+  static const std::array<StaticAsset, 16> & assets()
+  {
+    static const std::array<StaticAsset, 16> value{{
+      {"/web/portal.css", "web/portal.css", "text/css; charset=utf-8", 65536, 0},
+      {"/web/portal.js", "web/portal.js", "application/javascript; charset=utf-8", 65536, 0},
+      {"/web/viewer.js", "web/viewer.js", "application/javascript; charset=utf-8", 131072, 0},
+      {"/viewer/manifest.json", "viewer/manifest.json", "application/json; charset=utf-8", 16384, 0},
+      {"/viewer/stage_a.urdf", "viewer/stage_a.urdf", "application/xml; charset=utf-8", 131072, 0},
+      {"/viewer/mesh/body_link0_symp.stl", "viewer/mesh/body_link0_symp.stl", "model/stl", 293284, 293284},
+      {"/viewer/mesh/link0_symp.stl", "viewer/mesh/link0_symp.stl", "model/stl", 40284, 40284},
+      {"/viewer/mesh/link1_symp.stl", "viewer/mesh/link1_symp.stl", "model/stl", 17784, 17784},
+      {"/viewer/mesh/link2_symp.stl", "viewer/mesh/link2_symp.stl", "model/stl", 13384, 13384},
+      {"/viewer/mesh/link3_symp.stl", "viewer/mesh/link3_symp.stl", "model/stl", 156984, 156984},
+      {"/viewer/mesh/link4_symp.stl", "viewer/mesh/link4_symp.stl", "model/stl", 1139984, 1139984},
+      {"/viewer/mesh/link5_symp.stl", "viewer/mesh/link5_symp.stl", "model/stl", 751484, 751484},
+      {"/viewer/mesh/link6_symp.stl", "viewer/mesh/link6_symp.stl", "model/stl", 30084, 30084},
+      {"/viewer/mesh/link7_symp.stl", "viewer/mesh/link7_symp.stl", "model/stl", 23884, 23884},
+      {"/viewer/mesh/hand.stl", "viewer/mesh/hand.stl", "model/stl", 18284, 18284},
+      {"/viewer/mesh/finger.stl", "viewer/mesh/finger.stl", "model/stl", 13284, 13284},
+    }};
+    return value;
+  }
+
+  void validate()
+  {
+    try {
+      for (const StaticAsset & asset : assets()) {
+        const std::filesystem::path asset_path = path(asset);
+        if (!std::filesystem::is_regular_file(asset_path)) {
+          reason_ = "required viewer asset is missing";
+          return;
+        }
+        const std::uintmax_t size = std::filesystem::file_size(asset_path);
+        if (size == 0 || size > asset.maximum_size ||
+          (asset.exact_size != 0 && size != asset.exact_size))
+        {
+          reason_ = "required viewer asset has an invalid size";
+          return;
+        }
+      }
+      ready_ = true;
+      reason_ = "viewer assets ready";
+    } catch (const std::filesystem::filesystem_error &) {
+      reason_ = "required viewer asset cannot be inspected";
+    }
+  }
+
+  std::filesystem::path share_directory_;
+  bool ready_{false};
+  std::string reason_;
+};
 }  // namespace
 
 class PortalNode : public rclcpp::Node
@@ -163,6 +327,26 @@ public:
       fresh, goal_active_, tcp,
       fresh ? "Fresh encoder-derived virtual state; controller collision_checked=false" : reason,
       command_);
+  }
+
+  ViewerSnapshot viewer_snapshot() const
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ViewerSnapshot snapshot;
+    snapshot.have_state = have_state_;
+    snapshot.sequence = state_sequence_;
+    snapshot.producer_time_ns = state_freshness_.producer_time_ns;
+    snapshot.receipt_steady_ns = state_freshness_.receipt_steady_ns;
+    snapshot.fresh = have_state_ && fresh_at_use(
+      state_freshness_, now().nanoseconds(), steady_now_ns(),
+      std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count());
+    if (snapshot.have_state) {
+      for (std::size_t side = 0; side < measured_q_.size(); ++side) {
+        std::copy(measured_q_[side].begin(), measured_q_[side].end(),
+          snapshot.position_rad.begin() + side * OA_DOF);
+      }
+    }
+    return snapshot;
   }
 
   bool move(
@@ -435,13 +619,10 @@ private:
 class PortalServer
 {
 public:
-  PortalServer(
-    unsigned short port, std::shared_ptr<PortalNode> node,
-    std::int64_t rviz_pid, std::uint64_t rviz_start_ticks, std::string rviz_executable)
-  : context_(1), acceptor_(context_), node_(std::move(node)),
-    capture_(rviz_pid, rviz_start_ticks, std::move(rviz_executable)),
-    csrf_(token()), authority_("127.0.0.1:" + std::to_string(port)), policy_(authority_, csrf_),
-    page_(portal_page(csrf_))
+  PortalServer(unsigned short port, std::shared_ptr<PortalNode> node)
+  : context_(1), acceptor_(context_), node_(std::move(node)), csrf_(token()),
+    authority_("127.0.0.1:" + std::to_string(port)), policy_(authority_, csrf_),
+    safe_policy_(authority_), assets_(installed_share_directory()), page_(portal_page(csrf_))
   {
     const tcp::endpoint endpoint{asio::ip::make_address_v4("127.0.0.1"), port};
     acceptor_.open(endpoint.protocol());
@@ -497,6 +678,27 @@ public:
   }
 
 private:
+  bool write_asset(
+    beast::tcp_stream & stream, const http::request<http::string_body> & request,
+    const StaticAsset & asset)
+  {
+    beast::error_code error;
+    http::file_body::value_type body;
+    const std::filesystem::path asset_path = assets_.path(asset);
+    body.open(asset_path.string().c_str(), beast::file_mode::scan, error);
+    if (error) {
+      write_json(stream, http::status::service_unavailable,
+        "{\"error\":\"viewer asset is unavailable\"}");
+      return false;
+    }
+    http::response<http::file_body> response{http::status::ok, request.version()};
+    response.set(http::field::content_type, asset.content_type);
+    response.content_length(body.size());
+    response.body() = std::move(body);
+    write_response(stream, response);
+    return true;
+  }
+
   void serve(beast::tcp_stream & stream)
   {
     beast::flat_buffer buffer;
@@ -510,53 +712,44 @@ private:
     }
     const auto & request = parser.get();
     const std::string target(request.target());
+    std::string reason;
+    const SafeRequestHeaders request_headers = safe_headers(request);
+    if (!safe_policy_.validate_read(request_headers, reason)) {
+      write_json(stream, http::status::forbidden,
+        "{\"error\":\"" + json_escape(reason) + "\"}");
+      return;
+    }
+    if (request.method() == http::verb::get && !request.body().empty()) {
+      write_json(stream, http::status::bad_request, "{\"error\":\"GET body is not allowed\"}");
+      return;
+    }
     if (request.method() == http::verb::get && target == "/") {
       http::response<http::string_body> response{http::status::ok, request.version()};
       response.set(http::field::content_type, "text/html; charset=utf-8");
-      response.set(http::field::content_security_policy,
-        "default-src 'self'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'");
-      response.set(http::field::x_content_type_options, "nosniff");
-      response.set(http::field::referrer_policy, "no-referrer");
       response.body() = page_;
       write_response(stream, response);
       return;
     }
-    if (request.method() == http::verb::get && target == "/api/health") {
-      bool valid = false;
-      std::string reason;
-      {
-        std::lock_guard<std::mutex> lock(capture_mutex_);
-        valid = capture_.window_ready(reason);
+    if (request.method() == http::verb::get && assets_.ready()) {
+      if (const StaticAsset * asset = assets_.find(target)) {
+        (void)write_asset(stream, request, *asset);
+        return;
       }
-      write_json(stream, valid ? http::status::ok : http::status::service_unavailable,
-        std::string("{\"healthy\":") + (valid ? "true" : "false") +
-        ",\"bind\":\"127.0.0.1\",\"rviz_process_identity\":" +
-        (capture_.identity_valid() ? "true" : "false") +
-        ",\"window_ready\":" + (valid ? "true" : "false") +
-        ",\"reason\":\"" + json_escape(reason) + "\"}");
+    }
+    if (request.method() == http::verb::get && target == "/api/health") {
+      write_json(stream, assets_.ready() ? http::status::ok : http::status::service_unavailable,
+        std::string("{\"healthy\":") + (assets_.ready() ? "true" : "false") +
+        ",\"bind\":\"127.0.0.1\",\"viewer_assets_ready\":" +
+        (assets_.ready() ? "true" : "false") + ",\"reason\":\"" +
+        json_escape(assets_.reason()) + "\"}");
       return;
     }
     if (request.method() == http::verb::get && target == "/api/state") {
       write_json(stream, http::status::ok, node_->state_json());
       return;
     }
-    if (request.method() == http::verb::get && target.rfind("/api/rviz.jpg", 0) == 0) {
-      std::vector<unsigned char> jpeg;
-      std::string reason;
-      bool captured = false;
-      {
-        std::lock_guard<std::mutex> lock(capture_mutex_);
-        captured = capture_.capture_jpeg(jpeg, reason);
-      }
-      if (!captured) {
-        write_json(stream, http::status::service_unavailable,
-          "{\"error\":\"" + json_escape(reason) + "\"}");
-        return;
-      }
-      http::response<http::vector_body<unsigned char>> response{http::status::ok, request.version()};
-      response.set(http::field::content_type, "image/jpeg");
-      response.body() = std::move(jpeg);
-      write_response(stream, response);
+    if (request.method() == http::verb::get && target == "/api/view-state") {
+      write_json(stream, http::status::ok, viewer_state_json(node_->viewer_snapshot(), steady_now_ns()));
       return;
     }
     if (request.method() != http::verb::post ||
@@ -566,10 +759,22 @@ private:
       write_json(stream, http::status::not_found, "{\"error\":\"route not found\"}");
       return;
     }
+    if (!safe_policy_.validate_mutation(request_headers, reason)) {
+      write_json(stream, http::status::forbidden,
+        "{\"error\":\"" + json_escape(reason) + "\"}");
+      return;
+    }
+    std::string_view csrf;
+    std::string_view content_type;
+    if (!unique_header(request, "X-CSRF-Token", csrf) ||
+      !unique_header(request, "Content-Type", content_type))
+    {
+      write_json(stream, http::status::forbidden,
+        "{\"error\":\"exact CSRF and Content-Type headers are required\"}");
+      return;
+    }
     MutationHeaders headers{
-      request[http::field::host], request[http::field::origin], request["X-CSRF-Token"],
-      request[http::field::content_type], request.body().size()};
-    std::string reason;
+      request_headers.host, request_headers.origin, csrf, content_type, request.body().size()};
     if (stop_requested != 0) {
       write_json(stream, http::status::service_unavailable,
         "{\"error\":\"portal shutdown is in progress\"}");
@@ -636,11 +841,11 @@ private:
   asio::thread_pool pool_{4};
   std::atomic_uint active_requests_{0};
   std::shared_ptr<PortalNode> node_;
-  RvizCapture capture_;
-  std::mutex capture_mutex_;
   std::string csrf_;
   std::string authority_;
   MutationPolicy policy_;
+  SafeRequestPolicy safe_policy_;
+  ViewerAssets assets_;
   std::string page_;
   NominalPathGuard guard_;
 };
@@ -668,24 +873,15 @@ std::uint64_t unsigned_number(const char * value, const char * name)
 int main(int argc, char ** argv)
 {
   try {
-    if (argc != 9 || std::string(argv[1]) != "--rviz-pid" ||
-      std::string(argv[3]) != "--rviz-start-ticks" ||
-      std::string(argv[5]) != "--rviz-executable" || std::string(argv[7]) != "--port")
+    if (argc != 3 || std::string(argv[1]) != "--port")
     {
-      std::fprintf(stderr,
-        "Usage: openarm_portal --rviz-pid PID --rviz-start-ticks TICKS "
-        "--rviz-executable ABSOLUTE_PATH --port PORT\n");
+      std::fprintf(stderr, "Usage: openarm_portal --port PORT\n");
       return 2;
     }
-    const std::uint64_t pid = unsigned_number(argv[2], "RViz PID");
-    const std::uint64_t ticks = unsigned_number(argv[4], "RViz start ticks");
-    const std::string rviz_executable(argv[6]);
-    const std::uint64_t port_value = unsigned_number(argv[8], "port");
-    if (pid > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
-      port_value < 1024 || port_value > 65535 || rviz_executable.empty() ||
-      rviz_executable.front() != '/')
+    const std::uint64_t port_value = unsigned_number(argv[2], "port");
+    if (port_value < 1024 || port_value > 65535)
     {
-      throw std::invalid_argument("PID or port outside allowed range");
+      throw std::invalid_argument("port outside allowed range");
     }
     rclcpp::init(argc, argv);
     std::signal(SIGINT, openarm_ik_ros::portal::signal_handler);
@@ -693,9 +889,7 @@ int main(int argc, char ** argv)
     auto node = std::make_shared<openarm_ik_ros::portal::PortalNode>();
     std::thread ros_thread([node]() {rclcpp::spin(node);});
     try {
-      openarm_ik_ros::portal::PortalServer server(
-        static_cast<unsigned short>(port_value), node, static_cast<std::int64_t>(pid), ticks,
-        rviz_executable);
+      openarm_ik_ros::portal::PortalServer server(static_cast<unsigned short>(port_value), node);
       server.run();
       (void)node->cancel();
       const auto cancel_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);

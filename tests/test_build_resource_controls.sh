@@ -462,13 +462,23 @@ done
 output_root=$(dirname "$build_base")
 mkdir -p "$output_root/install/openarm_ik_ros/lib/openarm_ik_ros" \
   "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/launch" \
-  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/rviz"
+  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/rviz" \
+  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/web" \
+  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh"
 touch "$output_root/install/setup.bash" \
   "$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_ik_ros_node" \
   "$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_portal" \
   "$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/close_rviz_window" \
   "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/launch/openarm_ik_rviz.launch.py" \
   "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/rviz/openarm_ik.rviz"
+for asset in portal.css portal.js viewer.js; do
+  touch "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/web/$asset"
+done
+touch "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/manifest.json" \
+  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/stage_a.urdf"
+for mesh in body_link0_symp link0_symp link1_symp link2_symp link3_symp link4_symp link5_symp link6_symp link7_symp hand finger; do
+  touch "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/$mesh.stl"
+done
 if [[ -f "$OPENARM_BUILD_TEST_SOURCE/ros2_ws/src/openarm_ik_ros/launch/removable.launch.py" ]]; then
   touch "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/launch/removable.launch.py"
 fi

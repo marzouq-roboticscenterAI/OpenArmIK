@@ -10,16 +10,14 @@ port=8080
 open_browser=1
 browser_command=xdg-open
 build_mode=auto
-renderer=${OPENARM_RVIZ_RENDERER:-auto}
 jobs=
 
 usage() {
   cat <<'EOF'
 Usage: scripts/launch_web_portal.sh [OPTIONS]
 
-Incrementally build the current virtual OpenArm controller, then launch stock RViz
-and the compiled loopback-only web portal. Ctrl+C shuts down the portal,
-RViz, and ROS processes in that order.
+Incrementally build the current virtual OpenArm controller, then launch the
+compiled loopback-only web portal. Ctrl+C shuts down the portal and ROS.
 
 Options:
   --port PORT        Loopback HTTP port (default: 8080)
@@ -29,14 +27,14 @@ Options:
   --jobs JOBS        Maximum concurrent build jobs (default: build default)
   --no-browser       Print the URL without opening the browser
   --firefox          Open the portal specifically with Firefox
-  --renderer MODE    auto, software, integrated, or nvidia
   -h, --help         Show this help
 
 This launcher is virtual-only. It does not open SocketCAN or control physical
 motors. Portal motion uses a limited sampled nominal virtual prefilter and
 central keepout. Controller collision checking remains unavailable
 (collision_checked=false); this is not physical collision certification or a
-verified scene.
+verified scene. The browser canvas is a measured-pose visual proxy, not RViz
+pixels and not collision checking. Use scripts/launch_rviz.sh for stock RViz.
 EOF
 }
 
@@ -76,11 +74,6 @@ while (($#)); do
       browser_command=firefox
       shift
       ;;
-    --renderer)
-      (($# >= 2)) || { printf '%s requires a value\n' "$1" >&2; exit 2; }
-      renderer=$2
-      shift 2
-      ;;
     -h|--help)
       usage
       exit 0
@@ -97,14 +90,6 @@ done
   printf 'Port must be an integer from 1024 through 65535: %s\n' "$port" >&2
   exit 2
 }
-case "$renderer" in
-  auto|software|integrated|nvidia) ;;
-  *)
-    printf 'Renderer must be auto, software, integrated, or nvidia: %s\n' \
-      "$renderer" >&2
-    exit 2
-    ;;
-esac
 [[ -z "$jobs" || "$jobs" =~ ^[1-9][0-9]*$ ]] || {
   printf 'Jobs must be a positive integer: %s\n' "$jobs" >&2
   exit 2
@@ -120,10 +105,6 @@ if [[ "$output_root" == *:* || "$output_root" == *\;* ]]; then
   exit 2
 fi
 
-[[ -n ${DISPLAY:-} ]] || {
-  printf '%s\n' 'DISPLAY is unset. Run this from the logged-in graphical session.' >&2
-  exit 1
-}
 [[ -r /opt/ros/lyrical/setup.bash ]] || {
   printf '%s\n' 'ROS 2 Lyrical is missing; run scripts/install_all_dependencies.sh.' >&2
   exit 1
@@ -185,27 +166,7 @@ expected_package_prefix=$(realpath -e -- "$output_root/install/openarm_ik_ros")
     "$package_prefix" >&2
   exit 1
 }
-share_dir="$package_prefix/share/openarm_ik_ros"
-close_helper="$package_prefix/lib/openarm_ik_ros/close_rviz_window"
 portal_binary="$package_prefix/lib/openarm_ik_ros/openarm_portal"
-rviz_package_prefix=$(ros2 pkg prefix rviz2 2>/dev/null || true)
-[[ -n "$rviz_package_prefix" ]] || {
-  printf '%s\n' 'The installed stock rviz2 package was not found.' >&2
-  exit 1
-}
-rviz_command=$(command -v rviz2 2>/dev/null || true)
-rviz_executable=$(realpath -e -- "$rviz_command" 2>/dev/null || true)
-[[ -x "$rviz_executable" ]] || {
-  printf '%s\n' 'The stock RViz executable is missing from PATH.' >&2
-  exit 1
-}
-case "$rviz_executable" in
-  "$rviz_package_prefix"/*) ;;
-  *)
-    printf 'RViz executable is outside its ROS package prefix: %s\n' "$rviz_executable" >&2
-    exit 1
-    ;;
-esac
 
 [[ -x "$portal_binary" ]] || {
   printf 'Missing compiled portal executable: %s\n' "$portal_binary" >&2
@@ -214,53 +175,7 @@ esac
     "$root_dir" "$output_root" >&2
   exit 1
 }
-[[ -x "$close_helper" ]] || {
-  printf 'Missing RViz close helper: %s\n' "$close_helper" >&2
-  exit 1
-}
-[[ -r "$share_dir/rviz/openarm_ik.rviz" ]] || {
-  printf 'Missing RViz configuration under: %s\n' "$share_dir" >&2
-  exit 1
-}
-
-for variable in SNAP SNAP_ARCH SNAP_COMMON SNAP_CONTEXT SNAP_COOKIE SNAP_DATA SNAP_INSTANCE_KEY SNAP_LIBRARY_PATH SNAP_NAME SNAP_REAL_HOME SNAP_REEXEC SNAP_REVISION SNAP_USER_COMMON SNAP_USER_DATA GTK_PATH GTK_EXE_PREFIX GTK_IM_MODULE_FILE GDK_PIXBUF_MODULEDIR GDK_PIXBUF_MODULE_FILE GIO_MODULE_DIR QT_PLUGIN_PATH QT_QPA_PLATFORMTHEME; do
-  unset "$variable" || true
-done
-export QT_QPA_PLATFORM=xcb
-export QT_XCB_GL_INTEGRATION=xcb_glx
-export QT_ENABLE_HIGHDPI_SCALING=0
-export QT_SCREEN_SCALE_FACTORS=1
-unset QT_SCALE_FACTOR QT_AUTO_SCREEN_SCALE_FACTOR || true
-
-if [[ "$renderer" == auto ]]; then
-  if [[ ${XDG_SESSION_TYPE:-} == wayland ]]; then
-    renderer=software
-  elif [[ -e /dev/nvidia0 ]] && command -v nvidia-smi >/dev/null 2>&1 && \
-      nvidia-smi >/dev/null 2>&1; then
-    renderer=nvidia
-  else
-    renderer=integrated
-  fi
-fi
-case "$renderer" in
-  software)
-    export LIBGL_ALWAYS_SOFTWARE=1
-    unset __NV_PRIME_RENDER_OFFLOAD __GLX_VENDOR_LIBRARY_NAME __VK_LAYER_NV_optimus || true
-    ;;
-  integrated)
-    unset LIBGL_ALWAYS_SOFTWARE __NV_PRIME_RENDER_OFFLOAD __GLX_VENDOR_LIBRARY_NAME __VK_LAYER_NV_optimus || true
-    ;;
-  nvidia)
-    unset LIBGL_ALWAYS_SOFTWARE || true
-    export __NV_PRIME_RENDER_OFFLOAD=1
-    export __GLX_VENDOR_LIBRARY_NAME=nvidia
-    export __VK_LAYER_NV_optimus=NVIDIA_only
-    ;;
-esac
-printf 'OpenArm portal RViz renderer: %s\n' "$renderer"
-
 core_pid=
-rviz_pid=
 portal_pid=
 shutting_down=0
 
@@ -301,12 +216,6 @@ shutdown() {
   fi
   [[ -z "$portal_pid" ]] || wait "$portal_pid" 2>/dev/null || true
 
-  if [[ -n "$rviz_pid" ]] && process_is_running "$rviz_pid"; then
-    "$close_helper" "$rviz_pid" --timeout 3 || stop_group TERM "$rviz_pid"
-    wait_for_exit "$rviz_pid" 30 || stop_group KILL "$rviz_pid"
-  fi
-  [[ -z "$rviz_pid" ]] || wait "$rviz_pid" 2>/dev/null || true
-
   if [[ -n "$core_pid" ]] && process_is_running "$core_pid"; then
     stop_group INT "$core_pid"
     wait_for_exit "$core_pid" 50 || stop_group TERM "$core_pid"
@@ -324,29 +233,7 @@ trap 'shutdown $?' EXIT
 setsid ros2 launch openarm_ik_ros openarm_ik_rviz.launch.py rviz:=false &
 core_pid=$!
 
-setsid "$rviz_executable" -d "$share_dir/rviz/openarm_ik.rviz" \
-  --ros-args -r __node:=rviz2 &
-rviz_pid=$!
-
-for ((attempt = 0; attempt < 100; attempt++)); do
-  process_is_running "$rviz_pid" || {
-    printf '%s\n' 'RViz exited before the portal could start.' >&2
-    exit 1
-  }
-  if [[ -r "/proc/$rviz_pid/stat" ]]; then
-    rviz_start_ticks=$(awk '{print $22}' "/proc/$rviz_pid/stat")
-    [[ "$rviz_start_ticks" =~ ^[0-9]+$ ]] && break
-  fi
-  sleep 0.1
-done
-[[ ${rviz_start_ticks:-} =~ ^[0-9]+$ ]] || {
-  printf '%s\n' 'Could not establish the RViz process identity.' >&2
-  exit 1
-}
-
-setsid "$portal_binary" --rviz-pid "$rviz_pid" \
-  --rviz-start-ticks "$rviz_start_ticks" \
-  --rviz-executable "$rviz_executable" --port "$port" &
+setsid "$portal_binary" --port "$port" &
 portal_pid=$!
 
 url="http://127.0.0.1:$port/"
@@ -369,7 +256,7 @@ done
 }
 
 printf '\nOpenArm virtual portal: %s\n' "$url"
-printf '%s\n' 'Press Ctrl+C here to stop the portal, RViz, and ROS.'
+printf '%s\n' 'Press Ctrl+C here to stop the portal and ROS.'
 if ((open_browser)); then
   command -v "$browser_command" >/dev/null 2>&1 || {
     printf 'Browser executable not found: %s\n' "$browser_command" >&2
@@ -384,7 +271,7 @@ if ((open_browser)); then
 fi
 
 set +e
-wait -n "$core_pid" "$rviz_pid" "$portal_pid"
+wait -n "$core_pid" "$portal_pid"
 status=$?
 set -e
 shutdown "$status"

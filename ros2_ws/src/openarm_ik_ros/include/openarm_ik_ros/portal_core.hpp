@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace openarm_ik_ros::portal
 {
@@ -77,17 +76,39 @@ struct MutationHeaders
   std::size_t content_length{0};
 };
 
+struct SafeRequestHeaders
+{
+  std::string_view host;
+  std::string_view origin;
+  std::string_view sec_fetch_site;
+  std::size_t host_count{0};
+  std::size_t origin_count{0};
+  std::size_t sec_fetch_site_count{0};
+};
+
+struct ViewerSnapshot
+{
+  std::array<double, OA_DOF * 2> position_rad{};
+  std::uint64_t sequence{0};
+  std::int64_t producer_time_ns{0};
+  std::int64_t receipt_steady_ns{0};
+  bool have_state{false};
+  bool fresh{false};
+};
+
+struct NominalTarget
+{
+  std::string_view id;
+  std::string_view label;
+  Point point{};
+};
+
+using NominalTargetTable = std::array<NominalTarget, 9>;
+
 struct NominalTestSamples
 {
   Point small_forward_up{};
   Point medium_forward_up{};
-};
-
-struct TrueColorMasks
-{
-  std::uint64_t red{0};
-  std::uint64_t green{0};
-  std::uint64_t blue{0};
 };
 
 class StrictJson
@@ -110,6 +131,18 @@ private:
   std::string csrf_token_;
 };
 
+class SafeRequestPolicy
+{
+public:
+  explicit SafeRequestPolicy(std::string authority);
+  bool validate_read(const SafeRequestHeaders & headers, std::string & reason) const;
+  bool validate_mutation(const SafeRequestHeaders & headers, std::string & reason) const;
+
+private:
+  std::string authority_;
+  std::string origin_;
+};
+
 class NominalPathGuard
 {
 public:
@@ -125,8 +158,6 @@ private:
     const std::array<oa_fk_result, 2> & fk, double & clearance, std::string & reason);
 };
 
-bool process_identity_matches(std::int64_t pid, std::uint64_t expected_start_ticks);
-bool process_executable_matches(std::int64_t pid, std::string_view expected_path);
 bool fresh_at_use(
   const FreshnessEvidence & evidence, std::int64_t now_time_ns,
   std::int64_t now_steady_ns, std::int64_t maximum_age_ns);
@@ -134,19 +165,16 @@ bool guard_handoff_valid(
   const GuardInput & guarded, const GuardHandoffEvidence & current,
   std::int64_t now_time_ns, std::int64_t now_steady_ns,
   std::int64_t state_maximum_age_ns, std::int64_t diagnostic_maximum_age_ns);
-bool xcomposite_version_supported(int major, int minor);
 bool normalise_move_to_metres(
   const UnitMoveRequest & input, MoveRequest & output, std::string & reason);
 NominalTestSamples nominal_test_samples(MoveRequest::Side side);
+const NominalTargetTable & nominal_targets(MoveRequest::Side side);
 std::string json_number(double value);
+std::string viewer_state_json(const ViewerSnapshot & snapshot, std::int64_t now_steady_ns);
 std::string portal_state_json(
   bool state_fresh, bool command_active, const std::array<Point, 2> & tcp,
   std::string_view summary, std::string_view command);
 std::string portal_page(std::string_view csrf);
-bool truecolor_masks_valid(const TrueColorMasks & masks);
-std::array<unsigned char, 3> truecolor_pixel_rgb(
-  std::uint64_t pixel, const TrueColorMasks & masks);
-bool rgb_frame_has_nonblack_pixel(const std::vector<unsigned char> & rgb);
 double finite_cylinder_capsule_clearance(
   const Point & a, const Point & b, double cylinder_radius,
   double cylinder_bottom, double cylinder_top, double capsule_radius);

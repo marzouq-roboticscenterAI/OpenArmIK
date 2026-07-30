@@ -63,12 +63,14 @@ stale stamps, missing transforms, unreachable targets, and concurrent commands
 are rejected.
 
 Run the local compiled portal from the repository root with `./run.sh`. The
-launcher builds the workspace, starts the virtual controller and stock RViz,
-then opens Firefox at a service bound only to `127.0.0.1`. The right pane is a
-JPEG snapshot stream of the launcher-owned RViz X11 window; it is not a browser
-renderer. The launcher resolves the stock `rviz2` executable to an absolute
-path, and the portal requires that exact `/proc/PID/exe` identity plus
-XComposite protocol 0.2 or newer.
+launcher builds the workspace, starts the virtual controller, and opens the
+loopback-only `127.0.0.1` portal. Its canvas is a browser-native WebGL2
+measured-pose viewer: it applies the current authoritative 14-joint sample to
+the pinned Stage-A URDF and allowlisted collision STL geometry. It is a
+**visual proxy — not collision checking**, not RViz pixels or a safety-rated
+feedback channel. Camera drag, wheel zoom, touch pinch, reset, resize, and
+stale overlays are browser-local and cannot issue a control request. Use
+`scripts/launch_rviz.sh` separately for stock RViz engineering views.
 
 Portal controls remain virtual-only. Left/right requests use the freshest
 encoder-derived state as the opposite TCP target in a paired action. A sampled
@@ -81,8 +83,9 @@ safety-rated E-stop.
 Motion eligibility rechecks producer timestamps, local receipt ages, and
 unchanged joint/diagnostic generations immediately before action submission.
 
-The portal offers Current, Small forward/up, and Medium forward/up buttons for
-each arm. They only fill target fields. XYZ values default to centimetres and
+The portal offers Current plus nine audited field-fill presets per arm: Small
+forward/up, Medium forward/up, Large forward/up, Low reach, Mid reach, Far
+reach, High, High near, and High far. They only fill target fields. XYZ values default to centimetres and
 can be displayed and entered in inches; the page keeps canonical metre values,
 and the versioned portal endpoint normalizes explicit `m`, `cm`, or `in` input
 to metres before the unchanged guard and ROS action path. `/api/move` remains
@@ -90,4 +93,7 @@ the compatibility metre-only endpoint, while `/api/state` explicitly reports
 `coordinate_unit: "m"`. The frame is `openarm_body_link0` (+X forward, +Y
 left, +Z up). These presets remain virtual-model, sampled-nominal-guard test
 values—not physically safe poses. Stock RViz and ROS remain metric, and the
-captured RViz configuration has no portal-switchable coordinate grid.
+viewer proxy has no portal-switchable coordinate grid. `/api/view-state` is a
+read-only, 30 Hz latest-snapshot contract with fixed joint order, sequence,
+producer timestamp, receipt age, and freshness. A stale viewer cannot change
+motion eligibility; guard handoff remains authoritative.

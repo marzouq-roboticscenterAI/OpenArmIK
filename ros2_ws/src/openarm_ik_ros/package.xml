@@ -7,8 +7,6 @@
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>libx11-dev</depend>
-  <depend>libxcomposite-dev</depend>
-  <depend>libjpeg-dev</depend>
   <depend>libboost-dev</depend>
   <depend>diagnostic_msgs</depend>
   <depend>geometry_msgs</depend>

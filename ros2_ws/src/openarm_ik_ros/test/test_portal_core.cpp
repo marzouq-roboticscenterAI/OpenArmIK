@@ -9,11 +9,11 @@
 #include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <string>
 #include <type_traits>
-#include <unistd.h>
 
 namespace portal = openarm_ik_ros::portal;
 using PairedAction = openarm_control_msgs::action::MovePairedTcp;
@@ -58,22 +58,12 @@ portal::Point tcp(std::size_t side, const portal::JointVector & q)
   return {result.hand_tcp.m[3], result.hand_tcp.m[7], result.hand_tcp.m[11]};
 }
 
-std::uint64_t own_start_ticks()
+std::string read_file(const char * path)
 {
-  std::ifstream input("/proc/self/stat");
-  std::string line;
-  std::getline(input, line);
-  const std::size_t close = line.rfind(')');
-  std::istringstream fields(line.substr(close + 2));
-  std::string field;
-  for (std::size_t index = 3; index <= 22; ++index) {
-    fields >> field;
-  }
-  std::uint64_t value = 0;
-  const auto parsed = std::from_chars(field.data(), field.data() + field.size(), value);
-  EXPECT_EQ(parsed.ec, std::errc{});
-  return value;
+  std::ifstream input(path);
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
+
 }  // namespace
 
 TEST(StrictJson, AcceptsOnlyExactMoveSchema)
@@ -203,42 +193,34 @@ TEST(CoordinateUnits, StateJsonDeclaresMetresAndRoundTripsBinary64)
   EXPECT_EQ(state.find(std::to_string(static_cast<float>(precise))), std::string::npos);
 }
 
-TEST(PortalPage, DefaultsToCentimetresAndPreservesCanonicalMetreTargets)
+TEST(PortalPage, UsesSameOriginExternalAssetsAndSerializedCanonicalTargets)
 {
   const std::string page = portal::portal_page("test-token");
   EXPECT_NE(page.find("Coordinate display units"), std::string::npos);
   EXPECT_NE(page.find("value=\"cm\" checked"), std::string::npos);
   EXPECT_NE(page.find("value=\"in\""), std::string::npos);
-  EXPECT_NE(page.find("let unit='cm'"), std::string::npos);
-  EXPECT_NE(page.find("const targetsM="), std::string::npos);
-  EXPECT_NE(page.find("function selectUnit(next){if(!allFieldsValid())"), std::string::npos);
-  EXPECT_NE(page.find("unit=next;updateUnitText();renderAll()"), std::string::npos);
-  EXPECT_NE(page.find("const metresPerUnit={cm:0.01,in:0.0254}"), std::string::npos);
-  EXPECT_NE(page.find("const unitsPerMetre={cm:100.0,in:1.0/0.0254}"), std::string::npos);
-  EXPECT_NE(page.find("values=target.map(value=>value*unitsPerMetre[unit])"), std::string::npos);
-  EXPECT_NE(page.find("post('/api/v2/move',{side,unit,x:values[0],y:values[1],z:values[2]})"),
-    std::string::npos);
-  EXPECT_NE(page.find("const target=targetsM[side]"), std::string::npos);
-  const std::size_t move_begin = page.find("function move(side)");
-  const std::size_t move_end = page.find("\nfor(const side of sides)", move_begin);
-  ASSERT_NE(move_begin, std::string::npos);
-  ASSERT_NE(move_end, std::string::npos);
-  EXPECT_EQ(page.substr(move_begin, move_end - move_begin).find("parseDecimal"), std::string::npos);
+  EXPECT_NE(page.find("/web/portal.css"), std::string::npos);
+  EXPECT_NE(page.find("/web/portal.js"), std::string::npos);
+  EXPECT_NE(page.find("/web/viewer.js"), std::string::npos);
+  EXPECT_EQ(page.find("<style>"), std::string::npos);
+  EXPECT_NE(page.find("id=\"portal-targets\""), std::string::npos);
+  EXPECT_NE(page.find("\"forward_high\""), std::string::npos);
+  EXPECT_NE(page.find("\"High far\""), std::string::npos);
+  EXPECT_NE(page.find(portal::json_number(0.059973)), std::string::npos);
+  EXPECT_NE(page.find(portal::json_number(0.060081)), std::string::npos);
   EXPECT_EQ(page.find("__CSRF__"), std::string::npos);
-  EXPECT_NE(page.find("const csrf='test-token'"), std::string::npos);
+  EXPECT_NE(page.find("name=\"portal-csrf\" content=\"test-token\""), std::string::npos);
 }
 
 TEST(PortalPage, CarriesStrictInputAndSafetyContracts)
 {
   const std::string page = portal::portal_page("token");
-  EXPECT_NE(page.find("const decimalPattern=/^[+-]?"), std::string::npos);
-  EXPECT_NE(page.find("Blanks, whitespace, commas, hexadecimal, NaN, and infinity are not accepted."),
-    std::string::npos);
   EXPECT_NE(page.find("Virtual simulation only."), std::string::npos);
   EXPECT_NE(page.find("not physically safe coordinates"), std::string::npos);
   EXPECT_NE(page.find("Controller collision checked: <strong>NO</strong>"), std::string::npos);
   EXPECT_NE(page.find("not a hardwired E-stop"), std::string::npos);
-  EXPECT_NE(page.find("ROS and RViz geometry remains metric"), std::string::npos);
+  EXPECT_NE(page.find("visual proxy — not collision checking"), std::string::npos);
+  EXPECT_NE(page.find("OpenArm measured-pose viewer"), std::string::npos);
   EXPECT_NE(page.find("no portal-switchable coordinate grid"), std::string::npos);
 }
 
@@ -264,6 +246,98 @@ TEST(MutationPolicy, RequiresExactLocalOriginAuthorityTokenAndType)
   invalid = valid;
   invalid.content_length = 513;
   EXPECT_FALSE(policy.validate(invalid, reason));
+}
+
+TEST(SafeRequestPolicy, GatesEveryReadAndRequiresExactMutationOrigin)
+{
+  portal::SafeRequestPolicy policy("127.0.0.1:8080");
+  std::string reason;
+  portal::SafeRequestHeaders valid{
+    "127.0.0.1:8080", "", "same-origin", 1, 0, 1};
+  EXPECT_TRUE(policy.validate_read(valid, reason)) << reason;
+  EXPECT_FALSE(policy.validate_mutation(valid, reason));
+  valid.origin = "http://127.0.0.1:8080";
+  valid.origin_count = 1;
+  EXPECT_TRUE(policy.validate_mutation(valid, reason)) << reason;
+  for (const auto invalid_site : {"cross-site", "same-site", "none-other", ""}) {
+    auto invalid = valid;
+    invalid.sec_fetch_site = invalid_site;
+    invalid.sec_fetch_site_count = 1;
+    EXPECT_FALSE(policy.validate_read(invalid, reason));
+  }
+  auto invalid = valid;
+  invalid.host_count = 2;
+  EXPECT_FALSE(policy.validate_read(invalid, reason));
+  invalid = valid;
+  invalid.host = "attacker.invalid";
+  EXPECT_FALSE(policy.validate_read(invalid, reason));
+  invalid = valid;
+  invalid.origin_count = 2;
+  EXPECT_FALSE(policy.validate_read(invalid, reason));
+  invalid = valid;
+  invalid.origin = "null";
+  EXPECT_FALSE(policy.validate_read(invalid, reason));
+  invalid = valid;
+  invalid.sec_fetch_site_count = 0;
+  EXPECT_TRUE(policy.validate_read(invalid, reason));
+}
+
+TEST(ViewerSnapshot, SerializesStrictJointOrderAndBinary64Positions)
+{
+  portal::ViewerSnapshot snapshot;
+  snapshot.have_state = true;
+  snapshot.fresh = true;
+  snapshot.sequence = 42;
+  snapshot.producer_time_ns = 1234567890;
+  snapshot.receipt_steady_ns = 9000000000;
+  snapshot.position_rad[0] = 0.12345678901234566;
+  snapshot.position_rad[13] = -0.75;
+  const std::string json = portal::viewer_state_json(snapshot, 9001250000);
+  EXPECT_NE(json.find("\"schema\":1"), std::string::npos);
+  EXPECT_NE(json.find("\"sequence\":\"42\""), std::string::npos);
+  EXPECT_NE(json.find("\"producer_time_ns\":\"1234567890\""), std::string::npos);
+  EXPECT_NE(json.find("\"receipt_age_ms\":1.25"), std::string::npos);
+  EXPECT_NE(json.find("openarm_left_joint1"), std::string::npos);
+  EXPECT_NE(json.find("openarm_right_joint7"), std::string::npos);
+  EXPECT_NE(json.find(portal::json_number(snapshot.position_rad[0])), std::string::npos);
+  snapshot.have_state = false;
+  const std::string absent = portal::viewer_state_json(snapshot, 9001250000);
+  EXPECT_NE(absent.find("\"have_state\":false"), std::string::npos);
+  EXPECT_EQ(absent.find("position_rad"), std::string::npos);
+}
+
+TEST(ViewerScript, UsesSequentialThirtyHertzPollingAndLocalOnlyCameraEvents)
+{
+  const std::string viewer = read_file(OPENARM_VIEWER_JS_PATH);
+  const std::string page = read_file(OPENARM_PORTAL_JS_PATH);
+  ASSERT_FALSE(viewer.empty());
+  ASSERT_FALSE(page.empty());
+  EXPECT_NE(viewer.find("const PERIOD_MS = 1000 / 30"), std::string::npos);
+  EXPECT_NE(viewer.find("let pollInFlight = false"), std::string::npos);
+  EXPECT_NE(viewer.find("if (pollInFlight) return; pollInFlight = true;"), std::string::npos);
+  EXPECT_NE(viewer.find("fetch('/api/view-state'"), std::string::npos);
+  EXPECT_NE(viewer.find("while (nextPollDeadline <= now)"), std::string::npos);
+  EXPECT_NE(viewer.find("sequence <= acceptedSequence"), std::string::npos);
+  EXPECT_NE(viewer.find("VIEW STALE"), std::string::npos);
+  EXPECT_NE(viewer.find("requestAnimationFrame(draw)"), std::string::npos);
+  EXPECT_NE(viewer.find("metricsRing.length > 512"), std::string::npos);
+  EXPECT_NE(viewer.find("gl.fenceSync"), std::string::npos);
+  EXPECT_NE(viewer.find("openarm-viewer-draw-"), std::string::npos);
+  EXPECT_NE(viewer.find("openarm-viewer-pose-"), std::string::npos);
+  EXPECT_NE(viewer.find("MAX_PIXELS = 1920 * 1080"), std::string::npos);
+  EXPECT_NE(viewer.find("webglcontextlost"), std::string::npos);
+  EXPECT_NE(viewer.find("addEventListener('pointermove'"), std::string::npos);
+  EXPECT_NE(viewer.find("addEventListener('wheel'"), std::string::npos);
+  EXPECT_NE(viewer.find("addEventListener('touchmove'"), std::string::npos);
+  EXPECT_NE(viewer.find("reset-view"), std::string::npos);
+  EXPECT_EQ(viewer.find("method: 'POST'"), std::string::npos);
+  EXPECT_EQ(viewer.find("/api/move"), std::string::npos);
+  EXPECT_EQ(viewer.find("http://"), std::string::npos);
+  EXPECT_EQ(viewer.find("https://"), std::string::npos);
+  EXPECT_EQ(viewer.find("setInterval"), std::string::npos);
+  EXPECT_NE(page.find("const metresPerUnit = {cm: 0.01, in: 0.0254}"), std::string::npos);
+  EXPECT_NE(page.find("post('/api/v2/move'"), std::string::npos);
+  EXPECT_NE(page.find("renderPresets('left'); renderPresets('right')"), std::string::npos);
 }
 
 TEST(NominalPathGuard, RejectsNonfiniteAndUnprovenStates)
@@ -316,27 +390,27 @@ TEST(NominalPathGuard, AcceptsExactCanonicalNeutralStateWithPoleMargin)
   EXPECT_GE(result.minimum_nominal_clearance_m, 0.025);
 }
 
-TEST(NominalPathGuard, PresetsParseAndPassButNearbyPoleApproachFails)
+TEST(NominalPathGuard, AllNinePresetsPerArmParseAndPassButNearbyPoleApproachFails)
 {
   constexpr double measured_neutral = 6.67582207984907e-05;
   portal::GuardInput input;
   for (auto & side : input.measured_q) {side.fill(measured_neutral);}
-  const portal::NominalTestSamples left_samples =
-    portal::nominal_test_samples(portal::MoveRequest::Side::left);
-  const portal::NominalTestSamples right_samples =
-    portal::nominal_test_samples(portal::MoveRequest::Side::right);
-  EXPECT_EQ(left_samples.small_forward_up, (portal::Point{0.019973, 0.143469, 0.096000}));
-  EXPECT_EQ(left_samples.medium_forward_up, (portal::Point{0.029973, 0.143469, 0.106000}));
-  EXPECT_EQ(right_samples.small_forward_up, (portal::Point{0.020081, -0.143527, 0.096000}));
-  EXPECT_EQ(right_samples.medium_forward_up, (portal::Point{0.030081, -0.143527, 0.106000}));
+  const auto & left_targets = portal::nominal_targets(portal::MoveRequest::Side::left);
+  const auto & right_targets = portal::nominal_targets(portal::MoveRequest::Side::right);
+  ASSERT_EQ(left_targets.size(), 9U);
+  ASSERT_EQ(right_targets.size(), 9U);
+  EXPECT_EQ(left_targets.front().id, "small");
+  EXPECT_EQ(left_targets.back().id, "far_high");
+  EXPECT_EQ(left_targets[2].point, (portal::Point{0.039973, 0.143469, 0.116000}));
+  EXPECT_EQ(right_targets[8].point, (portal::Point{0.050081, -0.153527, 0.136000}));
   for (const auto side : {portal::MoveRequest::Side::left, portal::MoveRequest::Side::right}) {
-    const portal::NominalTestSamples samples = portal::nominal_test_samples(side);
-    for (const portal::Point & target : {samples.small_forward_up, samples.medium_forward_up}) {
+    const auto & targets = portal::nominal_targets(side);
+    for (const portal::NominalTarget & target : targets) {
       std::ostringstream json;
       json << std::fixed << std::setprecision(6) <<
         "{\"side\":\"" << (side == portal::MoveRequest::Side::left ? "left" : "right") <<
-        "\",\"x\":" << target[0] << ",\"y\":" << target[1] <<
-        ",\"z\":" << target[2] << '}';
+        "\",\"x\":" << target.point[0] << ",\"y\":" << target.point[1] <<
+        ",\"z\":" << target.point[2] << '}';
       std::string reason;
       ASSERT_TRUE(portal::StrictJson::parse_move(json.str(), input.request, reason)) << reason;
       const portal::GuardResult result = portal::NominalPathGuard().validate(input);
@@ -406,26 +480,6 @@ TEST(FiniteShaftClearance, IncludesTopAndBottomCapsAndDiagonalRims)
 TEST(JsonEscape, EscapesControlAndDelimiterCharacters)
 {
   EXPECT_EQ(portal::json_escape("a\"b\\c\n"), "a\\\"b\\\\c\\n");
-}
-
-TEST(ProcessIdentity, RequiresExactLivePidAndStartTicks)
-{
-  const std::uint64_t ticks = own_start_ticks();
-  ASSERT_NE(ticks, 0U);
-  EXPECT_TRUE(portal::process_identity_matches(getpid(), ticks));
-  EXPECT_FALSE(portal::process_identity_matches(getpid(), ticks + 1));
-  EXPECT_FALSE(portal::process_identity_matches(0, ticks));
-}
-
-TEST(ProcessIdentity, RequiresExactResolvedExecutablePath)
-{
-  std::array<char, 4096> executable{};
-  const ssize_t length = readlink("/proc/self/exe", executable.data(), executable.size() - 1);
-  ASSERT_GT(length, 0);
-  const std::string exact(executable.data(), static_cast<std::size_t>(length));
-  EXPECT_TRUE(portal::process_executable_matches(getpid(), exact));
-  EXPECT_FALSE(portal::process_executable_matches(getpid(), exact + ".other"));
-  EXPECT_FALSE(portal::process_executable_matches(getpid(), "test_portal_core"));
 }
 
 TEST(Freshness, RevalidatesProducerAndReceiptAgesAtUseTime)
@@ -501,30 +555,4 @@ TEST(GuardHandoff, RejectsStaleOrFaultedDiagnostics)
   current.diagnostic_freshness = {10000, 20000};
   current.diagnostic_valid = false;
   EXPECT_FALSE(portal::guard_handoff_valid(guarded, current, 10500, 20500, 1000, 1000));
-}
-
-TEST(XCompositeVersion, RequiresNamedPixmapProtocolMinimum)
-{
-  EXPECT_FALSE(portal::xcomposite_version_supported(0, 1));
-  EXPECT_TRUE(portal::xcomposite_version_supported(0, 2));
-  EXPECT_TRUE(portal::xcomposite_version_supported(0, 4));
-  EXPECT_TRUE(portal::xcomposite_version_supported(1, 0));
-  EXPECT_FALSE(portal::xcomposite_version_supported(-1, 99));
-}
-
-TEST(TrueColorPixels, UsesValidatedVisualMasksAndRejectsBlackFrames)
-{
-  const portal::TrueColorMasks rgb888{0xff0000, 0x00ff00, 0x0000ff};
-  ASSERT_TRUE(portal::truecolor_masks_valid(rgb888));
-  EXPECT_EQ(portal::truecolor_pixel_rgb(0x804020, rgb888),
-    (std::array<unsigned char, 3>{128, 64, 32}));
-  const portal::TrueColorMasks rgb565{0xf800, 0x07e0, 0x001f};
-  ASSERT_TRUE(portal::truecolor_masks_valid(rgb565));
-  EXPECT_EQ(portal::truecolor_pixel_rgb(0xffff, rgb565),
-    (std::array<unsigned char, 3>{255, 255, 255}));
-  EXPECT_FALSE(portal::truecolor_masks_valid({0, 0x00ff00, 0x0000ff}));
-  EXPECT_FALSE(portal::truecolor_masks_valid({0xff0000, 0xff0000, 0x0000ff}));
-  EXPECT_FALSE(portal::rgb_frame_has_nonblack_pixel({0, 0, 0, 0, 0, 0}));
-  EXPECT_TRUE(portal::rgb_frame_has_nonblack_pixel({0, 0, 0, 0, 1, 0}));
-  EXPECT_FALSE(portal::rgb_frame_has_nonblack_pixel({1, 0}));
 }

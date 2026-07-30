@@ -5,14 +5,12 @@
 #include <array>
 #include <charconv>
 #include <cmath>
-#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <locale>
 #include <sstream>
 #include <utility>
 #include <vector>
-#include <unistd.h>
 
 namespace openarm_ik_ros::portal
 {
@@ -327,6 +325,47 @@ bool MutationPolicy::validate(const MutationHeaders & headers, std::string & rea
   return true;
 }
 
+SafeRequestPolicy::SafeRequestPolicy(std::string authority)
+: authority_(std::move(authority)), origin_("http://" + authority_)
+{
+}
+
+bool SafeRequestPolicy::validate_read(
+  const SafeRequestHeaders & headers, std::string & reason) const
+{
+  if (headers.host_count != 1 || headers.host != authority_) {
+    reason = "exact loopback Host is required";
+    return false;
+  }
+  if (headers.origin_count > 1 ||
+    (headers.origin_count == 1 && headers.origin != origin_))
+  {
+    reason = "Origin must be absent or exact same-origin";
+    return false;
+  }
+  if (headers.sec_fetch_site_count > 1 ||
+    (headers.sec_fetch_site_count == 1 && headers.sec_fetch_site != "none" &&
+    headers.sec_fetch_site != "same-origin"))
+  {
+    reason = "Sec-Fetch-Site must be absent, none, or same-origin";
+    return false;
+  }
+  return true;
+}
+
+bool SafeRequestPolicy::validate_mutation(
+  const SafeRequestHeaders & headers, std::string & reason) const
+{
+  if (!validate_read(headers, reason)) {
+    return false;
+  }
+  if (headers.origin_count != 1 || headers.origin != origin_) {
+    reason = "exact same-origin Origin is required for mutation";
+    return false;
+  }
+  return true;
+}
+
 bool NominalPathGuard::forward(std::size_t side, const JointVector & q, oa_fk_result & result)
 {
   const oa_model * model = side == 0 ? oa_model_left_v10_bimanual() :
@@ -494,50 +533,6 @@ GuardResult NominalPathGuard::validate(const GuardInput & input) const
   return result;
 }
 
-bool process_identity_matches(std::int64_t pid, std::uint64_t expected_start_ticks)
-{
-  if (pid <= 1 || expected_start_ticks == 0) {
-    return false;
-  }
-  std::ifstream stream("/proc/" + std::to_string(pid) + "/stat");
-  std::string line;
-  if (!stream || !std::getline(stream, line)) {
-    return false;
-  }
-  const std::size_t close = line.rfind(')');
-  if (close == std::string::npos || close + 2 >= line.size()) {
-    return false;
-  }
-  std::istringstream fields(line.substr(close + 2));
-  std::string field;
-  for (std::size_t index = 3; index <= 22; ++index) {
-    if (!(fields >> field)) {
-      return false;
-    }
-    if (index == 22) {
-      std::uint64_t value = 0;
-      const auto parsed = std::from_chars(field.data(), field.data() + field.size(), value);
-      return parsed.ec == std::errc{} && parsed.ptr == field.data() + field.size() &&
-             value == expected_start_ticks;
-    }
-  }
-  return false;
-}
-
-bool process_executable_matches(std::int64_t pid, std::string_view expected_path)
-{
-  if (pid <= 1 || expected_path.empty() || expected_path.front() != '/' ||
-    expected_path.size() >= 4096)
-  {
-    return false;
-  }
-  std::array<char, 4096> resolved{};
-  const std::string link = "/proc/" + std::to_string(pid) + "/exe";
-  const ssize_t length = readlink(link.c_str(), resolved.data(), resolved.size() - 1);
-  return length > 0 && static_cast<std::size_t>(length) == expected_path.size() &&
-         std::equal(expected_path.begin(), expected_path.end(), resolved.begin());
-}
-
 bool fresh_at_use(
   const FreshnessEvidence & evidence, std::int64_t now_time_ns,
   std::int64_t now_steady_ns, std::int64_t maximum_age_ns)
@@ -604,11 +599,6 @@ bool guard_handoff_valid(
   return true;
 }
 
-bool xcomposite_version_supported(int major, int minor)
-{
-  return major > 0 || (major == 0 && minor >= 2);
-}
-
 bool normalise_move_to_metres(
   const UnitMoveRequest & input, MoveRequest & output, std::string & reason)
 {
@@ -629,12 +619,37 @@ bool normalise_move_to_metres(
   return true;
 }
 
+const NominalTargetTable & nominal_targets(MoveRequest::Side side)
+{
+  static constexpr NominalTargetTable left{{
+    {"small", "Small forward/up", {0.019973, 0.143469, 0.096000}},
+    {"medium", "Medium forward/up", {0.029973, 0.143469, 0.106000}},
+    {"large", "Large forward/up", {0.039973, 0.143469, 0.116000}},
+    {"forward_low", "Low reach", {0.039973, 0.153469, 0.086000}},
+    {"forward_mid", "Mid reach", {0.049973, 0.153469, 0.096000}},
+    {"forward_high", "Far reach", {0.059973, 0.153469, 0.106000}},
+    {"high", "High", {0.029973, 0.153469, 0.136000}},
+    {"mid_high", "High near", {0.019973, 0.153469, 0.126000}},
+    {"far_high", "High far", {0.049973, 0.153469, 0.136000}},
+  }};
+  static constexpr NominalTargetTable right{{
+    {"small", "Small forward/up", {0.020081, -0.143527, 0.096000}},
+    {"medium", "Medium forward/up", {0.030081, -0.143527, 0.106000}},
+    {"large", "Large forward/up", {0.040081, -0.143527, 0.116000}},
+    {"forward_low", "Low reach", {0.040081, -0.153527, 0.086000}},
+    {"forward_mid", "Mid reach", {0.050081, -0.153527, 0.096000}},
+    {"forward_high", "Far reach", {0.060081, -0.153527, 0.106000}},
+    {"high", "High", {0.030081, -0.153527, 0.136000}},
+    {"mid_high", "High near", {0.020081, -0.153527, 0.126000}},
+    {"far_high", "High far", {0.050081, -0.153527, 0.136000}},
+  }};
+  return side == MoveRequest::Side::left ? left : right;
+}
+
 NominalTestSamples nominal_test_samples(MoveRequest::Side side)
 {
-  if (side == MoveRequest::Side::left) {
-    return {{0.019973, 0.143469, 0.096000}, {0.029973, 0.143469, 0.106000}};
-  }
-  return {{0.020081, -0.143527, 0.096000}, {0.030081, -0.143527, 0.106000}};
+  const NominalTargetTable & targets = nominal_targets(side);
+  return {targets[0].point, targets[1].point};
 }
 
 std::string json_number(double value)
@@ -642,6 +657,46 @@ std::string json_number(double value)
   std::ostringstream output;
   output.imbue(std::locale::classic());
   output << std::setprecision(std::numeric_limits<double>::max_digits10) << value;
+  return output.str();
+}
+
+std::string viewer_state_json(const ViewerSnapshot & snapshot, std::int64_t now_steady_ns)
+{
+  static constexpr std::array<std::string_view, OA_DOF * 2> kJointOrder{{
+    "openarm_left_joint1", "openarm_left_joint2", "openarm_left_joint3",
+    "openarm_left_joint4", "openarm_left_joint5", "openarm_left_joint6",
+    "openarm_left_joint7", "openarm_right_joint1", "openarm_right_joint2",
+    "openarm_right_joint3", "openarm_right_joint4", "openarm_right_joint5",
+    "openarm_right_joint6", "openarm_right_joint7",
+  }};
+  std::ostringstream output;
+  output.imbue(std::locale::classic());
+  output << "{\"schema\":1,\"have_state\":" << (snapshot.have_state ? "true" : "false") <<
+    ",\"fresh\":" << (snapshot.fresh ? "true" : "false") << ",\"sequence\":\"" <<
+    snapshot.sequence << "\",\"producer_time_ns\":\"" << snapshot.producer_time_ns <<
+    "\",\"receipt_age_ms\":";
+  if (!snapshot.have_state || snapshot.receipt_steady_ns <= 0 ||
+    now_steady_ns < snapshot.receipt_steady_ns)
+  {
+    output << "null";
+  } else {
+    output << json_number(static_cast<double>(now_steady_ns - snapshot.receipt_steady_ns) / 1.0e6);
+  }
+  output << ",\"joint_order\":[";
+  for (std::size_t index = 0; index < kJointOrder.size(); ++index) {
+    if (index != 0) {output << ',';}
+    output << '\"' << kJointOrder[index] << '\"';
+  }
+  output << ']';
+  if (snapshot.have_state) {
+    output << ",\"position_rad\":[";
+    for (std::size_t index = 0; index < snapshot.position_rad.size(); ++index) {
+      if (index != 0) {output << ',';}
+      output << json_number(snapshot.position_rad[index]);
+    }
+    output << ']';
+  }
+  output << '}';
   return output.str();
 }
 
@@ -659,37 +714,6 @@ std::string portal_state_json(
     json_number(tcp[1][1]) << ',' << json_number(tcp[1][2]) << "],\"summary\":\"" <<
     json_escape(summary) << "\",\"command\":\"" << json_escape(command) << "\"}";
   return output.str();
-}
-
-bool truecolor_masks_valid(const TrueColorMasks & masks)
-{
-  const auto contiguous = [](std::uint64_t mask) {
-      if (mask == 0) {return false;}
-      while ((mask & 1U) == 0U) {mask >>= 1U;}
-      return (mask & (mask + 1U)) == 0U;
-    };
-  return contiguous(masks.red) && contiguous(masks.green) && contiguous(masks.blue) &&
-         (masks.red & masks.green) == 0U && (masks.red & masks.blue) == 0U &&
-         (masks.green & masks.blue) == 0U;
-}
-
-std::array<unsigned char, 3> truecolor_pixel_rgb(
-  std::uint64_t pixel, const TrueColorMasks & masks)
-{
-  auto channel = [pixel](std::uint64_t mask) {
-      unsigned int shift = 0;
-      while (((mask >> shift) & 1U) == 0U) {++shift;}
-      const std::uint64_t maximum = mask >> shift;
-      return static_cast<unsigned char>(((pixel & mask) >> shift) * 255U / maximum);
-    };
-  if (!truecolor_masks_valid(masks)) {return {0, 0, 0};}
-  return {channel(masks.red), channel(masks.green), channel(masks.blue)};
-}
-
-bool rgb_frame_has_nonblack_pixel(const std::vector<unsigned char> & rgb)
-{
-  return rgb.size() >= 3 && rgb.size() % 3 == 0 &&
-         std::any_of(rgb.begin(), rgb.end(), [](unsigned char value) {return value != 0;});
 }
 
 double finite_cylinder_capsule_clearance(

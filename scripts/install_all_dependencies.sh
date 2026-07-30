@@ -97,10 +97,8 @@ packages=(
   libeigen3-dev
   libboost-dev
   libfcl-dev
-  libjpeg-dev
   libssl-dev
   libx11-dev
-  libxcomposite-dev
   libxdamage-dev
   libxext-dev
   libxfixes-dev

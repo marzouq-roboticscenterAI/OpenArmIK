@@ -11,7 +11,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(ament_cmake REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(JPEG REQUIRED)
 find_package(openarm_control_msgs REQUIRED)
 find_package(openarm_description REQUIRED)
 find_package(openarm_model CONFIG REQUIRED)
@@ -25,9 +24,6 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(Threads REQUIRED)
 find_package(X11 REQUIRED)
-if(NOT X11_Xcomposite_FOUND)
-  message(FATAL_ERROR "XComposite development files are required")
-endif()
 
 option(OPENARM_IK_ROS_COVERAGE "Instrument authored adapter code for gcov" OFF)
 
@@ -46,6 +42,14 @@ add_custom_command(
   VERBATIM)
 add_custom_target(openarm_stage_a_visualization_urdf ALL
   DEPENDS "${OPENARM_STAGE_A_VISUALIZATION_URDF}")
+
+get_filename_component(OPENARM_DESCRIPTION_SHARE "${openarm_description_DIR}/.." ABSOLUTE)
+set(OPENARM_VIEWER_ASSET_DIR "${CMAKE_CURRENT_BINARY_DIR}/viewer")
+include(cmake/ViewerAssetManifest.cmake)
+openarm_configure_viewer_assets(
+  "${OPENARM_DESCRIPTION_SHARE}" "${OPENARM_STAGE_A_VISUALIZATION_URDF}"
+  "${OPENARM_VIEWER_ASSET_DIR}")
+add_custom_target(openarm_viewer_assets ALL DEPENDS "${OPENARM_VIEWER_STAGE_A_URDF}")
 
 add_library(openarm_virtual_control_session STATIC src/virtual_control_session.cpp)
 target_include_directories(openarm_virtual_control_session PUBLIC include)
@@ -86,8 +90,9 @@ target_include_directories(openarm_portal_core PUBLIC include)
 target_compile_options(openarm_portal_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_portal_core PUBLIC openarm_model::openarm_model)
 
-add_executable(openarm_portal src/openarm_portal.cpp src/rviz_capture.cpp)
-target_include_directories(openarm_portal PRIVATE include ${X11_Xcomposite_INCLUDE_PATH})
+add_executable(openarm_portal src/openarm_portal.cpp)
+add_dependencies(openarm_portal openarm_viewer_assets)
+target_include_directories(openarm_portal PRIVATE include)
 target_compile_definitions(openarm_portal PRIVATE BOOST_ERROR_CODE_HEADER_ONLY)
 target_compile_options(openarm_portal PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_portal PRIVATE
@@ -97,9 +102,6 @@ target_link_libraries(openarm_portal PRIVATE
   rclcpp::rclcpp
   rclcpp_action::rclcpp_action
   sensor_msgs::sensor_msgs
-  X11::X11
-  ${X11_Xcomposite_LIB}
-  JPEG::JPEG
   Threads::Threads)
 
 if(OPENARM_IK_ROS_COVERAGE)
@@ -115,6 +117,11 @@ install(DIRECTORY launch rviz DESTINATION share/${PROJECT_NAME})
 install(FILES package.xml README.md DESTINATION share/${PROJECT_NAME})
 install(FILES "${openarm_model_GENERATED_URDF}" DESTINATION share/${PROJECT_NAME}/urdf)
 install(FILES "${OPENARM_STAGE_A_VISUALIZATION_URDF}" DESTINATION share/${PROJECT_NAME}/urdf)
+install(FILES "${OPENARM_VIEWER_MANIFEST}" "${OPENARM_VIEWER_STAGE_A_URDF}"
+  DESTINATION share/${PROJECT_NAME}/viewer)
+install(DIRECTORY "${OPENARM_VIEWER_MESH_DIRECTORY}/" DESTINATION share/${PROJECT_NAME}/viewer/mesh)
+install(DIRECTORY web/ DESTINATION share/${PROJECT_NAME}/web
+  FILES_MATCHING PATTERN "*.css" PATTERN "*.js")
 
 if(BUILD_TESTING)
   target_compile_definitions(openarm_virtual_control_session PUBLIC OPENARM_IK_ROS_TESTING)
@@ -130,6 +137,9 @@ if(BUILD_TESTING)
     openarm_control_msgs::openarm_control_msgs)
   target_include_directories(test_portal_core PRIVATE include)
   target_compile_options(test_portal_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_compile_definitions(test_portal_core PRIVATE
+    OPENARM_VIEWER_JS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/web/viewer.js"
+    OPENARM_PORTAL_JS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/web/portal.js")
   if(OPENARM_IK_ROS_COVERAGE)
     target_compile_options(test_virtual_control_session PRIVATE --coverage -O0)
     target_link_options(test_virtual_control_session PRIVATE --coverage)
@@ -164,7 +174,6 @@ if(BUILD_TESTING)
   set_tests_properties(test_openarm_control_cli_help PROPERTIES
     PASS_REGULAR_EXPRESSION
       "LEFT_X_METRES LEFT_Y_METRES LEFT_Z_METRES RIGHT_X_METRES RIGHT_Y_METRES RIGHT_Z_METRES")
-  get_filename_component(OPENARM_DESCRIPTION_SHARE "${openarm_description_DIR}/.." ABSOLUTE)
   add_test(
     NAME test_generated_urdf
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_generated_urdf.py
@@ -175,6 +184,8 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_visualization_urdf.py
       --canonical ${openarm_model_GENERATED_URDF}
       --visualization ${OPENARM_STAGE_A_VISUALIZATION_URDF}
+      --manifest ${OPENARM_VIEWER_MANIFEST}
+      --description-root ${OPENARM_DESCRIPTION_SHARE}
       --generator ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateStageAVisualizationUrdf.cmake
       --cmake ${CMAKE_COMMAND})
   find_program(CHECK_URDF_EXECUTABLE NAMES check_urdf REQUIRED)

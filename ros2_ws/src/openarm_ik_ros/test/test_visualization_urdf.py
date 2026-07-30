@@ -2,6 +2,7 @@
 """Prove the Stage-A visualization URDF is a narrow canonical-model overlay."""
 import argparse
 import hashlib
+import json
 import math
 from pathlib import Path
 import random
@@ -164,6 +165,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--canonical", required=True, type=Path)
     parser.add_argument("--visualization", required=True, type=Path)
+    parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--description-root", required=True, type=Path)
     parser.add_argument("--generator", required=True, type=Path)
     parser.add_argument("--cmake", required=True, type=Path)
     args = parser.parse_args()
@@ -241,6 +244,39 @@ def main():
         assert derived.find("mimic") is None
 
     compare_kinematics(canonical, visualization)
+
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    assert manifest["schema"] == 1
+    assert manifest["upstream"] == {
+        "repository": "https://github.com/enactic/openarm_description",
+        "commit": "6c7b720f1ba48e8bafa3a3dc752c45f397b42221",
+        "license": "Apache-2.0",
+    }
+    meshes = manifest["meshes"]
+    assert len(meshes) == 11
+    assert manifest["total_bytes"] == 2498724
+    assert manifest["total_triangles"] == 49956
+    assert sum(mesh["bytes"] for mesh in meshes) == manifest["total_bytes"]
+    assert sum(mesh["triangles"] for mesh in meshes) == manifest["total_triangles"]
+    routes = {mesh["route"] for mesh in meshes}
+    assert len(routes) == len(meshes)
+    collision_sources = {
+        mesh.attrib["filename"]
+        for link in visualization.findall("link")
+        for collision in link.findall("collision")
+        for mesh in collision.findall("geometry/mesh")
+    }
+    assert collision_sources == {mesh["source"] for mesh in meshes}
+    for mesh in meshes:
+        assert mesh["route"].startswith("/viewer/mesh/")
+        source = mesh["source"]
+        prefix = "package://openarm_description/"
+        assert source.startswith(prefix)
+        asset = args.description_root / source[len(prefix):]
+        payload = asset.read_bytes()
+        assert len(payload) == mesh["bytes"]
+        assert hashlib.sha256(payload).hexdigest() == mesh["sha256"]
+        assert len(payload) == 84 + 50 * mesh["triangles"]
 
 
 if __name__ == "__main__":

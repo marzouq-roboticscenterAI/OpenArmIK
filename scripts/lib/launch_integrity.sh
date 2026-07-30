@@ -247,6 +247,22 @@ openarm_launch_artifact_paths() {
     "node|$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_ik_ros_node" \
     "portal|$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_portal" \
     "close_helper|$output_root/install/openarm_ik_ros/lib/openarm_ik_ros/close_rviz_window" \
+    "portal_css|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/web/portal.css" \
+    "portal_js|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/web/portal.js" \
+    "viewer_js|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/web/viewer.js" \
+    "viewer_manifest|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/manifest.json" \
+    "viewer_urdf|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/stage_a.urdf" \
+    "viewer_body|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/body_link0_symp.stl" \
+    "viewer_link0|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/link0_symp.stl" \
+    "viewer_link1|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/link1_symp.stl" \
+    "viewer_link2|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/link2_symp.stl" \
+    "viewer_link3|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/link3_symp.stl" \
+    "viewer_link4|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/link4_symp.stl" \
+    "viewer_link5|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/link5_symp.stl" \
+    "viewer_link6|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/link6_symp.stl" \
+    "viewer_link7|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/link7_symp.stl" \
+    "viewer_hand|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/hand.stl" \
+    "viewer_finger|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/finger.stl" \
     "setup|$output_root/install/setup.bash" \
     "launch|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/launch/openarm_ik_rviz.launch.py" \
     "rviz|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/rviz/openarm_ik.rviz"
