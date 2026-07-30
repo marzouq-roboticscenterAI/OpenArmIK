@@ -3,9 +3,15 @@
 
 #include <cfloat>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 static_assert(DBL_MANT_DIG == 53);
+static_assert(std::numeric_limits<double>::digits == 53);
+static_assert(std::numeric_limits<double>::radix == 2);
+static_assert(std::numeric_limits<double>::max_exponent == 1024);
+static_assert(std::numeric_limits<double>::min_exponent == -1021);
+static_assert(std::numeric_limits<double>::is_iec559);
 static_assert(sizeof(oa_length_unit) == sizeof(std::uint32_t));
 static_assert(std::is_same_v<decltype(oa_vec3d::x), double>);
 static_assert(std::is_same_v<decltype(oa_vec3d::y), double>);

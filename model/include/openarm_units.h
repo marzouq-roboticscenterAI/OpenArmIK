@@ -29,7 +29,10 @@ typedef struct oa_vec3d {
 
 #if defined(__cplusplus)
 static_assert(sizeof(double) == 8, "OpenArm coordinates require 64-bit double");
+static_assert(FLT_RADIX == 2, "OpenArm coordinates require binary radix");
 static_assert(DBL_MANT_DIG == 53, "OpenArm coordinates require IEEE binary64");
+static_assert(DBL_MAX_EXP == 1024, "OpenArm coordinates require binary64 maximum exponent");
+static_assert(DBL_MIN_EXP == -1021, "OpenArm coordinates require binary64 minimum exponent");
 static_assert(sizeof(oa_length_unit) == 4, "oa_length_unit must be uint32_t");
 static_assert(sizeof(oa_vec3d) == 3 * sizeof(double), "oa_vec3d must be three doubles");
 static_assert(alignof(oa_vec3d) == alignof(double), "oa_vec3d alignment changed");
@@ -38,7 +41,10 @@ static_assert(offsetof(oa_vec3d, y) == sizeof(double), "oa_vec3d.y layout change
 static_assert(offsetof(oa_vec3d, z) == 2 * sizeof(double), "oa_vec3d.z layout changed");
 #else
 _Static_assert(sizeof(double) == 8, "OpenArm coordinates require 64-bit double");
+_Static_assert(FLT_RADIX == 2, "OpenArm coordinates require binary radix");
 _Static_assert(DBL_MANT_DIG == 53, "OpenArm coordinates require IEEE binary64");
+_Static_assert(DBL_MAX_EXP == 1024, "OpenArm coordinates require binary64 maximum exponent");
+_Static_assert(DBL_MIN_EXP == -1021, "OpenArm coordinates require binary64 minimum exponent");
 _Static_assert(sizeof(oa_length_unit) == 4, "oa_length_unit must be uint32_t");
 _Static_assert(sizeof(oa_vec3d) == 3 * sizeof(double), "oa_vec3d must be three doubles");
 _Static_assert(_Alignof(oa_vec3d) == _Alignof(double), "oa_vec3d alignment changed");
