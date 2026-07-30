@@ -12,6 +12,8 @@
 
 namespace openarm::runtime {
 
+const pid_t library_creator_pid = getpid();
+
 Registry<oa_runtime_manifest, ManifestData, kManifestTag> &manifests =
     *new Registry<oa_runtime_manifest, ManifestData, kManifestTag>();
 Registry<oa_runtime, RuntimeData, kRuntimeTag> &runtimes =
@@ -365,7 +367,9 @@ oa_runtime_status parse_manifest(const std::string &text,
     result->content_digest = digest_fields[1];
     if (lines.size() == 18U) {
         const auto authentication = split(lines[17U]);
-        if (authentication.size() != 3U || authentication[0] != "hmac-sha256" ||
+        if (authentication.size() != 3U ||
+            (authentication[0] != "hmac-sha256" &&
+             authentication[0] != "hmac-sha256-v2") ||
             !safe_text(authentication[1], OA_RUNTIME_TEXT_CAPACITY) ||
             authentication[2].size() != 64U ||
             !std::all_of(authentication[2].begin(), authentication[2].end(),
@@ -376,6 +380,8 @@ oa_runtime_status parse_manifest(const std::string &text,
             return OA_RUNTIME_ECORRUPT;
         }
         result->integrity_kind = OA_RUNTIME_INTEGRITY_HMAC_SHA256;
+        result->authentication_version =
+            authentication[0] == "hmac-sha256-v2" ? 2U : 1U;
         result->authentication_key_id = authentication[1];
         result->authentication_tag = authentication[2];
     }
@@ -415,6 +421,8 @@ std::shared_ptr<ManifestData> apply_patch(const ManifestData &base,
     auto result = std::make_shared<ManifestData>(base);
     result->integrity_kind = OA_RUNTIME_INTEGRITY_UNKEYED_SHA256;
     result->authenticated = false;
+    result->checkpoint_authorized = false;
+    result->authentication_version = 0U;
     result->authentication_key_id.clear();
     result->authentication_tag.clear();
     result->loaded_from_file = false;
@@ -483,6 +491,7 @@ extern "C" oa_runtime_status oa_runtime_manifest_get_summary(
     result.inventory_revision = pinned->inventory_revision;
     result.integrity_kind = pinned->integrity_kind;
     result.authenticated = pinned->authenticated ? 1U : 0U;
+    result.checkpoint_authorized = pinned->checkpoint_authorized ? 1U : 0U;
     std::snprintf(result.inventory_fingerprint_sha256,
                   sizeof(result.inventory_fingerprint_sha256), "%s",
                   pinned->inventory_fingerprint.c_str());

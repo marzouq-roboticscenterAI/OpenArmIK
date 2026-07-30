@@ -315,10 +315,18 @@ typedef struct oa_runtime_manifest_summary {
     uint64_t inventory_revision;
     oa_runtime_integrity_kind integrity_kind;
     uint32_t authenticated;
+    uint32_t checkpoint_authorized;
     char inventory_fingerprint_sha256[OA_RUNTIME_DIGEST_CAPACITY];
     char content_sha256[OA_RUNTIME_DIGEST_CAPACITY];
     char authentication_key_id[OA_RUNTIME_TEXT_CAPACITY];
 } oa_runtime_manifest_summary;
+
+typedef struct oa_runtime_persistence_checkpoint {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t revision;
+    char content_sha256[OA_RUNTIME_DIGEST_CAPACITY];
+} oa_runtime_persistence_checkpoint;
 
 typedef struct oa_runtime_manifest_preview {
     uint32_t struct_size;
@@ -508,6 +516,14 @@ oa_runtime_status oa_runtime_persistence_authority_create(
     const uint8_t authentication_key[OA_RUNTIME_PERSISTENCE_KEY_BYTES],
     const char *authentication_key_id,
     oa_runtime_persistence_authority **out_authority);
+/* V2 freshness is relative to caller-owned trusted state stored outside the
+ * manifest directory's replay domain. A zero checkpoint is provisioning-only. */
+oa_runtime_status oa_runtime_persistence_authority_open_v2(
+    const char *absolute_directory,
+    const uint8_t authentication_key[OA_RUNTIME_PERSISTENCE_KEY_BYTES],
+    const char *authentication_key_id,
+    const oa_runtime_persistence_checkpoint *trusted_checkpoint,
+    oa_runtime_persistence_authority **out_authority);
 void oa_runtime_persistence_authority_destroy(oa_runtime_persistence_authority *authority);
 oa_runtime_status oa_runtime_manifest_load_authenticated(
     const oa_runtime_persistence_authority *authority, const char *file_name,
@@ -515,6 +531,25 @@ oa_runtime_status oa_runtime_manifest_load_authenticated(
 oa_runtime_status oa_runtime_manifest_save(const oa_runtime_manifest *manifest,
                                            const oa_runtime_persistence_authority *authority,
                                            const char *file_name);
+/* V2 load/recovery require a nonzero checkpoint. Save is an exact-current CAS
+ * and permits zero only when provisioning an absent stream. Checkpoint outputs
+ * are populated only on OA_RUNTIME_OK. */
+oa_runtime_status oa_runtime_manifest_load_authenticated_v2(
+    const oa_runtime_persistence_authority *authority, const char *file_name,
+    const oa_runtime_persistence_checkpoint *trusted_checkpoint,
+    oa_runtime_manifest **out_manifest,
+    oa_runtime_persistence_checkpoint *out_observed_checkpoint);
+oa_runtime_status oa_runtime_manifest_save_v2(
+    const oa_runtime_manifest *manifest,
+    const oa_runtime_persistence_authority *authority,
+    const char *file_name,
+    const oa_runtime_persistence_checkpoint *expected_current_checkpoint,
+    oa_runtime_persistence_checkpoint *out_committed_checkpoint);
+oa_runtime_status oa_runtime_manifest_recover_v2(
+    const oa_runtime_persistence_authority *authority, const char *file_name,
+    const oa_runtime_persistence_checkpoint *trusted_checkpoint,
+    oa_runtime_manifest **out_manifest,
+    oa_runtime_persistence_checkpoint *out_observed_checkpoint);
 void oa_runtime_manifest_destroy(oa_runtime_manifest *manifest);
 
 oa_runtime_status oa_runtime_create(const oa_runtime_options *options,

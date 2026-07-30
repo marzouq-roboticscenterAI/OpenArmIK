@@ -384,6 +384,7 @@ oa_runtime_status runtime_options_status(const oa_runtime_options *options) {
 
 oa_runtime_status require_runtime(const oa_runtime *handle,
                                   std::shared_ptr<openarm::runtime::RuntimeData> &out) {
+    if (!openarm::runtime::process_guard_ok()) return OA_RUNTIME_ESTATE;
     out = openarm::runtime::runtimes.pin(handle);
     if (!out) return OA_RUNTIME_EINVAL;
     std::lock_guard<std::mutex> lock(out->mutex);
@@ -413,6 +414,7 @@ extern "C" void oa_runtime_test_fail_allocation_after(std::int64_t countdown) {
 extern "C" oa_runtime_status oa_runtime_create(
     const oa_runtime_options *options, const oa_runtime_manifest *manifest,
     oa_runtime **out_runtime) {
+    if (!openarm::runtime::process_guard_ok()) return OA_RUNTIME_ESTATE;
     if (out_runtime == nullptr) return OA_RUNTIME_EINVAL;
     *out_runtime = nullptr;
     const oa_runtime_status options_status = runtime_options_status(options);
@@ -425,7 +427,7 @@ extern "C" oa_runtime_status oa_runtime_create(
         return OA_RUNTIME_EIDENTITY;
     }
     if (options->backend == OA_RUNTIME_BACKEND_VIRTUAL &&
-        manifest_data->loaded_from_file && !manifest_data->authenticated) {
+        manifest_data->loaded_from_file && !manifest_data->checkpoint_authorized) {
         return OA_RUNTIME_EPERMISSION;
     }
     try {
@@ -551,6 +553,7 @@ extern "C" oa_runtime_status oa_runtime_create(
 }
 
 extern "C" void oa_runtime_destroy(oa_runtime *runtime) {
+    if (!openarm::runtime::process_guard_ok()) return;
     const auto pinned = openarm::runtime::runtimes.pin(runtime);
     if (pinned) {
         std::lock_guard<std::mutex> lock(pinned->mutex);

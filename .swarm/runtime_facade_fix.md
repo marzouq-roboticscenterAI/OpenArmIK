@@ -2,6 +2,44 @@
 
 Review input: `.swarm/runtime_facade_review.md` against `0f0ea372bddc302ef78837c611ee9c25c9b82fad`.
 
+## Persistence V2 redesign closure
+
+The third review demonstrated that a directory-local authenticated maximum is
+replayable after unlink/reopen and that `flock` on a fork-inherited long-lived FD
+does not serialize transactions. The additive V2 contract now requires a
+caller-owned external `(revision,digest)` checkpoint at open and every operation.
+Checked save performs an exact-current CAS, emits its new checkpoint only after
+reload verification and final directory sync, and slot-binds the V2 HMAC.
+Ordinary load never inspects `.previous`; explicit checked recovery applies the
+external floor before promotion. A failed, unconfirmed post-rename rollback
+poisons the authority until checked recovery or reopen. Legacy V1 HMAC files are
+explicitly replayable and never checkpoint-authorized, so they cannot create an
+armable virtual runtime.
+
+Every transaction locks a fresh independently opened directory FD. Authority
+paths are opened component-by-component with `openat(O_DIRECTORY|O_NOFOLLOW)`,
+special-file reads are nonblocking and rejected, and public internal/recovery
+names are reserved. Handles are process-local: an inherited child call fails a
+creator-PID guard before registry mutexes, and the supported child path is
+immediate `exec` only.
+
+The focused matrix covers byte-copy and hard-link rollback after reopen, slot
+relinking, same-revision equivocation, missing-current recovery above/equal to
+the floor, exact-CAS revision-3/4 stale writers, same-authority and independent-
+authority threads, independently exec'd processes, inherited-handle fork
+rejection, FIFO/symlink/oversize/corrupt inputs, confirmed rollback `EIO`, and
+unconfirmed rollback-sync `EDURABILITY` with poison/recovery.
+
+Fresh GCC 15.2 Release, ASan+UBSan+leak, and TSan builds pass 2/2 tests;
+cppcheck warning/performance/portability passes. A fresh install builds, links,
+and runs strict all-header C11 and C++17 consumers; declaration/export parity is
+50/50, the installed archive has no test hooks, and its only CAN builder
+dependency remains `oa_can_make_register_query_typed`. `git diff --check` and
+the native script syntax check pass. The injected fsync matrix proves API status,
+poisoning, and visible current/previous reconciliation, not power-loss behavior;
+real crash/remount qualification remains filesystem-specific as the README
+states.
+
 ## Second re-review closure
 
 Review input: the updated `.swarm/runtime_facade_review.md` against

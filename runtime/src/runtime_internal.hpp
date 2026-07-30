@@ -21,6 +21,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <sys/types.h>
+#include <unistd.h>
 
 namespace openarm::runtime {
 
@@ -31,10 +33,16 @@ constexpr std::uint32_t kCalibrationTag = 5U;
 constexpr std::uint32_t kPlanTag = 6U;
 constexpr std::uint32_t kPersistenceTag = 7U;
 
+extern const pid_t library_creator_pid;
+inline bool process_guard_ok() noexcept {
+    return getpid() == library_creator_pid;
+}
+
 template <typename Public, typename Value, std::uint32_t Tag>
 class Registry {
 public:
     Public *insert(std::shared_ptr<Value> value) {
+        if (!process_guard_ok()) return nullptr;
         std::lock_guard<std::mutex> lock(mutex_);
         if (next_ > (UINTPTR_MAX >> 4U)) {
             return nullptr;
@@ -49,6 +57,7 @@ public:
     }
 
     std::shared_ptr<Value> pin(const Public *handle) const {
+        if (!process_guard_ok()) return {};
         const std::uintptr_t bits = reinterpret_cast<std::uintptr_t>(handle);
         if (handle == nullptr || (bits & static_cast<std::uintptr_t>(0xfU)) != Tag) {
             return {};
@@ -59,6 +68,7 @@ public:
     }
 
     void erase(Public *handle) {
+        if (!process_guard_ok()) return;
         const std::uintptr_t bits = reinterpret_cast<std::uintptr_t>(handle);
         if (handle == nullptr || (bits & static_cast<std::uintptr_t>(0xfU)) != Tag) {
             return;
@@ -85,6 +95,8 @@ struct ManifestData {
     std::string content_digest;
     oa_runtime_integrity_kind integrity_kind{OA_RUNTIME_INTEGRITY_UNKEYED_SHA256};
     bool authenticated{};
+    bool checkpoint_authorized{};
+    std::uint32_t authentication_version{};
     std::string authentication_key_id;
     std::string authentication_tag;
     bool loaded_from_file{};
@@ -168,6 +180,11 @@ struct PersistenceAuthorityData {
     int directory_fd{-1};
     std::array<std::uint8_t, OA_RUNTIME_PERSISTENCE_KEY_BYTES> authentication_key{};
     std::string authentication_key_id;
+    std::uint32_t protocol_version{1U};
+    bool poisoned{};
+    std::uint64_t trusted_revision{};
+    std::string trusted_digest;
+    std::string bound_file_name;
     std::uint64_t accepted_revision_floor{};
     std::string accepted_revision_digest;
     struct AcceptedArtifact {

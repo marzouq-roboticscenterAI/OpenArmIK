@@ -3,14 +3,17 @@
 #include "openarm_runtime.h"
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <future>
+#include <limits>
 #include <string>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 
@@ -18,6 +21,7 @@ extern "C" void oa_runtime_test_fail_allocation_after(std::int64_t countdown);
 extern "C" oa_runtime_status oa_runtime_test_transport_raii_probe(void);
 extern "C" int oa_runtime_test_hmac_sha256_known_vector(void);
 extern "C" void oa_runtime_test_fail_fsync_after(std::int64_t countdown);
+extern "C" void oa_runtime_test_fail_fsync_mask(std::uint64_t mask);
 
 namespace {
 
@@ -42,6 +46,52 @@ oa_runtime_options virtual_options() {
     options.maximum_cross_bus_skew_ns = 1000000U;
     options.collision_scene_revision = 1U;
     return options;
+}
+
+bool checkpoint_equal(const oa_runtime_persistence_checkpoint &left,
+                      const oa_runtime_persistence_checkpoint &right) {
+    return left.revision == right.revision &&
+           std::strcmp(left.content_sha256, right.content_sha256) == 0;
+}
+
+bool checkpoint_cleared(const oa_runtime_persistence_checkpoint &checkpoint) {
+    return checkpoint.revision == 0U && checkpoint.content_sha256[0] == '\0';
+}
+
+void v2_key(std::uint8_t (&key)[OA_RUNTIME_PERSISTENCE_KEY_BYTES]) {
+    for (std::size_t index = 0U; index < sizeof(key); ++index) {
+        key[index] = static_cast<std::uint8_t>(0x41U + index);
+    }
+}
+
+void copy_file_bytes(const std::string &source, const std::string &destination) {
+    const int input = open(source.c_str(), O_RDONLY | O_CLOEXEC);
+    CHECK(input >= 0);
+    const int output = open(destination.c_str(),
+                            O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    CHECK(output >= 0);
+    char buffer[4096];
+    for (;;) {
+        const ssize_t count = read(input, buffer, sizeof(buffer));
+        if (count < 0 && errno == EINTR) continue;
+        CHECK(count >= 0);
+        if (count == 0) break;
+        ssize_t offset = 0;
+        while (offset < count) {
+            const ssize_t written = write(
+                output, buffer + offset, static_cast<std::size_t>(count - offset));
+            if (written < 0 && errno == EINTR) continue;
+            CHECK(written > 0);
+            offset += written;
+        }
+    }
+    CHECK(fsync(output) == 0);
+    CHECK(close(output) == 0);
+    CHECK(close(input) == 0);
+}
+
+void remove_if_present(const std::string &path) {
+    if (unlink(path.c_str()) != 0) CHECK(errno == ENOENT);
 }
 
 void persistence_round_trip(oa_runtime_manifest *manifest) {
@@ -88,7 +138,13 @@ void persistence_round_trip(oa_runtime_manifest *manifest) {
     init(second);
     CHECK(oa_runtime_manifest_get_summary(loaded, &second) == OA_RUNTIME_OK);
     CHECK(second.authenticated == 1U &&
+          second.checkpoint_authorized == 0U &&
           std::strcmp(second.authentication_key_id, "test-key-v1") == 0);
+    oa_runtime *legacy_runtime = nullptr;
+    const oa_runtime_options options = virtual_options();
+    CHECK(oa_runtime_create(&options, loaded, &legacy_runtime) ==
+          OA_RUNTIME_EPERMISSION);
+    CHECK(legacy_runtime == nullptr);
     oa_runtime_manifest_destroy(loaded);
 
     std::uint8_t wrong_key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
@@ -123,13 +179,15 @@ void persistence_round_trip(oa_runtime_manifest *manifest) {
 }
 
 oa_runtime_manifest *manual_calibration(oa_runtime *runtime, oa_runtime_manifest *base,
-                                        std::uint32_t joint = 0U) {
+                                        std::uint32_t joint = 0U,
+                                        std::uint64_t expected_revision = 1U,
+                                        std::uint64_t replacement_revision = 2U) {
     oa_commission_manual_options options{};
     options.struct_size = sizeof(options);
     options.abi_version = OA_COMMISSION_ABI_V1;
     options.side = 0U;
     options.joint = joint;
-    options.expected_revision = 1U;
+    options.expected_revision = expected_revision;
     options.reference_count = 1U;
     options.known_sign = 1;
     options.minimum_samples = 2U;
@@ -163,15 +221,16 @@ oa_runtime_manifest *manual_calibration(oa_runtime *runtime, oa_runtime_manifest
     oa_runtime_manifest *updated = nullptr;
     oa_runtime_manifest_preview preview{};
     init(preview);
-    CHECK(oa_runtime_calibration_manual_commit(session, 2U, "fixture_verified",
-                                                &updated, &preview) == OA_RUNTIME_OK);
+    CHECK(oa_runtime_calibration_manual_commit(
+              session, replacement_revision, "fixture_verified", &updated,
+              &preview) == OA_RUNTIME_OK);
     CHECK(preview.valid == 1U &&
           preview.mapping_change_mask == (UINT32_C(1) << joint) &&
-          preview.result_revision == 2U);
+          preview.result_revision == replacement_revision);
     oa_runtime_manifest_summary summary{};
     init(summary);
     CHECK(oa_runtime_manifest_get_summary(updated, &summary) == OA_RUNTIME_OK);
-    CHECK(summary.manifest_revision == 2U);
+    CHECK(summary.manifest_revision == replacement_revision);
     oa_runtime_calibration_destroy(session);
     CHECK(oa_runtime_configuration_apply_physical(runtime, base) ==
           OA_RUNTIME_EUNSUPPORTED);
@@ -296,6 +355,694 @@ void concurrent_persistence_conflict(oa_runtime_manifest *base,
     CHECK(unlink(current.c_str()) == 0);
     CHECK(unlink(previous.c_str()) == 0);
     CHECK(rmdir(directory) == 0);
+}
+
+void persistence_v2_contract(oa_runtime_manifest *base,
+                             oa_runtime_manifest *updated,
+                             oa_runtime_manifest *conflicting,
+                             oa_runtime_manifest *revision_three,
+                             oa_runtime_manifest *revision_four) {
+    char directory_template[] = "/tmp/openarm-runtime-v2-test-XXXXXX";
+    char *const directory = mkdtemp(directory_template);
+    CHECK(directory != nullptr);
+    const std::string current = std::string(directory) + "/manifest.oarm";
+    const std::string previous = current + ".previous";
+    const std::string saved_current = std::string(directory) + "/saved-current";
+    const std::string saved_previous = std::string(directory) + "/saved-previous";
+    std::uint8_t key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
+    v2_key(key);
+    oa_runtime_persistence_checkpoint zero{};
+    init(zero);
+    oa_runtime_persistence_authority *authority = nullptr;
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &zero, &authority) == OA_RUNTIME_OK);
+
+    oa_runtime_persistence_checkpoint invalid = zero;
+    std::snprintf(invalid.content_sha256, sizeof(invalid.content_sha256), "0");
+    oa_runtime_persistence_authority *invalid_authority = nullptr;
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &invalid, &invalid_authority) ==
+          OA_RUNTIME_EINVAL);
+    CHECK(invalid_authority == nullptr);
+
+    oa_runtime_manifest *loaded = nullptr;
+    oa_runtime_persistence_checkpoint observed{};
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &zero, &loaded, &observed) ==
+          OA_RUNTIME_EPERMISSION);
+    CHECK(loaded == nullptr && checkpoint_cleared(observed));
+
+    init(observed);
+    CHECK(oa_runtime_manifest_save_v2(base, authority, "manifest.oarm", &zero,
+                                      &observed) == OA_RUNTIME_OK);
+    const oa_runtime_persistence_checkpoint c1 = observed;
+    CHECK(c1.revision == 1U && std::strlen(c1.content_sha256) == 64U);
+    init(observed);
+    CHECK(oa_runtime_manifest_save_v2(base, authority, "manifest.oarm", &c1,
+                                      &observed) == OA_RUNTIME_OK);
+    CHECK(checkpoint_equal(observed, c1));
+    init(observed);
+    CHECK(oa_runtime_manifest_save_v2(updated, authority, "manifest.oarm", &c1,
+                                      &observed) == OA_RUNTIME_OK);
+    const oa_runtime_persistence_checkpoint c2 = observed;
+    CHECK(c2.revision == 2U && !checkpoint_equal(c1, c2));
+    copy_file_bytes(current, saved_current);
+    copy_file_bytes(previous, saved_previous);
+
+    init(observed);
+    CHECK(oa_runtime_manifest_save_v2(revision_three, authority, "manifest.oarm",
+                                      &c1, &observed) == OA_RUNTIME_ESTALE);
+    CHECK(checkpoint_cleared(observed));
+    init(observed);
+    CHECK(oa_runtime_manifest_save_v2(revision_four, authority, "manifest.oarm",
+                                      &c1, &observed) == OA_RUNTIME_ESTALE);
+    CHECK(checkpoint_cleared(observed));
+
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_OK);
+    CHECK(checkpoint_equal(observed, c2));
+    oa_runtime_manifest_summary summary{};
+    init(summary);
+    CHECK(oa_runtime_manifest_get_summary(loaded, &summary) == OA_RUNTIME_OK);
+    CHECK(summary.authenticated == 1U && summary.checkpoint_authorized == 1U &&
+          std::strcmp(summary.content_sha256, c2.content_sha256) == 0);
+    oa_runtime *loaded_runtime = nullptr;
+    const oa_runtime_options options = virtual_options();
+    CHECK(oa_runtime_create(&options, loaded, &loaded_runtime) == OA_RUNTIME_OK);
+    oa_runtime_destroy(loaded_runtime);
+    oa_runtime_manifest_destroy(loaded);
+
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c1, &loaded, &observed) ==
+          OA_RUNTIME_ESTALE);
+    CHECK(loaded == nullptr && checkpoint_cleared(observed));
+    oa_runtime_persistence_checkpoint wrong = c2;
+    wrong.content_sha256[0] = wrong.content_sha256[0] == '0' ? '1' : '0';
+    oa_runtime_persistence_checkpoint malformed = c2;
+    malformed.content_sha256[0] = 'A';
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &malformed, &loaded, &observed) ==
+          OA_RUNTIME_EINVAL);
+    CHECK(loaded == nullptr && checkpoint_cleared(observed));
+    oa_runtime_persistence_authority *wrong_floor_authority = nullptr;
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &wrong, &wrong_floor_authority) ==
+          OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              wrong_floor_authority, "manifest.oarm", &wrong, &loaded,
+              &observed) == OA_RUNTIME_ESTALE);
+    CHECK(loaded == nullptr && checkpoint_cleared(observed));
+    oa_runtime_persistence_authority_destroy(wrong_floor_authority);
+
+    CHECK(oa_runtime_manifest_load_authenticated(authority, "manifest.oarm",
+                                                  &loaded) ==
+          OA_RUNTIME_EUNSUPPORTED);
+    CHECK(loaded == nullptr);
+    CHECK(oa_runtime_manifest_load(current.c_str(), &loaded) == OA_RUNTIME_OK);
+    CHECK(oa_runtime_create(&options, loaded, &loaded_runtime) ==
+          OA_RUNTIME_EPERMISSION);
+    oa_runtime_manifest_destroy(loaded);
+
+    const std::string replay = std::string(directory) + "/replay.oarm";
+    CHECK(link(current.c_str(), replay.c_str()) == 0);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "replay.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_EIDENTITY);
+    oa_runtime_persistence_authority *replay_authority = nullptr;
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c2, &replay_authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              replay_authority, "replay.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_EPERMISSION);
+    CHECK(loaded == nullptr && checkpoint_cleared(observed));
+    oa_runtime_persistence_authority_destroy(replay_authority);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm.previous", &c2, &loaded, &observed) ==
+          OA_RUNTIME_EINVAL);
+
+    oa_runtime_persistence_authority_destroy(authority);
+    CHECK(unlink(current.c_str()) == 0);
+    copy_file_bytes(saved_previous, current);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c2, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_ESTALE);
+    CHECK(loaded == nullptr && checkpoint_cleared(observed));
+    oa_runtime_persistence_authority_destroy(authority);
+
+    CHECK(unlink(current.c_str()) == 0);
+    CHECK(link(previous.c_str(), current.c_str()) == 0);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c2, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_ESTALE);
+    oa_runtime_persistence_authority_destroy(authority);
+
+    const std::string rollback = std::string(directory) + "/rollback.oarm";
+    CHECK(link(previous.c_str(), rollback.c_str()) == 0);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c2, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "rollback.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_EPERMISSION);
+    oa_runtime_persistence_authority_destroy(authority);
+
+    CHECK(unlink(current.c_str()) == 0);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c2, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_EIO);
+    CHECK(loaded == nullptr && checkpoint_cleared(observed));
+    init(observed);
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_ESTALE);
+    CHECK(loaded == nullptr && checkpoint_cleared(observed));
+    oa_runtime_persistence_authority_destroy(authority);
+
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c1, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c1, &loaded, &observed) ==
+          OA_RUNTIME_OK);
+    CHECK(checkpoint_equal(observed, c1));
+    init(summary);
+    CHECK(oa_runtime_manifest_get_summary(loaded, &summary) == OA_RUNTIME_OK);
+    CHECK(summary.checkpoint_authorized == 1U);
+    CHECK(oa_runtime_create(&options, loaded, &loaded_runtime) == OA_RUNTIME_OK);
+    oa_runtime_destroy(loaded_runtime);
+    oa_runtime_manifest_destroy(loaded);
+    oa_runtime_persistence_authority_destroy(authority);
+
+    char alternate_template[] = "/tmp/openarm-runtime-v2-alt-XXXXXX";
+    char *const alternate = mkdtemp(alternate_template);
+    CHECK(alternate != nullptr);
+    const std::string alternate_current =
+        std::string(alternate) + "/manifest.oarm";
+    oa_runtime_persistence_authority *alternate_authority = nullptr;
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              alternate, key, "v2-key", &zero, &alternate_authority) ==
+          OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_save_v2(base, alternate_authority, "manifest.oarm",
+                                      &zero, &observed) == OA_RUNTIME_OK);
+    CHECK(checkpoint_equal(observed, c1));
+    init(observed);
+    CHECK(oa_runtime_manifest_save_v2(
+              conflicting, alternate_authority, "manifest.oarm", &c1,
+              &observed) == OA_RUNTIME_OK);
+    const oa_runtime_persistence_checkpoint c2_conflicting = observed;
+    CHECK(c2_conflicting.revision == c2.revision &&
+          !checkpoint_equal(c2_conflicting, c2));
+    oa_runtime_persistence_authority_destroy(alternate_authority);
+    remove_if_present(current);
+    copy_file_bytes(alternate_current, current);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c2, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_ESTALE);
+    oa_runtime_persistence_authority_destroy(authority);
+
+    remove_if_present(current);
+    CHECK(mkfifo(current.c_str(), 0600) == 0);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c2, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_ECORRUPT);
+    CHECK(oa_runtime_manifest_save_v2(revision_three, authority, "manifest.oarm",
+                                      &c2, &observed) ==
+          OA_RUNTIME_EPERMISSION);
+    oa_runtime_persistence_authority_destroy(authority);
+
+    CHECK(unlink(current.c_str()) == 0);
+    CHECK(symlink(previous.c_str(), current.c_str()) == 0);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c2, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_EIO);
+    CHECK(oa_runtime_manifest_save_v2(revision_three, authority, "manifest.oarm",
+                                      &c2, &observed) ==
+          OA_RUNTIME_EPERMISSION);
+    oa_runtime_persistence_authority_destroy(authority);
+
+    CHECK(unlink(current.c_str()) == 0);
+    const int oversized = open(current.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+    CHECK(oversized >= 0);
+    CHECK(ftruncate(oversized, 65537) == 0);
+    CHECK(close(oversized) == 0);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c2, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_ECORRUPT);
+    oa_runtime_persistence_authority_destroy(authority);
+
+    remove_if_present(current);
+    copy_file_bytes(saved_current, current);
+    const int modified = open(current.c_str(), O_WRONLY | O_CLOEXEC);
+    CHECK(modified >= 0);
+    CHECK(pwrite(modified, "X", 1U, 0) == 1);
+    CHECK(close(modified) == 0);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c2, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_ECORRUPT);
+    CHECK(loaded == nullptr && checkpoint_cleared(observed));
+    init(observed);
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c2, &loaded, &observed) ==
+          OA_RUNTIME_ESTALE);
+    CHECK(loaded == nullptr && checkpoint_cleared(observed));
+    oa_runtime_persistence_authority_destroy(authority);
+
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c1, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c1, &loaded, &observed) ==
+          OA_RUNTIME_OK);
+    CHECK(checkpoint_equal(observed, c1));
+    oa_runtime_manifest_destroy(loaded);
+    oa_runtime_persistence_authority_destroy(authority);
+    remove_if_present(current);
+    remove_if_present(previous);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c1, &authority) == OA_RUNTIME_OK);
+    init(observed);
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c1, &loaded, &observed) ==
+          OA_RUNTIME_EIO);
+    CHECK(loaded == nullptr && checkpoint_cleared(observed));
+    oa_runtime_persistence_authority_destroy(authority);
+
+    const std::string symlink_directory = std::string(directory) + "-link";
+    CHECK(symlink(directory, symlink_directory.c_str()) == 0);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              symlink_directory.c_str(), key, "v2-key", &c2, &authority) ==
+          OA_RUNTIME_EPERMISSION);
+    CHECK(authority == nullptr);
+    CHECK(unlink(symlink_directory.c_str()) == 0);
+
+    remove_if_present(current);
+    remove_if_present(previous);
+    remove_if_present(saved_current);
+    remove_if_present(saved_previous);
+    remove_if_present(replay);
+    remove_if_present(rollback);
+    CHECK(rmdir(directory) == 0);
+    remove_if_present(alternate_current);
+    remove_if_present(alternate_current + ".previous");
+    CHECK(rmdir(alternate) == 0);
+}
+
+void persistence_v2_durability(oa_runtime_manifest *base,
+                               oa_runtime_manifest *updated) {
+    char directory_template[] = "/tmp/openarm-runtime-v2-durable-XXXXXX";
+    char *const directory = mkdtemp(directory_template);
+    CHECK(directory != nullptr);
+    std::uint8_t key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
+    v2_key(key);
+    oa_runtime_persistence_checkpoint zero{};
+    init(zero);
+    oa_runtime_persistence_authority *authority = nullptr;
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &zero, &authority) == OA_RUNTIME_OK);
+    oa_runtime_persistence_checkpoint output{};
+    init(output);
+    CHECK(oa_runtime_manifest_save_v2(base, authority, "manifest.oarm", &zero,
+                                      &output) == OA_RUNTIME_OK);
+    const oa_runtime_persistence_checkpoint c1 = output;
+
+    oa_runtime_test_fail_fsync_mask(UINT64_C(1) << 0U);
+    init(output);
+    CHECK(oa_runtime_manifest_save_v2(base, authority, "manifest.oarm", &c1,
+                                      &output) == OA_RUNTIME_EIO);
+    CHECK(checkpoint_cleared(output));
+    oa_runtime_test_fail_fsync_mask(0U);
+
+    oa_runtime_test_fail_fsync_mask(UINT64_C(1) << 2U);
+    init(output);
+    CHECK(oa_runtime_manifest_save_v2(updated, authority, "manifest.oarm", &c1,
+                                      &output) == OA_RUNTIME_EIO);
+    CHECK(checkpoint_cleared(output));
+    oa_runtime_test_fail_fsync_mask(0U);
+    oa_runtime_manifest *loaded = nullptr;
+    init(output);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c1, &loaded, &output) ==
+          OA_RUNTIME_OK);
+    CHECK(checkpoint_equal(output, c1));
+    oa_runtime_manifest_destroy(loaded);
+
+    oa_runtime_test_fail_fsync_mask((UINT64_C(1) << 2U) |
+                                    (UINT64_C(1) << 3U));
+    init(output);
+    CHECK(oa_runtime_manifest_save_v2(updated, authority, "manifest.oarm", &c1,
+                                      &output) == OA_RUNTIME_EDURABILITY);
+    CHECK(checkpoint_cleared(output));
+    oa_runtime_test_fail_fsync_mask(0U);
+    init(output);
+    CHECK(oa_runtime_manifest_load_authenticated_v2(
+              authority, "manifest.oarm", &c1, &loaded, &output) ==
+          OA_RUNTIME_EDURABILITY);
+    CHECK(loaded == nullptr && checkpoint_cleared(output));
+    init(output);
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c1, &loaded, &output) ==
+          OA_RUNTIME_OK);
+    CHECK(checkpoint_equal(output, c1));
+    oa_runtime_manifest_destroy(loaded);
+    init(output);
+    CHECK(oa_runtime_manifest_save_v2(updated, authority, "manifest.oarm", &c1,
+                                      &output) == OA_RUNTIME_OK);
+    CHECK(output.revision == 2U);
+    oa_runtime_persistence_authority_destroy(authority);
+
+    remove_if_present(std::string(directory) + "/manifest.oarm");
+    remove_if_present(std::string(directory) + "/manifest.oarm.previous");
+    CHECK(rmdir(directory) == 0);
+}
+
+void v2_thread_conflict(oa_runtime_manifest *base,
+                        oa_runtime_manifest *first,
+                        oa_runtime_manifest *second,
+                        bool separate_authorities) {
+    for (unsigned iteration = 0U; iteration < 4U; ++iteration) {
+        char directory_template[] = "/tmp/openarm-runtime-v2-race-XXXXXX";
+        char *const directory = mkdtemp(directory_template);
+        CHECK(directory != nullptr);
+        std::uint8_t key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
+        v2_key(key);
+        oa_runtime_persistence_checkpoint zero{};
+        init(zero);
+        oa_runtime_persistence_authority *first_authority = nullptr;
+        CHECK(oa_runtime_persistence_authority_open_v2(
+                  directory, key, "v2-key", &zero, &first_authority) ==
+              OA_RUNTIME_OK);
+        oa_runtime_persistence_checkpoint c1{};
+        init(c1);
+        CHECK(oa_runtime_manifest_save_v2(base, first_authority, "manifest.oarm",
+                                          &zero, &c1) == OA_RUNTIME_OK);
+        oa_runtime_persistence_authority *second_authority = first_authority;
+        if (separate_authorities) {
+            CHECK(oa_runtime_persistence_authority_open_v2(
+                      directory, key, "v2-key", &c1, &second_authority) ==
+                  OA_RUNTIME_OK);
+        }
+        std::atomic<unsigned> ready{0U};
+        std::atomic<bool> start{false};
+        oa_runtime_status first_status = OA_RUNTIME_EIO;
+        oa_runtime_status second_status = OA_RUNTIME_EIO;
+        oa_runtime_persistence_checkpoint first_output{};
+        oa_runtime_persistence_checkpoint second_output{};
+        init(first_output);
+        init(second_output);
+        std::thread first_writer([&] {
+            ready.fetch_add(1U, std::memory_order_release);
+            while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+            first_status = oa_runtime_manifest_save_v2(
+                first, first_authority, "manifest.oarm", &c1, &first_output);
+        });
+        std::thread second_writer([&] {
+            ready.fetch_add(1U, std::memory_order_release);
+            while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+            second_status = oa_runtime_manifest_save_v2(
+                second, second_authority, "manifest.oarm", &c1, &second_output);
+        });
+        while (ready.load(std::memory_order_acquire) != 2U) {
+            std::this_thread::yield();
+        }
+        start.store(true, std::memory_order_release);
+        first_writer.join();
+        second_writer.join();
+        CHECK((first_status == OA_RUNTIME_OK &&
+               second_status == OA_RUNTIME_ESTALE) ||
+              (second_status == OA_RUNTIME_OK &&
+               first_status == OA_RUNTIME_ESTALE));
+        CHECK((first_status == OA_RUNTIME_OK && checkpoint_cleared(second_output)) ||
+              (second_status == OA_RUNTIME_OK && checkpoint_cleared(first_output)));
+        const oa_runtime_persistence_checkpoint &winner =
+            first_status == OA_RUNTIME_OK ? first_output : second_output;
+        oa_runtime_persistence_authority *reader = nullptr;
+        CHECK(oa_runtime_persistence_authority_open_v2(
+                  directory, key, "v2-key", &winner, &reader) == OA_RUNTIME_OK);
+        oa_runtime_manifest *loaded = nullptr;
+        oa_runtime_persistence_checkpoint observed{};
+        init(observed);
+        CHECK(oa_runtime_manifest_load_authenticated_v2(
+                  reader, "manifest.oarm", &winner, &loaded, &observed) ==
+              OA_RUNTIME_OK);
+        CHECK(checkpoint_equal(observed, winner));
+        oa_runtime_manifest_destroy(loaded);
+        oa_runtime_persistence_authority_destroy(reader);
+        if (separate_authorities) {
+            oa_runtime_persistence_authority_destroy(second_authority);
+        }
+        oa_runtime_persistence_authority_destroy(first_authority);
+        remove_if_present(std::string(directory) + "/manifest.oarm");
+        remove_if_present(std::string(directory) + "/manifest.oarm.previous");
+        CHECK(rmdir(directory) == 0);
+    }
+}
+
+void inherited_handle_fork_guard(oa_runtime *runtime,
+                                 oa_runtime_manifest *base) {
+    char directory_template[] = "/tmp/openarm-runtime-v2-fork-XXXXXX";
+    char *const directory = mkdtemp(directory_template);
+    CHECK(directory != nullptr);
+    std::uint8_t key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
+    v2_key(key);
+    oa_runtime_persistence_checkpoint zero{};
+    init(zero);
+    oa_runtime_persistence_authority *authority = nullptr;
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &zero, &authority) == OA_RUNTIME_OK);
+    oa_runtime_persistence_checkpoint c1{};
+    init(c1);
+    CHECK(oa_runtime_manifest_save_v2(base, authority, "manifest.oarm", &zero,
+                                      &c1) == OA_RUNTIME_OK);
+    oa_runtime_manifest *loaded = nullptr;
+    oa_runtime_persistence_checkpoint observed{};
+    init(observed);
+    std::uint64_t now = 0U;
+    const pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        const oa_runtime_status load_status =
+            oa_runtime_manifest_load_authenticated_v2(
+                authority, "manifest.oarm", &c1, &loaded, &observed);
+        const oa_runtime_status runtime_status = oa_runtime_now_monotonic_ns(
+            runtime, OA_RUNTIME_CLOCK_MONOTONIC, &now);
+        const oa_runtime_status legacy_status =
+            oa_runtime_manifest_save(base, authority, "manifest.oarm");
+        _exit(load_status == OA_RUNTIME_ESTATE &&
+                      runtime_status == OA_RUNTIME_ESTATE &&
+                      legacy_status == OA_RUNTIME_ESTATE
+                  ? 0
+                  : 1);
+    }
+    int child_status = 0;
+    CHECK(waitpid(child, &child_status, 0) == child);
+    CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+    oa_runtime_persistence_authority_destroy(authority);
+    remove_if_present(std::string(directory) + "/manifest.oarm");
+    CHECK(rmdir(directory) == 0);
+}
+
+int v2_exec_writer(int argc, char **argv) {
+    if (argc != 8) return 125;
+    std::uint8_t key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
+    v2_key(key);
+    oa_runtime_persistence_checkpoint expected{};
+    init(expected);
+    expected.revision = std::strtoull(argv[4], nullptr, 10);
+    if (std::snprintf(expected.content_sha256,
+                      sizeof(expected.content_sha256), "%s", argv[5]) != 64) {
+        return 124;
+    }
+    oa_runtime_persistence_authority *authority = nullptr;
+    oa_runtime_status status = oa_runtime_persistence_authority_open_v2(
+        argv[2], key, "v2-key", &expected, &authority);
+    oa_runtime_manifest *candidate = nullptr;
+    if (status == OA_RUNTIME_OK) {
+        status = oa_runtime_manifest_load(argv[3], &candidate);
+    }
+    const int ready_fd = std::atoi(argv[6]);
+    const int start_fd = std::atoi(argv[7]);
+    const char ready = 'r';
+    if (write(ready_fd, &ready, 1U) != 1 && status == OA_RUNTIME_OK) {
+        status = OA_RUNTIME_EIO;
+    }
+    char start = '\0';
+    ssize_t read_result = -1;
+    do {
+        read_result = read(start_fd, &start, 1U);
+    } while (read_result < 0 && errno == EINTR);
+    if (status == OA_RUNTIME_OK && read_result != 1) status = OA_RUNTIME_EIO;
+    if (status == OA_RUNTIME_OK) {
+        oa_runtime_persistence_checkpoint committed{};
+        init(committed);
+        status = oa_runtime_manifest_save_v2(
+            candidate, authority, "manifest.oarm", &expected, &committed);
+    }
+    oa_runtime_manifest_destroy(candidate);
+    oa_runtime_persistence_authority_destroy(authority);
+    if (status == OA_RUNTIME_OK) return 0;
+    if (status == OA_RUNTIME_ESTALE) return 1;
+    return 64 + static_cast<int>(status & UINT32_C(0x3f));
+}
+
+void v2_exec_conflict(oa_runtime_manifest *base,
+                      oa_runtime_manifest *first,
+                      oa_runtime_manifest *second) {
+    for (unsigned iteration = 0U; iteration < 4U; ++iteration) {
+        char directory_template[] = "/tmp/openarm-runtime-v2-exec-XXXXXX";
+        char first_template[] = "/tmp/openarm-runtime-v2-stage-a-XXXXXX";
+        char second_template[] = "/tmp/openarm-runtime-v2-stage-b-XXXXXX";
+        char *const directory = mkdtemp(directory_template);
+        char *const first_directory = mkdtemp(first_template);
+        char *const second_directory = mkdtemp(second_template);
+        CHECK(directory != nullptr && first_directory != nullptr &&
+              second_directory != nullptr);
+        std::uint8_t key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
+        v2_key(key);
+        oa_runtime_persistence_checkpoint zero{};
+        init(zero);
+        oa_runtime_persistence_authority *authority = nullptr;
+        CHECK(oa_runtime_persistence_authority_open_v2(
+                  directory, key, "v2-key", &zero, &authority) == OA_RUNTIME_OK);
+        oa_runtime_persistence_checkpoint c1{};
+        init(c1);
+        CHECK(oa_runtime_manifest_save_v2(base, authority, "manifest.oarm", &zero,
+                                          &c1) == OA_RUNTIME_OK);
+        oa_runtime_persistence_authority_destroy(authority);
+
+        oa_runtime_persistence_authority *stage_authority = nullptr;
+        CHECK(oa_runtime_persistence_authority_create(
+                  first_directory, key, "stage-key", &stage_authority) ==
+              OA_RUNTIME_OK);
+        CHECK(oa_runtime_manifest_save(first, stage_authority, "candidate.oarm") ==
+              OA_RUNTIME_OK);
+        oa_runtime_persistence_authority_destroy(stage_authority);
+        CHECK(oa_runtime_persistence_authority_create(
+                  second_directory, key, "stage-key", &stage_authority) ==
+              OA_RUNTIME_OK);
+        CHECK(oa_runtime_manifest_save(second, stage_authority, "candidate.oarm") ==
+              OA_RUNTIME_OK);
+        oa_runtime_persistence_authority_destroy(stage_authority);
+        const std::string first_candidate =
+            std::string(first_directory) + "/candidate.oarm";
+        const std::string second_candidate =
+            std::string(second_directory) + "/candidate.oarm";
+        const std::string revision = std::to_string(c1.revision);
+        const std::string digest = c1.content_sha256;
+        int ready_pipe[2]{};
+        int start_pipe[2]{};
+        CHECK(pipe(ready_pipe) == 0 && pipe(start_pipe) == 0);
+        const std::string ready_fd = std::to_string(ready_pipe[1]);
+        const std::string start_fd = std::to_string(start_pipe[0]);
+
+        const pid_t first_child = fork();
+        CHECK(first_child >= 0);
+        if (first_child == 0) {
+            execl("/proc/self/exe", "/proc/self/exe", "--v2-writer", directory,
+                  first_candidate.c_str(), revision.c_str(), digest.c_str(),
+                  ready_fd.c_str(), start_fd.c_str(),
+                  static_cast<char *>(nullptr));
+            _exit(127);
+        }
+        const pid_t second_child = fork();
+        CHECK(second_child >= 0);
+        if (second_child == 0) {
+            execl("/proc/self/exe", "/proc/self/exe", "--v2-writer", directory,
+                  second_candidate.c_str(), revision.c_str(), digest.c_str(),
+                  ready_fd.c_str(), start_fd.c_str(),
+                  static_cast<char *>(nullptr));
+            _exit(127);
+        }
+        CHECK(close(ready_pipe[1]) == 0);
+        CHECK(close(start_pipe[0]) == 0);
+        char ready[2]{};
+        std::size_t ready_count = 0U;
+        while (ready_count < sizeof(ready)) {
+            const ssize_t count = read(ready_pipe[0], ready + ready_count,
+                                       sizeof(ready) - ready_count);
+            if (count < 0 && errno == EINTR) continue;
+            CHECK(count > 0);
+            ready_count += static_cast<std::size_t>(count);
+        }
+        CHECK(write(start_pipe[1], "ss", 2U) == 2);
+        CHECK(close(ready_pipe[0]) == 0);
+        CHECK(close(start_pipe[1]) == 0);
+        int first_wait = 0;
+        int second_wait = 0;
+        CHECK(waitpid(first_child, &first_wait, 0) == first_child);
+        CHECK(waitpid(second_child, &second_wait, 0) == second_child);
+        CHECK(WIFEXITED(first_wait) && WIFEXITED(second_wait));
+        const int first_status = WEXITSTATUS(first_wait);
+        const int second_status = WEXITSTATUS(second_wait);
+        if (!((first_status == 0 && second_status == 1) ||
+              (second_status == 0 && first_status == 1))) {
+            std::fprintf(stderr, "exec writer statuses: %d %d\n", first_status,
+                         second_status);
+        }
+        CHECK((first_status == 0 && second_status == 1) ||
+              (second_status == 0 && first_status == 1));
+
+        CHECK(oa_runtime_persistence_authority_open_v2(
+                  directory, key, "v2-key", &c1, &authority) == OA_RUNTIME_OK);
+        oa_runtime_manifest *loaded = nullptr;
+        oa_runtime_persistence_checkpoint observed{};
+        init(observed);
+        CHECK(oa_runtime_manifest_load_authenticated_v2(
+                  authority, "manifest.oarm", &c1, &loaded, &observed) ==
+              OA_RUNTIME_OK);
+        CHECK(observed.revision == 2U);
+        oa_runtime_manifest_summary first_summary{};
+        oa_runtime_manifest_summary second_summary{};
+        init(first_summary);
+        init(second_summary);
+        CHECK(oa_runtime_manifest_get_summary(first, &first_summary) == OA_RUNTIME_OK);
+        CHECK(oa_runtime_manifest_get_summary(second, &second_summary) == OA_RUNTIME_OK);
+        CHECK(std::strcmp(observed.content_sha256, first_summary.content_sha256) == 0 ||
+              std::strcmp(observed.content_sha256, second_summary.content_sha256) == 0);
+        oa_runtime_manifest_destroy(loaded);
+        oa_runtime_persistence_authority_destroy(authority);
+
+        remove_if_present(std::string(directory) + "/manifest.oarm");
+        remove_if_present(std::string(directory) + "/manifest.oarm.previous");
+        remove_if_present(first_candidate);
+        remove_if_present(second_candidate);
+        CHECK(rmdir(directory) == 0);
+        CHECK(rmdir(first_directory) == 0);
+        CHECK(rmdir(second_directory) == 0);
+    }
 }
 
 void invalid_calibration_does_not_deadlock(oa_runtime *runtime) {
@@ -478,7 +1225,10 @@ void execute_and_wait(oa_runtime *runtime, oa_runtime_plan *plan,
 
 }
 
-int main() {
+int main(int argc, char **argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--v2-writer") == 0) {
+        return v2_exec_writer(argc, argv);
+    }
     CHECK(oa_runtime_test_transport_raii_probe() == OA_RUNTIME_OK);
     CHECK(oa_runtime_test_hmac_sha256_known_vector() == 1);
     oa_runtime_manifest *manifest = nullptr;
@@ -551,9 +1301,30 @@ int main() {
     supervised_calibration(runtime);
     oa_runtime_manifest *updated_manifest = manual_calibration(runtime, manifest);
     oa_runtime_manifest *conflicting_manifest = manual_calibration(runtime, manifest, 1U);
+    oa_runtime *revision_two_runtime = nullptr;
+    CHECK(oa_runtime_create(&options, updated_manifest, &revision_two_runtime) ==
+          OA_RUNTIME_OK);
+    oa_runtime_manifest *revision_three_manifest = manual_calibration(
+        revision_two_runtime, updated_manifest, 2U, 2U, 3U);
+    oa_runtime_destroy(revision_two_runtime);
+    oa_runtime *revision_three_runtime = nullptr;
+    CHECK(oa_runtime_create(&options, revision_three_manifest,
+                            &revision_three_runtime) == OA_RUNTIME_OK);
+    oa_runtime_manifest *revision_four_manifest = manual_calibration(
+        revision_three_runtime, revision_three_manifest, 3U, 3U, 4U);
+    oa_runtime_destroy(revision_three_runtime);
     concurrent_persistence_conflict(manifest, updated_manifest,
                                     conflicting_manifest);
     persistence_revision_order(manifest, updated_manifest);
+    persistence_v2_contract(manifest, updated_manifest, conflicting_manifest,
+                            revision_three_manifest, revision_four_manifest);
+    persistence_v2_durability(manifest, updated_manifest);
+    v2_thread_conflict(manifest, updated_manifest, conflicting_manifest, false);
+    v2_thread_conflict(manifest, updated_manifest, conflicting_manifest, true);
+    v2_exec_conflict(manifest, updated_manifest, conflicting_manifest);
+    inherited_handle_fork_guard(runtime, manifest);
+    oa_runtime_manifest_destroy(revision_three_manifest);
+    oa_runtime_manifest_destroy(revision_four_manifest);
     oa_runtime_manifest_destroy(updated_manifest);
     oa_runtime_manifest_destroy(conflicting_manifest);
     CHECK(oa_runtime_set_interlock(runtime, 2U, 1U) == OA_RUNTIME_EINVAL);
