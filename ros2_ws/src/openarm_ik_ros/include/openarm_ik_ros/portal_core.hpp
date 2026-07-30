@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace openarm_ik_ros::portal
 {
@@ -56,6 +57,19 @@ struct FreshnessEvidence
   std::int64_t receipt_steady_ns{0};
 };
 
+struct NominalTestSamples
+{
+  Point small_forward_up{};
+  Point medium_forward_up{};
+};
+
+struct TrueColorMasks
+{
+  std::uint64_t red{0};
+  std::uint64_t green{0};
+  std::uint64_t blue{0};
+};
+
 class StrictJson
 {
 public:
@@ -96,6 +110,11 @@ bool fresh_at_use(
   const FreshnessEvidence & evidence, std::int64_t now_time_ns,
   std::int64_t now_steady_ns, std::int64_t maximum_age_ns);
 bool xcomposite_version_supported(int major, int minor);
+NominalTestSamples nominal_test_samples(MoveRequest::Side side);
+bool truecolor_masks_valid(const TrueColorMasks & masks);
+std::array<unsigned char, 3> truecolor_pixel_rgb(
+  std::uint64_t pixel, const TrueColorMasks & masks);
+bool rgb_frame_has_nonblack_pixel(const std::vector<unsigned char> & rgb);
 std::string json_escape(std::string_view value);
 
 }  // namespace openarm_ik_ros::portal

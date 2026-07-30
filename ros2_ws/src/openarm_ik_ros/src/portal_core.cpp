@@ -19,8 +19,12 @@ namespace
 constexpr double kArmRadius = 0.050;
 constexpr double kToolRadius = 0.075;
 constexpr double kRequiredClearance = 0.025;
-constexpr double kBodyRadius = 0.115;
-constexpr double kBodyTop = 0.775;
+// The canonical body mesh contains a 60 x 60 mm central shaft.  Its
+// circumscribed cylinder conservatively covers the square; the former 115 mm
+// radius projected unrelated base/upper-mount extents through the workspace.
+constexpr double kPoleRadius = 0.04242640687119285;
+constexpr double kPoleBottom = 0.008;
+constexpr double kPoleTop = 0.758;
 constexpr std::size_t kSamples = 17;
 
 double dot(const Point & a, const Point & b)
@@ -92,12 +96,12 @@ double radial_segment_distance(const Point & a, const Point & b)
   double minimum_t = 0.0;
   double maximum_t = 1.0;
   if (std::abs(d[2]) <= 1.0e-18) {
-    if (a[2] < 0.0 || a[2] > kBodyTop) {
+    if (a[2] < kPoleBottom || a[2] > kPoleTop) {
       return std::numeric_limits<double>::infinity();
     }
   } else {
-    const double at_bottom = (0.0 - a[2]) / d[2];
-    const double at_top = (kBodyTop - a[2]) / d[2];
+    const double at_bottom = (kPoleBottom - a[2]) / d[2];
+    const double at_top = (kPoleTop - a[2]) / d[2];
     minimum_t = std::max(0.0, std::min(at_bottom, at_top));
     maximum_t = std::min(1.0, std::max(at_bottom, at_top));
     if (minimum_t > maximum_t) {
@@ -323,10 +327,10 @@ bool NominalPathGuard::scene_clear(
     for (std::size_t segment = 2; segment < 7; ++segment) {
       const double radius = segment == 6 ? kToolRadius : kArmRadius;
       const double value = radial_segment_distance(
-        points[side][segment], points[side][segment + 1]) - kBodyRadius - radius;
+        points[side][segment], points[side][segment + 1]) - kPoleRadius - radius;
       clearance = std::min(clearance, value);
       if (std::isnan(value) || value < kRequiredClearance) {
-        reason = "nominal central pole/body keepout clearance is not proven for arm " +
+        reason = "nominal central pole keepout clearance is not proven for arm " +
           std::to_string(side) + " segment " + std::to_string(segment) +
           " (clearance " + std::to_string(value) + " m)";
         return false;
@@ -461,6 +465,45 @@ bool fresh_at_use(
 bool xcomposite_version_supported(int major, int minor)
 {
   return major > 0 || (major == 0 && minor >= 2);
+}
+
+NominalTestSamples nominal_test_samples(MoveRequest::Side side)
+{
+  if (side == MoveRequest::Side::left) {
+    return {{0.019973, 0.143469, 0.096000}, {0.029973, 0.143469, 0.106000}};
+  }
+  return {{0.020081, -0.143527, 0.096000}, {0.030081, -0.143527, 0.106000}};
+}
+
+bool truecolor_masks_valid(const TrueColorMasks & masks)
+{
+  const auto contiguous = [](std::uint64_t mask) {
+      if (mask == 0) {return false;}
+      while ((mask & 1U) == 0U) {mask >>= 1U;}
+      return (mask & (mask + 1U)) == 0U;
+    };
+  return contiguous(masks.red) && contiguous(masks.green) && contiguous(masks.blue) &&
+         (masks.red & masks.green) == 0U && (masks.red & masks.blue) == 0U &&
+         (masks.green & masks.blue) == 0U;
+}
+
+std::array<unsigned char, 3> truecolor_pixel_rgb(
+  std::uint64_t pixel, const TrueColorMasks & masks)
+{
+  auto channel = [pixel](std::uint64_t mask) {
+      unsigned int shift = 0;
+      while (((mask >> shift) & 1U) == 0U) {++shift;}
+      const std::uint64_t maximum = mask >> shift;
+      return static_cast<unsigned char>(((pixel & mask) >> shift) * 255U / maximum);
+    };
+  if (!truecolor_masks_valid(masks)) {return {0, 0, 0};}
+  return {channel(masks.red), channel(masks.green), channel(masks.blue)};
+}
+
+bool rgb_frame_has_nonblack_pixel(const std::vector<unsigned char> & rgb)
+{
+  return rgb.size() >= 3 && rgb.size() % 3 == 0 &&
+         std::any_of(rgb.begin(), rgb.end(), [](unsigned char value) {return value != 0;});
 }
 
 std::string json_escape(std::string_view value)

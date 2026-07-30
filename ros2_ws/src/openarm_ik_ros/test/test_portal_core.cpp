@@ -7,6 +7,7 @@
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -39,6 +40,15 @@ portal::JointVector solve(std::size_t side, const portal::Point & target)
       sizeof(diagnostics), &diagnostics), OA_MODEL_OK);
   std::copy(std::begin(diagnostics.q), std::end(diagnostics.q), seed.begin());
   return seed;
+}
+
+portal::Point tcp(std::size_t side, const portal::JointVector & q)
+{
+  oa_fk_result result{};
+  const oa_model * model = side == 0 ? oa_model_left_v10_bimanual() :
+    oa_model_right_v10_bimanual();
+  EXPECT_EQ(oa_fk(model, q.data(), &result), OA_MODEL_OK);
+  return {result.hand_tcp.m[3], result.hand_tcp.m[7], result.hand_tcp.m[11]};
 }
 
 std::uint64_t own_start_ticks()
@@ -130,6 +140,74 @@ TEST(NominalPathGuard, ValidatesAStationaryRegressionPoseThroughPublicFkIk)
   EXPECT_GE(result.minimum_nominal_clearance_m, 0.025);
 }
 
+TEST(NominalPathGuard, AcceptsExactCanonicalNeutralStateWithPoleMargin)
+{
+  constexpr double measured_neutral = 6.67582207984907e-05;
+  portal::GuardInput input;
+  for (auto & side : input.measured_q) {side.fill(measured_neutral);}
+  const portal::Point left = tcp(0, input.measured_q[0]);
+  const portal::Point right = tcp(1, input.measured_q[1]);
+  EXPECT_NEAR(left[0], -0.00002710217965846259, 1.0e-12);
+  EXPECT_NEAR(left[1], 0.15346860855059954, 1.0e-12);
+  EXPECT_NEAR(left[2], 0.07599955201969341, 1.0e-12);
+  EXPECT_NEAR(right[0], 0.00008077910443504927, 1.0e-12);
+  EXPECT_NEAR(right[1], -0.15352682530236783, 1.0e-12);
+  EXPECT_NEAR(right[2], 0.07599955704732647, 1.0e-12);
+  input.request.side = portal::MoveRequest::Side::left;
+  input.request.target = left;
+  const portal::GuardResult result = portal::NominalPathGuard().validate(input);
+  EXPECT_TRUE(result.accepted) << result.reason;
+  EXPECT_GE(result.minimum_nominal_clearance_m, 0.025);
+}
+
+TEST(NominalPathGuard, PresetsParseAndPassButNearbyPoleApproachFails)
+{
+  constexpr double measured_neutral = 6.67582207984907e-05;
+  portal::GuardInput input;
+  for (auto & side : input.measured_q) {side.fill(measured_neutral);}
+  const portal::NominalTestSamples left_samples =
+    portal::nominal_test_samples(portal::MoveRequest::Side::left);
+  const portal::NominalTestSamples right_samples =
+    portal::nominal_test_samples(portal::MoveRequest::Side::right);
+  EXPECT_EQ(left_samples.small_forward_up, (portal::Point{0.019973, 0.143469, 0.096000}));
+  EXPECT_EQ(left_samples.medium_forward_up, (portal::Point{0.029973, 0.143469, 0.106000}));
+  EXPECT_EQ(right_samples.small_forward_up, (portal::Point{0.020081, -0.143527, 0.096000}));
+  EXPECT_EQ(right_samples.medium_forward_up, (portal::Point{0.030081, -0.143527, 0.106000}));
+  for (const auto side : {portal::MoveRequest::Side::left, portal::MoveRequest::Side::right}) {
+    const portal::NominalTestSamples samples = portal::nominal_test_samples(side);
+    for (const portal::Point & target : {samples.small_forward_up, samples.medium_forward_up}) {
+      std::ostringstream json;
+      json << std::fixed << std::setprecision(6) <<
+        "{\"side\":\"" << (side == portal::MoveRequest::Side::left ? "left" : "right") <<
+        "\",\"x\":" << target[0] << ",\"y\":" << target[1] <<
+        ",\"z\":" << target[2] << '}';
+      std::string reason;
+      ASSERT_TRUE(portal::StrictJson::parse_move(json.str(), input.request, reason)) << reason;
+      const portal::GuardResult result = portal::NominalPathGuard().validate(input);
+      EXPECT_TRUE(result.accepted) << json.str() << ": " << result.reason;
+      EXPECT_GE(result.minimum_nominal_clearance_m, 0.025);
+    }
+  }
+
+  input.request.side = portal::MoveRequest::Side::left;
+  input.request.target = {0.019973, 0.118469, 0.096000};
+  const portal::GuardResult rejected = portal::NominalPathGuard().validate(input);
+  EXPECT_FALSE(rejected.accepted);
+  EXPECT_NE(rejected.reason.find("central pole keepout"), std::string::npos) << rejected.reason;
+}
+
+TEST(NominalPathGuard, RetainsClearanceForDocumentedNearbyJointThreePosture)
+{
+  portal::GuardInput input;
+  input.measured_q[0][2] = 0.15;
+  input.measured_q[1][2] = -0.15;
+  input.request.side = portal::MoveRequest::Side::left;
+  input.request.target = tcp(0, input.measured_q[0]);
+  const portal::GuardResult result = portal::NominalPathGuard().validate(input);
+  EXPECT_TRUE(result.accepted) << result.reason;
+  EXPECT_GE(result.minimum_nominal_clearance_m, 0.025);
+}
+
 TEST(JsonEscape, EscapesControlAndDelimiterCharacters)
 {
   EXPECT_EQ(portal::json_escape("a\"b\\c\n"), "a\\\"b\\\\c\\n");
@@ -173,4 +251,21 @@ TEST(XCompositeVersion, RequiresNamedPixmapProtocolMinimum)
   EXPECT_TRUE(portal::xcomposite_version_supported(0, 4));
   EXPECT_TRUE(portal::xcomposite_version_supported(1, 0));
   EXPECT_FALSE(portal::xcomposite_version_supported(-1, 99));
+}
+
+TEST(TrueColorPixels, UsesValidatedVisualMasksAndRejectsBlackFrames)
+{
+  const portal::TrueColorMasks rgb888{0xff0000, 0x00ff00, 0x0000ff};
+  ASSERT_TRUE(portal::truecolor_masks_valid(rgb888));
+  EXPECT_EQ(portal::truecolor_pixel_rgb(0x804020, rgb888),
+    (std::array<unsigned char, 3>{128, 64, 32}));
+  const portal::TrueColorMasks rgb565{0xf800, 0x07e0, 0x001f};
+  ASSERT_TRUE(portal::truecolor_masks_valid(rgb565));
+  EXPECT_EQ(portal::truecolor_pixel_rgb(0xffff, rgb565),
+    (std::array<unsigned char, 3>{255, 255, 255}));
+  EXPECT_FALSE(portal::truecolor_masks_valid({0, 0x00ff00, 0x0000ff}));
+  EXPECT_FALSE(portal::truecolor_masks_valid({0xff0000, 0xff0000, 0x0000ff}));
+  EXPECT_FALSE(portal::rgb_frame_has_nonblack_pixel({0, 0, 0, 0, 0, 0}));
+  EXPECT_TRUE(portal::rgb_frame_has_nonblack_pixel({0, 0, 0, 0, 1, 0}));
+  EXPECT_FALSE(portal::rgb_frame_has_nonblack_pixel({1, 0}));
 }

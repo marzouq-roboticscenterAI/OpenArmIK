@@ -22,7 +22,9 @@ Status: **DONE_WITH_CONCERNS**
   `/proc/PID/stat` start ticks and window uniqueness before every frame, uses
   XComposite redirected pixmaps, bounds
   dimensions, traps X11 errors around resize/destroy races, and encodes with
-  libjpeg.
+  libjpeg. Pixmap readback uses the validated TrueColor masks from the owning
+  window visual because named pixmap `XImage` masks may be zero; uniform-black
+  frames are rejected instead of being served as successful captures.
 - State comes only from `/joint_states`. All fourteen canonical public model
   names and finite positions are required, both producer stamp and receipt must
   be newer than 500 ms, and current controller diagnostics must report virtual,
@@ -42,13 +44,23 @@ Status: **DONE_WITH_CONCERNS**
 - The pure nominal guard validates finite targets and measured joint/model
   bounds, uses measured seeds and public `oa_ik_position_v2`/`oa_fk` at 17
   sampled Cartesian waypoints, requires branch continuity, checks conservative
-  left/right link and tool capsules, and checks both arms against a central
-  nominal body/pole cylinder plus 25 mm clearance. Both sides are re-solved at
+  left/right link and tool capsules, and checks both arms against the canonical
+  60 x 60 mm central shaft's conservative 42.426407 mm circumscribed cylinder
+  over Z `[0.008, 0.758]` plus 25 mm clearance. Both sides are re-solved at
   each sample to mirror paired-plan behavior. Any IK/FK/numeric/bounds/geometry
   uncertainty rejects the request; inputs are never clamped.
-- No recommended target is exposed. The forms use current measured TCPs, so no
-  preset is represented as guard-approved before it is evaluated against the
-  live measured seed.
+- The forms start from current measured TCPs. No preset is represented as
+  physically recommended or pre-authorized; every submitted value is evaluated
+  again against the live measured seed.
+- Each arm also has field-only virtual test presets. In body-frame metres, the
+  small/medium values are Left `(0.019973, 0.143469, 0.096000)` /
+  `(0.029973, 0.143469, 0.106000)` and Right
+  `(0.020081, -0.143527, 0.096000)` /
+  `(0.030081, -0.143527, 0.106000)`. Public IK plus the corrected 17-sample
+  nominal guard accepts all four from the exact encoder-quantized neutral q;
+  their minimum reported clearances are approximately 27.4 to 28.6 mm. The UI
+  labels +X forward, +Y left, +Z up and says presets fill fields only, never
+  move automatically, and are not physically safe coordinates.
 - The page and mutation/result responses explicitly say the guard is sampled
   nominal virtual protection, not physical certification, and that the current
   controller still reports `collision_checked=false`. There is no speed slider.
@@ -100,7 +112,11 @@ Status: **DONE_WITH_CONCERNS**
   rejection, an accepted public-FK/IK stationary regression pose with at least
   25 mm nominal clearance, exact PID/start-ticks and executable-path identity,
   producer/receipt freshness boundaries, XComposite version policy, and JSON
-  escaping.
+  escaping. It also covers exact encoder-quantized neutral acceptance, preset
+  JSON parsing/guard acceptance, a nearby inward pole rejection, TrueColor
+  mask conversion, invalid/zero masks, and uniform-black-frame rejection. A
+  documented nearby posture with Left J3 `+0.15` and Right J3 `-0.15` rad also
+  remains accepted with the unchanged 25 mm threshold.
 - The final focused `test_portal_core` rerun passed; Bash syntax
   checks for the build/launcher entrypoints and `git diff --check` passed after
   the final source changes.
@@ -117,6 +133,12 @@ Status: **DONE_WITH_CONCERNS**
   Its capsule and central-cylinder proxies are conservative product policy,
   not surveyed installation geometry or a calibrated full-mesh scene. It may
   reject useful paths, and it cannot authorize physical motion.
+- The shaft correction removes a proven false projection of the base and upper
+  mounts; it is not complete-body mesh collision checking. The primitive guard
+  still omits exact base/upper-mount shapes, link1/link2 body meshes, oriented
+  hand/finger geometry, payloads, and continuous swept volume. Exact mesh
+  investigation found neutral moving geometry clear by at least 29.4746 mm,
+  but that evidence does not generalize to arbitrary paths.
 - The underlying paired controller reports collision unchecked. The portal
   guard does not change that controller truth, and the virtual adapter has no
   hardware backend.

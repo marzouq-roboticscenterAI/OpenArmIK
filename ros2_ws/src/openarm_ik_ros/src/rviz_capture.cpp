@@ -65,18 +65,6 @@ void jpeg_error_exit(j_common_ptr info)
   std::longjmp(error->jump, 1);
 }
 
-unsigned char channel(unsigned long pixel, unsigned long mask)
-{
-  if (mask == 0) {
-    return 0;
-  }
-  unsigned int shift = 0;
-  while (((mask >> shift) & 1UL) == 0UL) {
-    ++shift;
-  }
-  const unsigned long maximum = mask >> shift;
-  return static_cast<unsigned char>(((pixel & mask) >> shift) * 255UL / maximum);
-}
 }  // namespace
 
 RvizCapture::RvizCapture(
@@ -246,7 +234,8 @@ bool RvizCapture::capture_jpeg(std::vector<unsigned char> & jpeg, std::string & 
   if (!window_pid(window_, current_window_pid) || current_window_pid != static_cast<unsigned long>(pid_) ||
     !is_top_level(window_) || XGetWindowAttributes(display_, window_, &attributes) == 0 ||
     trap.code() != 0 ||
-    attributes.map_state != IsViewable || attributes.width < 1 || attributes.height < 1 ||
+    attributes.map_state != IsViewable || attributes.visual == nullptr ||
+    attributes.visual->c_class != TrueColor || attributes.width < 1 || attributes.height < 1 ||
     attributes.width > 4096 || attributes.height > 4096)
   {
     window_ = None;
@@ -285,18 +274,30 @@ bool RvizCapture::capture_jpeg(std::vector<unsigned char> & jpeg, std::string & 
   }
   std::vector<unsigned char> rgb(
     static_cast<std::size_t>(attributes.width) * static_cast<std::size_t>(attributes.height) * 3U);
+  const TrueColorMasks masks{
+    attributes.visual->red_mask, attributes.visual->green_mask, attributes.visual->blue_mask};
+  if (!truecolor_masks_valid(masks)) {
+    XDestroyImage(image);
+    release_pixmap();
+    reason = "RViz window TrueColor masks are invalid";
+    return false;
+  }
   for (int y = 0; y < attributes.height; ++y) {
     for (int x = 0; x < attributes.width; ++x) {
       const unsigned long pixel = XGetPixel(image, x, y);
+      const auto converted = truecolor_pixel_rgb(pixel, masks);
       const std::size_t offset =
         (static_cast<std::size_t>(y) * static_cast<std::size_t>(attributes.width) +
         static_cast<std::size_t>(x)) * 3U;
-      rgb[offset] = channel(pixel, image->red_mask);
-      rgb[offset + 1] = channel(pixel, image->green_mask);
-      rgb[offset + 2] = channel(pixel, image->blue_mask);
+      std::copy(converted.begin(), converted.end(), rgb.begin() + offset);
     }
   }
   XDestroyImage(image);
+  if (!rgb_frame_has_nonblack_pixel(rgb)) {
+    release_pixmap();
+    reason = "XComposite returned a uniform-black RViz frame";
+    return false;
+  }
   jpeg_compress_struct compressor{};
   JpegError error{};
   compressor.err = jpeg_std_error(&error.base);
