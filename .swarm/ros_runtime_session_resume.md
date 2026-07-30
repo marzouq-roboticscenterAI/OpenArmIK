@@ -81,3 +81,16 @@ the owner worker only after it has released that mutex. A reentrant callback
 regression calls `health()` from both a reserve notification and an active
 worker transition, then verifies bounded shutdown. The focused session suite
 contains 15 passing tests after these additions.
+
+### Final installed-overlay verification
+
+After the follow-up commit, the package was rebuilt and installed with one job,
+then verified using `/opt/ros/lyrical`, the base
+`/home/signalprocessing-dev/OpenArmIK/ros2_ws/install` action-message overlay,
+and the updated local `ros-install/openarm_ik_ros/local_setup.bash` overlay
+with an isolated `ROS_LOG_DIR`. `ctest --output-on-failure -j1` completed all
+13 registered package tests successfully. The installed-artifact audit again
+found runtime facade references only (`create`, snapshot, joint/paired plan,
+execute, heartbeat, event polling), no legacy controller/motion-plan/manifest
+reference, and no CAN, SocketCAN, transport, or Control implementation dynamic
+linkage.
