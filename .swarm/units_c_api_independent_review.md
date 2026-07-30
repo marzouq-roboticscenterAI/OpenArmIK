@@ -2,12 +2,14 @@
 
 ## Verdict
 
-**CLEAN — no Critical or Important findings; the sole Low is closed.**
+**CLEAN — no findings remain.**
 
 Reviewed commit `1f2d543f3bd5cf5614227fca2b5ff9550cdbcdf5` against parent
 `2b401b34be32fb89015a73f18180eeaba3e2f7a6`, limited to the Model,
 Control, Runtime, and installed native consumer changes. No source was edited.
 All generated review artifacts are under `build/review-units-api`.
+A targeted follow-up at `3b9ef8b7bbebe90dde2c0e5333dffcdaebf6742e`
+independently confirmed the sole Low's closure and found no regression.
 
 ## Follow-up closure
 
@@ -18,12 +20,21 @@ storage, and the frozen vector layout/alignment. The C++17 consumer independentl
 asserts the corresponding `std::numeric_limits<double>` properties, including
 `is_iec559`.
 
-Fresh follow-up evidence used the repository-local `build/units-c-api` tree:
+Fresh follow-up evidence used
+`build/review-units-api/final-confirm-3b9ef8b`:
 
 - strict C11 compilation of `openarm_units.c` passed with `-pedantic-errors
   -Wall -Wextra -Werror -Wconversion -Wdouble-promotion -Wfloat-conversion`;
 - strict C++17 compilation of the unit consumer passed with the same warnings;
-- the sequential Model suite passed **5/5**.
+- the targeted C11 and C++17 Model unit tests passed **2/2**, sequentially.
+
+The follow-up changes only the portability assertions and their C++17 test
+mirrors; public declarations, record layouts, and implementation source are
+unchanged. The fresh Model archive has the same public symbol set as the prior
+review archive. Control/Model API headers other than `openarm_units.h`, both
+Runtime V1 headers, and the Runtime 50-symbol manifest are byte-unchanged from
+`1f2d543`. Current and frozen Runtime headers still share SHA-256
+`e4b2ed9c3e57bd353e805a09270478341681e7aebbe96062e4bb1e39725fd9e5`.
 
 ## Static audit evidence
 
@@ -69,7 +80,7 @@ Fresh follow-up evidence used the repository-local `build/units-c-api` tree:
   Both build-tree and installed Runtime archives expose exactly the unchanged
   50-symbol manifest.
 
-## Fresh sequential validation
+## Original fresh sequential validation at `1f2d543`
 
 All configurations and builds used Release mode and `--parallel 1`; CTest used
 `-j1` with `OPENARM_BUILD_JOBS=1` where nested installed-consumer builds occur.

@@ -49,6 +49,8 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   at `1ece782`.
 - [x] Cache provenance, constrained cleanup, launcher binding, and physical
   cache-tree containment independently verified clean through `59590d1`.
+- [x] Strict-C binary64 coordinate units, additive native unit-aware ingress,
+  and centimetre/inch portal presentation completed through `a6c011d`.
 - [ ] Physical hardware acceptance remains intentionally unperformed and physical
   motion remains unavailable.
 
@@ -154,6 +156,19 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   passed. The default one-job path (`OPENARM_BUILD_JOBS=1`) rebuilt all three ROS
   packages; completed cache records, the V2 stamp, exact prefix, and no-build
   launch gate then passed. These remain hardware-free results.
+- 2026-07-30: Commits `1f2d543..a6c011d` added the Model-owned strict-C
+  `oa_vec3d`/`oa_length_unit` binary64 contract for metres, centimetres, and
+  inches, plus additive unit-aware Model, Control, and header-only Runtime
+  entry points. Runtime V1's frozen header and exact 50-symbol archive remain
+  unchanged.
+- 2026-07-30: Portal XYZ presentation defaults to centimetres and can switch to
+  inches. The v2 request carries an explicit unit and is converted exactly once
+  at the server boundary; canonical portal state, ROS actions, Runtime, model
+  calculations, and stock RViz remain binary64 metres.
+- 2026-07-30: The final independent unit/portal sweep was CLEAN. Targeted native
+  suites, portal 24/24, full ROS 14/14, and production launch-integrity checks
+  passed. These tests used no connected CAN hardware and do not enable physical
+  discovery, calibration, or motion.
 
 ## Open items
 

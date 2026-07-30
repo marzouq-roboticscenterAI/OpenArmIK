@@ -51,3 +51,21 @@
   `59590d1` is the independently CLEAN cache-hardening baseline after the
   `669ab88` integration and C1/I1/I2 cross-confirmation. Physical limitations
   above remain unchanged.
+- Native Cartesian inputs use the Model-owned strict-C `oa_vec3d` contract:
+  three contiguous IEEE binary64 `double` values and explicit metre,
+  centimetre, or inch units. Convert once at the highest ingress and never
+  narrow coordinate storage or arithmetic through `float`.
+- Unit-aware Model and Control entry points are additive. Runtime's unit adapter
+  is a separate installed header so the frozen Runtime V1 header and exact
+  50-symbol archive remain unchanged.
+- Portal display/input defaults to centimetres and may toggle to inches, but its
+  canonical values, ROS messages, Runtime/model calculations, and stock RViz
+  stay metres. The v2 portal request names its unit explicitly and the server
+  performs the sole conversion.
+- Expanding length conversions must reject magnitudes at or above
+  `DBL_MAX / |factor|` before multiplication; post-multiply finiteness alone is
+  insufficient under directed rounding.
+- The completed binary64/portal stage has a CLEAN final sweep with targeted
+  native suites, portal 24/24, ROS 14/14, and production launch-integrity green.
+  Physical CAN, calibration, actuator motion, and safety acceptance remain
+  unsupported and untested.
