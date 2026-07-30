@@ -158,6 +158,21 @@ colcon --log-base "$ros_log" build \
     -DPython3_EXECUTABLE=/usr/bin/python3 \
     "${coverage_args[@]}"
 
+session_archive="$ros_build/openarm_ik_ros/libopenarm_virtual_control_session.a"
+[[ -f "$session_archive" ]] || {
+  printf 'Missing production ROS session archive: %s\n' "$session_archive" >&2
+  exit 1
+}
+session_undefined=$(nm -u "$session_archive")
+if grep -Eq ' U oa_(controller_|motion_plan_|manifest_)' <<<"$session_undefined"; then
+  printf '%s\n' 'Production ROS session bypasses OpenArm::Runtime' >&2
+  exit 1
+fi
+if ! grep -q ' U oa_runtime_create' <<<"$session_undefined"; then
+  printf '%s\n' 'Production ROS session does not consume OpenArm::Runtime' >&2
+  exit 1
+fi
+
 if ((run_tests)); then
   ros_test_listing=$(ctest --test-dir "$ros_build/openarm_ik_ros" -N)
   printf '%s\n' "$ros_test_listing"

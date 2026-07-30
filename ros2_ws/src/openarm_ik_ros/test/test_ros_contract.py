@@ -83,10 +83,25 @@ def main():
             level = int.from_bytes(level)
         assert level == 1, (level, report)
         assert report["backend"] == "virtual"
-        assert report["capability_bits"] == "7"
+        assert report["runtime_authority"] == "openarm_runtime"
+        assert report["capability_bits"] == "3576"
+        assert report["runtime_state_source"] == "oa_runtime_snapshot_encoder_feedback"
+        assert len(report["runtime_coordinate_identity_sha256"]) == 64
         assert report["collision_checked"] == "false"
         assert report["state_source"] == "oa_snapshot_encoder_feedback"
         assert report["physical_motion_authorized"] == "false"
+        assert report["physical_motion_capability"] == "false"
+        assert report["physical_discovery_endpoint_exposed"] == "false"
+        assert report["single_xyz_capability"] == "false"
+        assert report["manifest_state"] == "4"
+        assert report["manifest_authenticated"] == "false"
+        assert report["manifest_checkpoint_authorized"] == "false"
+        assert report["persistence_status"] == "built_in_immutable_manifest_not_persisted"
+        assert report["calibration_status"] == "runtime_capable_ros_endpoint_not_exposed"
+        assert report["discovery_status"] == "virtual_exact_inventory"
+        assert report["inventory_interface_count"] == "2"
+        assert report["inventory_motor_count"] == "14"
+        assert report["inventory_unresolved_assignment"] == "0"
         assert report["left_fresh_mask"] == "127"
         assert report["right_fresh_mask"] == "127"
 
