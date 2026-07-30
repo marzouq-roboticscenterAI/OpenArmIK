@@ -103,7 +103,11 @@ means a post-rename rollback could not be confirmed; no checkpoint is returned
 and that authority is poisoned. All ordinary operations then return
 `EDURABILITY` until explicit `oa_runtime_manifest_recover_v2` reconciles current
 and `.previous` using the unchanged external checkpoint, or the authority is
-destroyed and reopened. Ordinary load never falls back to `.previous`.
+destroyed and reopened. Recovery promotes `.previous` through a synced,
+independent temporary inode so current and previous do not remain hard-link
+aliases. Under the transaction lock, checked operations also remove and sync
+reserved-prefix temporaries abandoned by a killed cooperating writer. Ordinary
+load never falls back to `.previous`.
 
 The lock coordinates cooperating library users only. Directory writers that
 ignore it can deny service, and holders of the HMAC key can sign arbitrary

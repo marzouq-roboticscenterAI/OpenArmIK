@@ -1,7 +1,7 @@
 # Persistence redesign B: adversarial architecture review
 
-Date: 2026-07-29 (America/Los_Angeles)  
-Reviewed commit: `8c92f078dd5205eddbf835992f3f50cc36794650`  
+Date: 2026-07-29 (America/Los_Angeles)
+Reviewed commit: `8c92f078dd5205eddbf835992f3f50cc36794650`
 Disposition: **RECOMMENDATION**
 
 ## Executive result

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <future>
 #include <limits>
@@ -22,6 +23,7 @@ extern "C" oa_runtime_status oa_runtime_test_transport_raii_probe(void);
 extern "C" int oa_runtime_test_hmac_sha256_known_vector(void);
 extern "C" void oa_runtime_test_fail_fsync_after(std::int64_t countdown);
 extern "C" void oa_runtime_test_fail_fsync_mask(std::uint64_t mask);
+extern "C" void oa_runtime_test_recovery_crash_at(std::uint32_t point);
 
 namespace {
 
@@ -92,6 +94,39 @@ void copy_file_bytes(const std::string &source, const std::string &destination) 
 
 void remove_if_present(const std::string &path) {
     if (unlink(path.c_str()) != 0) CHECK(errno == ENOENT);
+}
+
+void check_distinct_inodes(const std::string &left, const std::string &right) {
+    struct stat left_status{};
+    struct stat right_status{};
+    CHECK(stat(left.c_str(), &left_status) == 0);
+    CHECK(stat(right.c_str(), &right_status) == 0);
+    CHECK(left_status.st_dev != right_status.st_dev ||
+          left_status.st_ino != right_status.st_ino);
+}
+
+unsigned internal_artifact_count(const char *directory) {
+    DIR *const stream = opendir(directory);
+    CHECK(stream != nullptr);
+    unsigned count = 0U;
+    for (;;) {
+        errno = 0;
+        const dirent *const entry = readdir(stream);
+        if (entry == nullptr) {
+            CHECK(errno == 0);
+            break;
+        }
+        if (std::strncmp(entry->d_name, ".openarm-runtime-", 17U) == 0 ||
+            std::strncmp(entry->d_name, ".openarm-prior-", 15U) == 0) {
+            ++count;
+        }
+    }
+    CHECK(closedir(stream) == 0);
+    return count;
+}
+
+void check_no_internal_artifacts(const char *directory) {
+    CHECK(internal_artifact_count(directory) == 0U);
 }
 
 void persistence_round_trip(oa_runtime_manifest *manifest) {
@@ -706,7 +741,19 @@ void persistence_v2_durability(oa_runtime_manifest *base,
     CHECK(checkpoint_cleared(output));
     oa_runtime_test_fail_fsync_mask(0U);
 
-    oa_runtime_test_fail_fsync_mask(UINT64_C(1) << 2U);
+    for (std::uint32_t failure_call = 1U; failure_call <= 2U;
+         ++failure_call) {
+        oa_runtime_test_fail_fsync_mask(UINT64_C(1) << failure_call);
+        init(output);
+        CHECK(oa_runtime_manifest_save_v2(
+                  updated, authority, "manifest.oarm", &c1, &output) ==
+              OA_RUNTIME_EIO);
+        CHECK(checkpoint_cleared(output));
+        check_no_internal_artifacts(directory);
+        oa_runtime_test_fail_fsync_mask(0U);
+    }
+
+    oa_runtime_test_fail_fsync_mask(UINT64_C(1) << 3U);
     init(output);
     CHECK(oa_runtime_manifest_save_v2(updated, authority, "manifest.oarm", &c1,
                                       &output) == OA_RUNTIME_EIO);
@@ -720,8 +767,8 @@ void persistence_v2_durability(oa_runtime_manifest *base,
     CHECK(checkpoint_equal(output, c1));
     oa_runtime_manifest_destroy(loaded);
 
-    oa_runtime_test_fail_fsync_mask((UINT64_C(1) << 2U) |
-                                    (UINT64_C(1) << 3U));
+    oa_runtime_test_fail_fsync_mask((UINT64_C(1) << 3U) |
+                                    (UINT64_C(1) << 4U));
     init(output);
     CHECK(oa_runtime_manifest_save_v2(updated, authority, "manifest.oarm", &c1,
                                       &output) == OA_RUNTIME_EDURABILITY);
@@ -746,6 +793,203 @@ void persistence_v2_durability(oa_runtime_manifest *base,
 
     remove_if_present(std::string(directory) + "/manifest.oarm");
     remove_if_present(std::string(directory) + "/manifest.oarm.previous");
+    CHECK(rmdir(directory) == 0);
+}
+
+int v2_recovery_crash_helper(int argc, char **argv) {
+    if (argc != 6) return 125;
+    std::uint8_t key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
+    v2_key(key);
+    oa_runtime_persistence_checkpoint trusted{};
+    init(trusted);
+    trusted.revision = std::strtoull(argv[3], nullptr, 10);
+    if (std::snprintf(trusted.content_sha256,
+                      sizeof(trusted.content_sha256), "%s", argv[4]) != 64) {
+        return 124;
+    }
+    oa_runtime_persistence_authority *authority = nullptr;
+    if (oa_runtime_persistence_authority_open_v2(
+            argv[2], key, "v2-key", &trusted, &authority) != OA_RUNTIME_OK) {
+        return 123;
+    }
+    oa_runtime_test_recovery_crash_at(
+        static_cast<std::uint32_t>(std::strtoul(argv[5], nullptr, 10)));
+    oa_runtime_manifest *loaded = nullptr;
+    oa_runtime_persistence_checkpoint observed{};
+    init(observed);
+    (void)oa_runtime_manifest_recover_v2(
+        authority, "manifest.oarm", &trusted, &loaded, &observed);
+    oa_runtime_manifest_destroy(loaded);
+    oa_runtime_persistence_authority_destroy(authority);
+    return 122;
+}
+
+void run_recovery_crash(const char *directory,
+                        const oa_runtime_persistence_checkpoint &trusted,
+                        std::uint32_t point) {
+    const std::string revision = std::to_string(trusted.revision);
+    const std::string digest = trusted.content_sha256;
+    const std::string crash_point = std::to_string(point);
+    const pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        execl("/proc/self/exe", "/proc/self/exe", "--v2-recovery-crash",
+              directory, revision.c_str(), digest.c_str(), crash_point.c_str(),
+              static_cast<char *>(nullptr));
+        _exit(127);
+    }
+    int child_status = 0;
+    CHECK(waitpid(child, &child_status, 0) == child);
+    CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 86);
+}
+
+void persistence_v2_recovery_cycles(oa_runtime_manifest *base,
+                                    oa_runtime_manifest *updated) {
+    char directory_template[] = "/tmp/openarm-runtime-v2-recovery-XXXXXX";
+    char *const directory = mkdtemp(directory_template);
+    CHECK(directory != nullptr);
+    const std::string current = std::string(directory) + "/manifest.oarm";
+    const std::string previous = current + ".previous";
+    std::uint8_t key[OA_RUNTIME_PERSISTENCE_KEY_BYTES]{};
+    v2_key(key);
+    oa_runtime_persistence_checkpoint zero{};
+    init(zero);
+    oa_runtime_persistence_checkpoint c1{};
+    oa_runtime_persistence_checkpoint c2{};
+    init(c1);
+    init(c2);
+    oa_runtime_persistence_authority *authority = nullptr;
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &zero, &authority) == OA_RUNTIME_OK);
+    CHECK(oa_runtime_manifest_save_v2(base, authority, "manifest.oarm", &zero,
+                                      &c1) == OA_RUNTIME_OK);
+    CHECK(oa_runtime_manifest_save_v2(updated, authority, "manifest.oarm", &c1,
+                                      &c2) == OA_RUNTIME_OK);
+    oa_runtime_persistence_authority_destroy(authority);
+
+    /* Repair the same-inode topology produced by the pre-fix recovery path. */
+    CHECK(unlink(current.c_str()) == 0);
+    CHECK(link(previous.c_str(), current.c_str()) == 0);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c1, &authority) == OA_RUNTIME_OK);
+    oa_runtime_manifest *migrated = nullptr;
+    oa_runtime_persistence_checkpoint migrated_checkpoint = c1;
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &migrated_checkpoint, &migrated,
+              &migrated_checkpoint) == OA_RUNTIME_OK);
+    oa_runtime_manifest_destroy(migrated);
+    check_distinct_inodes(current, previous);
+    migrated_checkpoint = c1;
+    CHECK(oa_runtime_manifest_save_v2(
+              updated, authority, "manifest.oarm", &migrated_checkpoint,
+              &migrated_checkpoint) == OA_RUNTIME_OK);
+    CHECK(checkpoint_equal(migrated_checkpoint, c2));
+    check_distinct_inodes(current, previous);
+    check_no_internal_artifacts(directory);
+    oa_runtime_persistence_authority_destroy(authority);
+
+    for (unsigned iteration = 0U; iteration < 8U; ++iteration) {
+        CHECK(unlink(current.c_str()) == 0);
+        CHECK(oa_runtime_persistence_authority_open_v2(
+                  directory, key, "v2-key", &c1, &authority) == OA_RUNTIME_OK);
+        oa_runtime_manifest *loaded = nullptr;
+        oa_runtime_persistence_checkpoint in_place = c1;
+        CHECK(oa_runtime_manifest_recover_v2(
+                  authority, "manifest.oarm", &in_place, &loaded, &in_place) ==
+              OA_RUNTIME_OK);
+        CHECK(checkpoint_equal(in_place, c1));
+        oa_runtime_manifest_destroy(loaded);
+        check_distinct_inodes(current, previous);
+        check_no_internal_artifacts(directory);
+
+        in_place = c1;
+        CHECK(oa_runtime_manifest_save_v2(
+                  updated, authority, "manifest.oarm", &in_place, &in_place) ==
+              OA_RUNTIME_OK);
+        CHECK(checkpoint_equal(in_place, c2));
+        check_distinct_inodes(current, previous);
+        check_no_internal_artifacts(directory);
+        oa_runtime_persistence_authority_destroy(authority);
+    }
+
+    CHECK(unlink(current.c_str()) == 0);
+    run_recovery_crash(directory, c1, 1U);
+    CHECK(access(current.c_str(), F_OK) != 0 && errno == ENOENT);
+    CHECK(internal_artifact_count(directory) == 1U);
+    run_recovery_crash(directory, c1, 1U);
+    CHECK(access(current.c_str(), F_OK) != 0 && errno == ENOENT);
+    CHECK(internal_artifact_count(directory) == 1U);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c1, &authority) == OA_RUNTIME_OK);
+    oa_runtime_manifest *loaded = nullptr;
+    oa_runtime_persistence_checkpoint output{};
+    init(output);
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c1, &loaded, &output) ==
+          OA_RUNTIME_OK);
+    oa_runtime_manifest_destroy(loaded);
+    oa_runtime_persistence_authority_destroy(authority);
+    check_distinct_inodes(current, previous);
+    check_no_internal_artifacts(directory);
+
+    CHECK(unlink(current.c_str()) == 0);
+    run_recovery_crash(directory, c1, 2U);
+    check_distinct_inodes(current, previous);
+    check_no_internal_artifacts(directory);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c1, &authority) == OA_RUNTIME_OK);
+    init(output);
+    loaded = nullptr;
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c1, &loaded, &output) ==
+          OA_RUNTIME_OK);
+    oa_runtime_manifest_destroy(loaded);
+    oa_runtime_persistence_authority_destroy(authority);
+    check_distinct_inodes(current, previous);
+    check_no_internal_artifacts(directory);
+
+    CHECK(unlink(current.c_str()) == 0);
+    CHECK(oa_runtime_persistence_authority_open_v2(
+              directory, key, "v2-key", &c1, &authority) == OA_RUNTIME_OK);
+    init(output);
+    oa_runtime_test_fail_fsync_mask(UINT64_C(1) << 0U);
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c1, &loaded, &output) ==
+          OA_RUNTIME_EIO);
+    CHECK(loaded == nullptr && checkpoint_cleared(output));
+    CHECK(access(current.c_str(), F_OK) != 0 && errno == ENOENT);
+    check_no_internal_artifacts(directory);
+
+    oa_runtime_test_fail_fsync_mask(0U);
+    init(output);
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c1, &loaded, &output) ==
+          OA_RUNTIME_OK);
+    oa_runtime_manifest_destroy(loaded);
+    check_distinct_inodes(current, previous);
+    check_no_internal_artifacts(directory);
+
+    CHECK(unlink(current.c_str()) == 0);
+    oa_runtime_test_fail_fsync_mask(UINT64_C(1) << 1U);
+    init(output);
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c1, &loaded, &output) ==
+          OA_RUNTIME_EDURABILITY);
+    CHECK(loaded == nullptr && checkpoint_cleared(output));
+    check_distinct_inodes(current, previous);
+    check_no_internal_artifacts(directory);
+    oa_runtime_test_fail_fsync_mask(0U);
+    init(output);
+    CHECK(oa_runtime_manifest_recover_v2(
+              authority, "manifest.oarm", &c1, &loaded, &output) ==
+          OA_RUNTIME_OK);
+    oa_runtime_manifest_destroy(loaded);
+    check_distinct_inodes(current, previous);
+    check_no_internal_artifacts(directory);
+    oa_runtime_persistence_authority_destroy(authority);
+
+    remove_if_present(current);
+    remove_if_present(previous);
     CHECK(rmdir(directory) == 0);
 }
 
@@ -1229,6 +1473,9 @@ int main(int argc, char **argv) {
     if (argc > 1 && std::strcmp(argv[1], "--v2-writer") == 0) {
         return v2_exec_writer(argc, argv);
     }
+    if (argc > 1 && std::strcmp(argv[1], "--v2-recovery-crash") == 0) {
+        return v2_recovery_crash_helper(argc, argv);
+    }
     CHECK(oa_runtime_test_transport_raii_probe() == OA_RUNTIME_OK);
     CHECK(oa_runtime_test_hmac_sha256_known_vector() == 1);
     oa_runtime_manifest *manifest = nullptr;
@@ -1319,6 +1566,7 @@ int main(int argc, char **argv) {
     persistence_v2_contract(manifest, updated_manifest, conflicting_manifest,
                             revision_three_manifest, revision_four_manifest);
     persistence_v2_durability(manifest, updated_manifest);
+    persistence_v2_recovery_cycles(manifest, updated_manifest);
     v2_thread_conflict(manifest, updated_manifest, conflicting_manifest, false);
     v2_thread_conflict(manifest, updated_manifest, conflicting_manifest, true);
     v2_exec_conflict(manifest, updated_manifest, conflicting_manifest);

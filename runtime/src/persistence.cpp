@@ -22,6 +22,7 @@ namespace {
 std::atomic<std::int64_t> fsync_failure_countdown{-1};
 std::atomic<std::uint64_t> fsync_failure_mask{0U};
 std::atomic<std::uint64_t> fsync_call_index{0U};
+std::atomic<std::uint32_t> recovery_crash_point{0U};
 #endif
 
 int persistence_fsync(int fd) {
@@ -47,6 +48,14 @@ int persistence_fsync(int fd) {
 #endif
     return fsync(fd);
 }
+
+#ifdef OA_RUNTIME_ENABLE_TEST_HOOKS
+void recovery_crash_checkpoint(const std::uint32_t point) {
+    if (recovery_crash_point.load(std::memory_order_relaxed) == point) {
+        _exit(86);
+    }
+}
+#endif
 
 bool safe_key_id(const char *value) {
     if (value == nullptr) return false;
@@ -342,6 +351,41 @@ private:
     bool locked_{};
 };
 
+bool internal_transaction_name(const char *name) {
+    return std::strncmp(name, ".openarm-runtime-", 17U) == 0 ||
+           std::strncmp(name, ".openarm-prior-", 15U) == 0;
+}
+
+oa_runtime_status cleanup_internal_artifacts(const int directory_fd) {
+    const int scan_fd = dup(directory_fd);
+    if (scan_fd < 0) return OA_RUNTIME_EIO;
+    DIR *const directory = fdopendir(scan_fd);
+    if (directory == nullptr) {
+        close(scan_fd);
+        return OA_RUNTIME_EIO;
+    }
+    bool removed = false;
+    int read_error = 0;
+    for (;;) {
+        errno = 0;
+        const dirent *const entry = readdir(directory);
+        if (entry == nullptr) {
+            read_error = errno;
+            break;
+        }
+        if (!internal_transaction_name(entry->d_name)) continue;
+        if (unlinkat(directory_fd, entry->d_name, 0) != 0 && errno != ENOENT) {
+            read_error = errno;
+            break;
+        }
+        removed = true;
+    }
+    if (closedir(directory) != 0 && read_error == 0) read_error = errno;
+    if (read_error != 0) return OA_RUNTIME_EIO;
+    if (removed && persistence_fsync(directory_fd) != 0) return OA_RUNTIME_EIO;
+    return OA_RUNTIME_OK;
+}
+
 bool lowercase_digest(const char *digest) {
     if (digest == nullptr || strnlen(digest, OA_RUNTIME_DIGEST_CAPACITY) != 64U) {
         return false;
@@ -371,6 +415,16 @@ oa_runtime_status checkpoint_status(
 
 void clear_checkpoint(oa_runtime_persistence_checkpoint *checkpoint) {
     if (checkpoint != nullptr) runtime_init(*checkpoint);
+}
+
+oa_runtime_status snapshot_checkpoint(
+    const oa_runtime_persistence_checkpoint *input,
+    oa_runtime_persistence_checkpoint *output,
+    oa_runtime_persistence_checkpoint &snapshot) {
+    const oa_runtime_status status = checkpoint_status(input);
+    if (status == OA_RUNTIME_OK) snapshot = *input;
+    clear_checkpoint(output);
+    return status;
 }
 
 void fill_checkpoint(const ManifestData &manifest,
@@ -541,7 +595,7 @@ oa_runtime_status install_signed_v2(PersistenceAuthorityData &authority,
                                     const char *file_name,
                                     const ManifestData &copy,
                                     const std::string &contents,
-                                    const bool target_exists) {
+                                    const ManifestData *expected_current) {
     static std::atomic<std::uint64_t> sequence{UINT64_C(1000000)};
     const std::string suffix = std::to_string(getpid()) + "-" +
         std::to_string(sequence.fetch_add(1U, std::memory_order_relaxed));
@@ -570,12 +624,66 @@ oa_runtime_status install_signed_v2(PersistenceAuthorityData &authority,
         return OA_RUNTIME_EIO;
     }
 
+    const bool target_exists = expected_current != nullptr;
     if (target_exists) {
-        if (linkat(authority.directory_fd, file_name,
-                   authority.directory_fd, backup_temporary.c_str(), 0) != 0 ||
-            renameat(authority.directory_fd, backup_temporary.c_str(),
-                     authority.directory_fd, previous_name.c_str()) != 0 ||
-            persistence_fsync(authority.directory_fd) != 0) {
+        std::string previous_contents;
+        std::shared_ptr<ManifestData> previous_manifest;
+        oa_runtime_status previous_status = read_file_at(
+            authority.directory_fd, file_name, previous_contents);
+        if (previous_status == OA_RUNTIME_OK) {
+            previous_status = authenticate_text_v2(
+                authority, file_name, previous_contents, previous_manifest);
+        }
+        if (previous_status != OA_RUNTIME_OK ||
+            previous_manifest->content_digest != expected_current->content_digest ||
+            previous_manifest->config.manifest_revision !=
+                expected_current->config.manifest_revision) {
+            unlinkat(authority.directory_fd, temporary.c_str(), 0);
+            return previous_status == OA_RUNTIME_OK ? OA_RUNTIME_ESTALE
+                                                     : previous_status;
+        }
+        int backup_fd = openat(
+            authority.directory_fd, backup_temporary.c_str(),
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (backup_fd < 0) {
+            unlinkat(authority.directory_fd, temporary.c_str(), 0);
+            return OA_RUNTIME_EIO;
+        }
+        std::size_t backup_offset = 0U;
+        bool backup_written = true;
+        while (backup_offset < previous_contents.size()) {
+            const ssize_t count = write(
+                backup_fd, previous_contents.data() + backup_offset,
+                previous_contents.size() - backup_offset);
+            if (count < 0 && errno == EINTR) continue;
+            if (count <= 0) {
+                backup_written = false;
+                break;
+            }
+            backup_offset += static_cast<std::size_t>(count);
+        }
+        if (backup_written && persistence_fsync(backup_fd) != 0) {
+            backup_written = false;
+        }
+        if (close(backup_fd) != 0) backup_written = false;
+        if (!backup_written) {
+            unlinkat(authority.directory_fd, backup_temporary.c_str(), 0);
+            unlinkat(authority.directory_fd, temporary.c_str(), 0);
+            return OA_RUNTIME_EIO;
+        }
+        if (renameat(authority.directory_fd, backup_temporary.c_str(),
+                     authority.directory_fd, previous_name.c_str()) != 0) {
+            unlinkat(authority.directory_fd, backup_temporary.c_str(), 0);
+            unlinkat(authority.directory_fd, temporary.c_str(), 0);
+            return OA_RUNTIME_EIO;
+        }
+        if (unlinkat(authority.directory_fd, backup_temporary.c_str(), 0) != 0 &&
+            errno != ENOENT) {
+            unlinkat(authority.directory_fd, backup_temporary.c_str(), 0);
+            unlinkat(authority.directory_fd, temporary.c_str(), 0);
+            return OA_RUNTIME_EIO;
+        }
+        if (persistence_fsync(authority.directory_fd) != 0) {
             unlinkat(authority.directory_fd, backup_temporary.c_str(), 0);
             unlinkat(authority.directory_fd, temporary.c_str(), 0);
             return OA_RUNTIME_EIO;
@@ -629,6 +737,11 @@ extern "C" void oa_runtime_test_fail_fsync_after(std::int64_t countdown) {
 extern "C" void oa_runtime_test_fail_fsync_mask(std::uint64_t mask) {
     openarm::runtime::fsync_call_index.store(0U, std::memory_order_relaxed);
     openarm::runtime::fsync_failure_mask.store(mask, std::memory_order_relaxed);
+}
+
+extern "C" void oa_runtime_test_recovery_crash_at(std::uint32_t point) {
+    openarm::runtime::recovery_crash_point.store(point,
+                                                 std::memory_order_relaxed);
 }
 #endif
 
@@ -969,11 +1082,15 @@ extern "C" oa_runtime_status oa_runtime_manifest_load_authenticated_v2(
     if (!openarm::runtime::output_valid(out_observed_checkpoint)) {
         return OA_RUNTIME_EABI;
     }
-    openarm::runtime::clear_checkpoint(out_observed_checkpoint);
+    oa_runtime_persistence_checkpoint trusted_checkpoint_snapshot{};
     const oa_runtime_status checkpoint_status =
-        openarm::runtime::checkpoint_status(trusted_checkpoint);
+        openarm::runtime::snapshot_checkpoint(
+            trusted_checkpoint, out_observed_checkpoint,
+            trusted_checkpoint_snapshot);
     if (checkpoint_status != OA_RUNTIME_OK) return checkpoint_status;
-    if (trusted_checkpoint->revision == 0U) return OA_RUNTIME_EPERMISSION;
+    if (trusted_checkpoint_snapshot.revision == 0U) {
+        return OA_RUNTIME_EPERMISSION;
+    }
     const auto pinned = openarm::runtime::persistence_authorities.pin(authority);
     if (!pinned || !openarm::runtime::safe_v2_file_name(file_name)) {
         return OA_RUNTIME_EINVAL;
@@ -981,15 +1098,19 @@ extern "C" oa_runtime_status oa_runtime_manifest_load_authenticated_v2(
     try {
         std::lock_guard<std::mutex> authority_lock(pinned->mutex);
         oa_runtime_status status = openarm::runtime::bind_v2_call(
-            *pinned, file_name, *trusted_checkpoint);
+            *pinned, file_name, trusted_checkpoint_snapshot);
         if (status != OA_RUNTIME_OK) return status;
         openarm::runtime::DirectoryTransaction transaction(pinned->directory_fd);
         if (!transaction.locked()) return OA_RUNTIME_EIO;
+        status = openarm::runtime::cleanup_internal_artifacts(
+            pinned->directory_fd);
+        if (status != OA_RUNTIME_OK) return status;
         std::shared_ptr<openarm::runtime::ManifestData> manifest;
         status = openarm::runtime::load_authenticated_at_v2(
             *pinned, file_name, file_name, manifest);
         if (status != OA_RUNTIME_OK) return status;
-        status = openarm::runtime::satisfies_floor(*manifest, *trusted_checkpoint);
+        status = openarm::runtime::satisfies_floor(
+            *manifest, trusted_checkpoint_snapshot);
         if (status != OA_RUNTIME_OK) return status;
         manifest->checkpoint_authorized = true;
         oa_runtime_manifest *const handle = openarm::runtime::manifests.insert(manifest);
@@ -1018,9 +1139,11 @@ extern "C" oa_runtime_status oa_runtime_manifest_save_v2(
     if (!openarm::runtime::output_valid(out_committed_checkpoint)) {
         return OA_RUNTIME_EABI;
     }
-    openarm::runtime::clear_checkpoint(out_committed_checkpoint);
+    oa_runtime_persistence_checkpoint expected_checkpoint_snapshot{};
     const oa_runtime_status checkpoint_status =
-        openarm::runtime::checkpoint_status(expected_current_checkpoint);
+        openarm::runtime::snapshot_checkpoint(
+            expected_current_checkpoint, out_committed_checkpoint,
+            expected_checkpoint_snapshot);
     if (checkpoint_status != OA_RUNTIME_OK) return checkpoint_status;
     const auto manifest_data = openarm::runtime::manifests.pin(manifest);
     const auto authority_data =
@@ -1032,11 +1155,14 @@ extern "C" oa_runtime_status oa_runtime_manifest_save_v2(
     try {
         std::lock_guard<std::mutex> authority_lock(authority_data->mutex);
         oa_runtime_status status = openarm::runtime::bind_v2_call(
-            *authority_data, file_name, *expected_current_checkpoint);
+            *authority_data, file_name, expected_checkpoint_snapshot);
         if (status != OA_RUNTIME_OK) return status;
         openarm::runtime::DirectoryTransaction transaction(
             authority_data->directory_fd);
         if (!transaction.locked()) return OA_RUNTIME_EIO;
+        status = openarm::runtime::cleanup_internal_artifacts(
+            authority_data->directory_fd);
+        if (status != OA_RUNTIME_OK) return status;
         bool target_exists = false;
         if (!openarm::runtime::target_is_regular_or_absent(
                 authority_data->directory_fd, file_name, target_exists)) {
@@ -1048,10 +1174,10 @@ extern "C" oa_runtime_status oa_runtime_manifest_save_v2(
                 *authority_data, file_name, file_name, current);
             if (status != OA_RUNTIME_OK) return status;
             if (!openarm::runtime::exact_checkpoint(
-                    *current, *expected_current_checkpoint)) {
+                    *current, expected_checkpoint_snapshot)) {
                 return OA_RUNTIME_ESTALE;
             }
-        } else if (expected_current_checkpoint->revision != 0U) {
+        } else if (expected_checkpoint_snapshot.revision != 0U) {
             return OA_RUNTIME_ESTALE;
         }
 
@@ -1061,18 +1187,19 @@ extern "C" oa_runtime_status oa_runtime_manifest_save_v2(
             *authority_data, *manifest_data, file_name, copy, contents);
         if (status != OA_RUNTIME_OK) return status;
         if (target_exists &&
-            copy.config.manifest_revision == expected_current_checkpoint->revision &&
-            copy.content_digest == expected_current_checkpoint->content_sha256) {
+            copy.config.manifest_revision == expected_checkpoint_snapshot.revision &&
+            copy.content_digest == expected_checkpoint_snapshot.content_sha256) {
             status = openarm::runtime::sync_existing(
                 authority_data->directory_fd, file_name);
             if (status != OA_RUNTIME_OK) return status;
         } else {
             if (copy.config.manifest_revision <=
-                expected_current_checkpoint->revision) {
+                expected_checkpoint_snapshot.revision) {
                 return OA_RUNTIME_ESTALE;
             }
             status = openarm::runtime::install_signed_v2(
-                *authority_data, file_name, copy, contents, target_exists);
+                *authority_data, file_name, copy, contents,
+                target_exists ? current.get() : nullptr);
             if (status != OA_RUNTIME_OK) return status;
         }
         oa_runtime_persistence_checkpoint committed{};
@@ -1099,11 +1226,15 @@ extern "C" oa_runtime_status oa_runtime_manifest_recover_v2(
     if (!openarm::runtime::output_valid(out_observed_checkpoint)) {
         return OA_RUNTIME_EABI;
     }
-    openarm::runtime::clear_checkpoint(out_observed_checkpoint);
+    oa_runtime_persistence_checkpoint trusted_checkpoint_snapshot{};
     const oa_runtime_status checkpoint_status =
-        openarm::runtime::checkpoint_status(trusted_checkpoint);
+        openarm::runtime::snapshot_checkpoint(
+            trusted_checkpoint, out_observed_checkpoint,
+            trusted_checkpoint_snapshot);
     if (checkpoint_status != OA_RUNTIME_OK) return checkpoint_status;
-    if (trusted_checkpoint->revision == 0U) return OA_RUNTIME_EPERMISSION;
+    if (trusted_checkpoint_snapshot.revision == 0U) {
+        return OA_RUNTIME_EPERMISSION;
+    }
     const auto pinned = openarm::runtime::persistence_authorities.pin(authority);
     if (!pinned || !openarm::runtime::safe_v2_file_name(file_name)) {
         return OA_RUNTIME_EINVAL;
@@ -1116,20 +1247,23 @@ extern "C" oa_runtime_status oa_runtime_manifest_recover_v2(
         } else if (pinned->bound_file_name != file_name) {
             return OA_RUNTIME_EIDENTITY;
         }
-        if (trusted_checkpoint->revision < pinned->trusted_revision ||
-            (trusted_checkpoint->revision == pinned->trusted_revision &&
-             std::string(trusted_checkpoint->content_sha256) !=
+        if (trusted_checkpoint_snapshot.revision < pinned->trusted_revision ||
+            (trusted_checkpoint_snapshot.revision == pinned->trusted_revision &&
+             std::string(trusted_checkpoint_snapshot.content_sha256) !=
                  pinned->trusted_digest)) {
             return pinned->poisoned ? OA_RUNTIME_EDURABILITY : OA_RUNTIME_ESTALE;
         }
         if (pinned->poisoned &&
-            (trusted_checkpoint->revision != pinned->trusted_revision ||
-             std::string(trusted_checkpoint->content_sha256) !=
+            (trusted_checkpoint_snapshot.revision != pinned->trusted_revision ||
+             std::string(trusted_checkpoint_snapshot.content_sha256) !=
                  pinned->trusted_digest)) {
             return OA_RUNTIME_EDURABILITY;
         }
         openarm::runtime::DirectoryTransaction transaction(pinned->directory_fd);
         if (!transaction.locked()) return OA_RUNTIME_EIO;
+        oa_runtime_status cleanup_status =
+            openarm::runtime::cleanup_internal_artifacts(pinned->directory_fd);
+        if (cleanup_status != OA_RUNTIME_OK) return cleanup_status;
         const std::string previous_name = std::string(file_name) + ".previous";
         std::shared_ptr<openarm::runtime::ManifestData> current;
         std::shared_ptr<openarm::runtime::ManifestData> previous;
@@ -1141,10 +1275,10 @@ extern "C" oa_runtime_status oa_runtime_manifest_recover_v2(
                 *pinned, previous_name.c_str(), file_name, previous);
         const bool current_accepted = current_status == OA_RUNTIME_OK &&
             openarm::runtime::satisfies_floor(
-                *current, *trusted_checkpoint) == OA_RUNTIME_OK;
+                *current, trusted_checkpoint_snapshot) == OA_RUNTIME_OK;
         const bool previous_accepted = previous_status == OA_RUNTIME_OK &&
             openarm::runtime::satisfies_floor(
-                *previous, *trusted_checkpoint) == OA_RUNTIME_OK;
+                *previous, trusted_checkpoint_snapshot) == OA_RUNTIME_OK;
         std::shared_ptr<openarm::runtime::ManifestData> selected;
         bool selected_previous = false;
         if (current_accepted) selected = current;
@@ -1158,6 +1292,24 @@ extern "C" oa_runtime_status oa_runtime_manifest_recover_v2(
                        selected->config.manifest_revision &&
                    previous->content_digest != selected->content_digest) {
             return OA_RUNTIME_ESTALE;
+        }
+        if (!selected_previous && current_accepted && previous_accepted &&
+            current->config.manifest_revision ==
+                previous->config.manifest_revision &&
+            current->content_digest == previous->content_digest) {
+            struct stat current_inode{};
+            struct stat previous_inode{};
+            if (fstatat(pinned->directory_fd, file_name, &current_inode,
+                        AT_SYMLINK_NOFOLLOW) != 0 ||
+                fstatat(pinned->directory_fd, previous_name.c_str(),
+                        &previous_inode, AT_SYMLINK_NOFOLLOW) != 0) {
+                return OA_RUNTIME_EIO;
+            }
+            if (current_inode.st_dev == previous_inode.st_dev &&
+                current_inode.st_ino == previous_inode.st_ino) {
+                selected = previous;
+                selected_previous = true;
+            }
         }
         if (!selected) {
             if (current_status == OA_RUNTIME_OK || previous_status == OA_RUNTIME_OK) {
@@ -1177,15 +1329,58 @@ extern "C" oa_runtime_status oa_runtime_manifest_recover_v2(
                 std::to_string(getpid()) + "-" +
                 std::to_string(recovery_sequence.fetch_add(
                     1U, std::memory_order_relaxed));
-            if (linkat(pinned->directory_fd, previous_name.c_str(),
-                       pinned->directory_fd, temporary.c_str(), 0) != 0 ||
-                renameat(pinned->directory_fd, temporary.c_str(),
-                         pinned->directory_fd, file_name) != 0 ||
-                openarm::runtime::persistence_fsync(pinned->directory_fd) != 0) {
-                unlinkat(pinned->directory_fd, temporary.c_str(), 0);
-                pinned->poisoned = true;
-                return OA_RUNTIME_EDURABILITY;
+            std::string recovery_contents;
+            oa_runtime_status recovery_status = openarm::runtime::read_file_at(
+                pinned->directory_fd, previous_name.c_str(), recovery_contents);
+            std::shared_ptr<openarm::runtime::ManifestData> recovery_source;
+            if (recovery_status == OA_RUNTIME_OK) {
+                recovery_status = openarm::runtime::authenticate_text_v2(
+                    *pinned, file_name, recovery_contents, recovery_source);
             }
+            if (recovery_status != OA_RUNTIME_OK ||
+                recovery_source->content_digest != selected->content_digest ||
+                recovery_source->config.manifest_revision !=
+                    selected->config.manifest_revision) {
+                return recovery_status == OA_RUNTIME_OK ? OA_RUNTIME_ESTALE
+                                                        : recovery_status;
+            }
+            int recovery_fd = openat(
+                pinned->directory_fd, temporary.c_str(),
+                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+            if (recovery_fd < 0) return OA_RUNTIME_EIO;
+            std::size_t recovery_offset = 0U;
+            bool recovery_written = true;
+            while (recovery_offset < recovery_contents.size()) {
+                const ssize_t count = write(
+                    recovery_fd, recovery_contents.data() + recovery_offset,
+                    recovery_contents.size() - recovery_offset);
+                if (count < 0 && errno == EINTR) continue;
+                if (count <= 0) {
+                    recovery_written = false;
+                    break;
+                }
+                recovery_offset += static_cast<std::size_t>(count);
+            }
+            if (recovery_written &&
+                openarm::runtime::persistence_fsync(recovery_fd) != 0) {
+                recovery_written = false;
+            }
+            if (close(recovery_fd) != 0) recovery_written = false;
+            if (!recovery_written) {
+                unlinkat(pinned->directory_fd, temporary.c_str(), 0);
+                return OA_RUNTIME_EIO;
+            }
+#ifdef OA_RUNTIME_ENABLE_TEST_HOOKS
+            openarm::runtime::recovery_crash_checkpoint(1U);
+#endif
+            if (renameat(pinned->directory_fd, temporary.c_str(),
+                         pinned->directory_fd, file_name) != 0) {
+                unlinkat(pinned->directory_fd, temporary.c_str(), 0);
+                return OA_RUNTIME_EIO;
+            }
+#ifdef OA_RUNTIME_ENABLE_TEST_HOOKS
+            openarm::runtime::recovery_crash_checkpoint(2U);
+#endif
             std::shared_ptr<openarm::runtime::ManifestData> verified;
             const oa_runtime_status verification =
                 openarm::runtime::load_authenticated_at_v2(
@@ -1194,6 +1389,10 @@ extern "C" oa_runtime_status oa_runtime_manifest_recover_v2(
                 verified->content_digest != selected->content_digest ||
                 verified->config.manifest_revision !=
                     selected->config.manifest_revision) {
+                pinned->poisoned = true;
+                return OA_RUNTIME_EDURABILITY;
+            }
+            if (openarm::runtime::persistence_fsync(pinned->directory_fd) != 0) {
                 pinned->poisoned = true;
                 return OA_RUNTIME_EDURABILITY;
             }

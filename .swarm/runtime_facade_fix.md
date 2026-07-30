@@ -2,6 +2,40 @@
 
 Review input: `.swarm/runtime_facade_review.md` against `0f0ea372bddc302ef78837c611ee9c25c9b82fad`.
 
+## V2 checkpoint-alias follow-up
+
+V2 load, save, and recovery now validate and copy the input checkpoint to a
+local snapshot before clearing or writing the output checkpoint. The public API
+therefore supports the same checkpoint object as input and output on both
+success and failure; malformed aliased input retains its exact status while the
+output object is reinitialized and cleared. The installed strict-C11 consumer
+probes in-place initial/idempotent save, load, and recovery, plus malformed-input
+failure and clearing for all three operations.
+
+Recovery promotion now writes, file-syncs, and atomically renames an independent
+regular-file copy of `.previous`; current and previous therefore never remain
+aliases of one inode after successful recovery. Save also removes its
+transaction-owned backup name after rename, including Linux's same-inode
+rename-no-op case. Each checked transaction removes and directory-syncs reserved-
+prefix orphans left by a killed cooperating writer while holding the fresh-FD
+transaction lock. Tests run eight recover-to-save cycles with inode inequality
+and zero internal names after every step, kill exec'd recovery helpers both with
+a durable temporary and after current rename, prove repeated pre-rename crashes
+do not accumulate names, and cover pre/post-rename fsync failures and recovery.
+
+Evidence correction: the earlier default `git diff --check` invocation examined
+only unstaged changes after the new reports had already been staged, so it did
+not cover two Markdown trailing-space hard breaks in
+`persistence_redesign_b.md`. This follow-up removes those spaces and verifies the
+complete staged delta with `git diff --cached --check` before commit; the earlier
+broader verification results are otherwise unchanged.
+
+Follow-up verification passes fresh GCC 15.2 Release, ASan+UBSan+leak, and TSan
+builds at 2/2 tests, plus cppcheck warning/performance/portability. The freshly
+rebuilt installed archive passes the strict all-header C11 alias probe and C++17
+consumer, retains 50/50 declaration/export parity and no test hooks, and still
+references only `oa_can_make_register_query_typed` among CAN builders.
+
 ## Persistence V2 redesign closure
 
 The third review demonstrated that a directory-local authenticated maximum is

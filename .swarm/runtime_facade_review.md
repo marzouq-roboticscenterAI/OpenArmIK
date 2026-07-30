@@ -1,98 +1,119 @@
-# Runtime facade third independent re-review
+# Runtime facade final persistence re-review
 
-Commit: `8c92f078dd5205eddbf835992f3f50cc36794650`
+Commit: `bafeb78b6662169533af0dbe5bf26ca9726dd8f3`
 Base: `604ca28`
-Prior reviewed commit: `8d01458e238e1d5a5ee2934925893387f7e8a2dd`
+Prior reviewed commit: `8c92f078dd5205eddbf835992f3f50cc36794650`
 Disposition: **FINDINGS**
 
-No Critical findings. Physical behavior remains fail-closed: physical inventory
-is unresolved/ambiguous, physical configuration/calibration/motion remain
-unsupported, and the production archive references only the typed register-query
-CAN builder on the independently query-classified transport send path.
+No Critical or Important findings. The repeated authenticated-persistence issue
+is resolved and is **not a convergence blocker** at this commit. V2 correctly
+makes freshness relative to caller-owned state outside the replayable directory;
+legacy/local authenticated files are no longer control authority.
 
-## Important
+## Minor
 
-1. **The authenticated persistence rollback/serialization issue persists on two
-   cross-process paths.** `refresh_revision_floor` reconstructs its maximum only
-   from authenticated files currently present in the directory plus process-local
-   authority memory (`runtime/src/persistence.cpp:218-256`); it does not store a
-   trusted durable high-water mark. The `.previous` defense is only a suffix check
-   on the requested name (`persistence.cpp:428-434`). In a focused installed-
-   Release test, revision 1 was saved, revision 2 was successfully saved, the
-   authority was destroyed, the current revision-2 file was removed, and retained
-   revision-1 `.previous` was hard-linked as `rollback.oarm`. A newly opened
-   authority returned `OA_RUNTIME_OK` for authenticated load of `rollback.oarm`,
-   and `oa_runtime_create` accepted that authenticated old ARMABLE manifest with
-   `OA_RUNTIME_OK`. Thus removal/replacement of the current artifact resets the
-   reconstructed floor and bypasses the retained-prior name restriction after a
-   process/authority reopen.
+1. **The V2 checkpoint input cannot alias its output, but that restriction is
+   neither documented nor expressed by the C API.** Load clears
+   `out_observed_checkpoint` before validating/reading `trusted_checkpoint`
+   (`runtime/src/persistence.cpp:969-975`); save and recovery have the same order
+   (`:1018-1024`, `:1099-1105`). Since the parameters are ordinary non-`restrict`
+   pointers, updating one checkpoint object in place is a natural legal call.
+   A focused installed-Release probe provisioned revision 1, then called
+   `oa_runtime_manifest_load_authenticated_v2(..., &checkpoint, ...,
+   &checkpoint)`: the function first zeroed the trusted tuple, returned
+   `OA_RUNTIME_EPERMISSION`, and left the caller's checkpoint destroyed instead
+   of returning `OK`. The behavior is fail-closed, so this is an API usability
+   and failure-output issue rather than an authorization bypass. Copy the input
+   record before clearing outputs, or explicitly document and validate
+   non-aliasing.
 
-   Cross-process serialization also fails when an authority exists before
-   `fork()`. `DirectoryTransaction` applies `flock` to the authority's long-lived
-   directory fd (`persistence.cpp:205-216`). Forked children inherit the same open
-   file description, which is one `flock` owner, while each child has an independent
-   copy of the C++ mutex. Two released-at-once children saving different revision-2
-   manifests over revision 1 through that inherited authority both returned
-   `OA_RUNTIME_OK` on the first focused run. The resulting current and `.previous`
-   files were different authenticated revision-2 contents. Independent authority
-   handles opened in each child did serialize correctly in ten races, and separate
-   authorities in two threads also produced exactly one `OK` and one `ESTALE`, but
-   the public API/README does not exclude post-fork authority use. This is the same
-   prior persistence finding, not a new category: revision transactions and the
-   accepted revision/content floor are still not unconditionally cross-process or
-   rollback safe.
+2. **Saving after `.previous` recovery leaks a transaction-owned internal hard
+   link.** Recovery promotes the prior file by hard-linking it and renaming that
+   link over current (`persistence.cpp:1169-1200`), leaving current and
+   `.previous` as names for the same inode. The next save links current to
+   `.openarm-prior-<pid>-<sequence>` and renames it over `.previous`
+   (`:573-582`). On Linux, when rename source and destination already name the
+   same inode, `renameat` succeeds without removing the source name. A focused
+   installed-Release sequence—recover exact revision 1, then successfully save
+   revision 2—returned `OA_RUNTIME_OK` but left
+   `.openarm-prior-<pid>-1000002`; directory removal failed until that orphan was
+   deleted. Repeated recovery/update cycles can accumulate authenticated hidden
+   files and consume directory space. The reserved prefix prevents public V2
+   selection, so no rollback or arming bypass was observed.
 
-## Resolved prior findings
+3. **The committed verification claim for `git diff --check` is false.** The
+   command reports trailing whitespace at
+   `.swarm/persistence_redesign_b.md:3-4`. This is documentation hygiene only.
 
-- **Facade timestamps/staleness:** resolved. Production-time host-steady evidence
-  is associated with each feedback sequence under controller synchronization.
-  Focused sampling observed continuously increasing recent timestamps; a 120 ms
-  plan hold kept sequence/timestamp fixed and cleared freshness after the 50 ms
-  timeout; destroying the plan promptly produced a newer sequence, newer facade
-  timestamp, and full freshness. Event and calibration paths consume the same
-  translation.
-- **Mutex error paths:** resolved. Invalid ABI-valid manual and recipe creation
-  each returned within 500 ms with runtime `EINVAL`, commission facility, and the
-  exact lower `OA_COMMISSION_EINVAL`; no runtime-mutex reentrancy remained on those
-  paths. TSan/deadlock-stack coverage passed.
-- **Joint-plan identity:** resolved. Individual joint requests now require the
-  exact model revision, selected-side TCP revision, coordinate digest, collision
-  policy, and scene revision. Focused mutations of every field were rejected, and
-  the plan report exposed the verified binding.
-- **Semantic last-error:** resolved. Invalid interlock, heartbeat clock, disarm
-  clock, and runtime-now clock calls on a valid runtime returned `EINVAL` and
-  recorded runtime facility with lower code zero.
-- **All first-round findings:** rechecked with the production boundary unchanged:
-  truthful capabilities/model identity, live clocks, expiring single-plan
-  authority, synchronized/runtime-bound calibration, exception/RAII cleanup,
-  exact event evidence, unreachable/detail mapping, ABI-versus-semantic status,
-  and CMake 3.16-compatible scoped reset remain covered and pass. Authenticated
-  HMAC/file durability behavior passes in ordinary sequential operation, subject
-  to the Important rollback/transaction exception above.
+## Persistence convergence result
+
+- **External freshness authority:** resolved. V2 authority open and every V2
+  operation validate an exact `(revision, content_sha256)` checkpoint. Zero is
+  provisioning-only; load/recovery require a nonzero trusted tuple. The README
+  accurately states that local files and a static HMAC key are not monotonic
+  authority and that the checkpoint must live outside the directory replay
+  domain.
+- **Replay and slot binding:** resolved. V2 HMAC input binds key ID and logical
+  slot. Fresh tests rejected copied old bytes, hard-linked prior bytes restored
+  as current, replay under another name, removed-current reopen, same-revision
+  equivocation, and direct `.previous` use. Recovery with floor C2 rejected C1;
+  recovery with exact C1 explicitly restored and authorized C1.
+- **Exact-current CAS:** resolved. Save authenticates current and requires exact
+  equality with the caller checkpoint under the transaction lock. Revision-3/4
+  proposals based on stale C1 and conflicting revision-2 writers were rejected;
+  outputs stayed cleared on the tested non-aliasing failure paths.
+- **Serialization and fork:** resolved under the documented process model. Every
+  transaction opens a fresh directory file description and holds `flock` through
+  verification/final sync. Same-authority threads, separate-authority threads,
+  and independently exec'd processes produced one winner and one `ESTALE`.
+  Inherited child API calls returned `OA_RUNTIME_ESTATE` before registry mutexes;
+  the supported child path is immediate `exec`.
+- **Legacy authority boundary:** resolved. Plain and legacy V1 authenticated
+  loads report `checkpoint_authorized == 0`; `oa_runtime_create` rejects their
+  ARMABLE file handles with `OA_RUNTIME_EPERMISSION`. A V2 checked load reports
+  checkpoint authorization and can create the virtual runtime.
+- **Namespace and recovery:** component-by-component `openat` with
+  `O_DIRECTORY|O_NOFOLLOW` pins authority paths; target opens are no-follow and
+  nonblocking. FIFO, symlink, oversized, corrupt, wrong-slot, and missing-file
+  cases fail closed. Ordinary load never falls back to `.previous`; recovery is
+  explicit and checkpoint-relative, subject only to Minor 2's orphan cleanup.
+- **Durability status:** injected failures revalidated confirmed rollback as
+  `OA_RUNTIME_EIO`, unconfirmed rollback/sync as `OA_RUNTIME_EDURABILITY`, cleared
+  checkpoint outputs, poisoned ordinary operations, and explicit recovery before
+  reuse. This validates API state transitions, not universal power-loss behavior;
+  the README correctly limits crash guarantees to a qualified local filesystem.
+
+## Other prior findings
+
+All non-persistence fixes remain resolved: continuously translated facade
+timestamps become stale during plan quiescence and fresh on resume; invalid
+calibration creation has no mutex reentrancy; joint plans bind exact model/TCP,
+coordinate digest, collision policy, and scene; semantic failures update runtime
+`last_error`; capabilities, model identity, plan expiry, calibration evidence,
+event evidence, exception/RAII cleanup, status mapping, ABI-versus-semantic
+classification, and the query-only physical boundary remain covered and pass.
 
 ## Verification performed
 
 - Fresh GCC 15.2 Release build and CTest: **2/2 passed**.
-- Fresh Debug ASan+UBSan with leak detection and halt: **2/2 passed**.
+- Fresh Debug ASan+UBSan with leak detection/halt: **2/2 passed**.
 - Fresh Debug TSan with halt/deadlock stacks: **2/2 passed**.
 - `cppcheck --enable=warning,performance,portability --error-exitcode=1`:
   **passed**.
-- Fresh installed-package all-six-header strict C11 and C++17 consumers: **built,
-  linked, and ran**.
-- Installed declaration/export parity: **46/46**; no installed test-hook symbols
+- Fresh installed all-six-header strict C11 and C++17 consumers: **built, linked,
+  and ran**.
+- Installed declaration/export parity: **50/50**; no installed test-hook symbols
   or test library.
-- Query-only audit: the sole referenced CAN frame builder is
-  `oa_can_make_register_query_typed`; the sent frame must be reported as
+- Query-only audit: the only referenced CAN frame builder is
+  `oa_can_make_register_query_typed`; the transport send result is required to be
   `OA_TRANSPORT_FRAME_REGISTER_QUERY`. No write/enable/disable/zero/save/motion
-  builder or physical actuation entry point was found.
-- Fresh installed-Release focused tests: timestamp cadence/staleness/resume,
-  invalid-calibration completion/error detail, all joint identity fields, semantic
-  `last_error`, independent-authority thread/process persistence races, authority
-  reopen, and `.previous` copy behavior.
-- `git diff --check`, `bash -n scripts/build_native.sh`, and source inspection of
-  its scoped `cmake -E remove_directory` reset: **passed**. The repository-wide
-  native script was not run because this isolated worktree lacks the pinned
-  `upstream/openarm_description/package.xml`; the fresh component/install matrix
-  above is complete.
+  builder or physical actuation facade was found.
+- Fresh installed-Release focused checks covered external-floor replay after
+  unlink/reopen, hard-link/name replay, explicit recovery above/equal to the
+  floor, exact CAS, fork rejection, legacy/plain arming rejection, and FIFO
+  nonblocking rejection. Core acceptance passed; the additional alias and
+  recovery/update cleanup probes produced Minor 1 and Minor 2.
+- `bash -n scripts/build_native.sh` and its scoped CMake reset remain valid.
+  `git diff --check 8c92f07..bafeb78` **fails** only as described in Minor 3.
 
 No hardware, CAN interface, or network traffic was used.
