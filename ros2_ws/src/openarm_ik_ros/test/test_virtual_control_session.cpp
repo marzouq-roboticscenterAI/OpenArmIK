@@ -58,6 +58,12 @@ struct Recorder
     std::lock_guard<std::mutex> lock(mutex);
     return states.size();
   }
+
+  std::vector<MeasuredState> captured_states()
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    return states;
+  }
 };
 
 template<typename Predicate>
@@ -125,10 +131,11 @@ TEST(VirtualControlSession, PublishesLaggingMeasuredStateAndCompletesOnFeedback)
   ASSERT_TRUE(recorder.wait_result(15s));
   ASSERT_EQ(recorder.result->outcome, CommandResult::Outcome::completed) <<
     recorder.result->reason << " status=" << recorder.result->control_status;
-  ASSERT_GT(recorder.states.size(), 5U);
+  const auto states = recorder.captured_states();
+  ASSERT_GT(states.size(), 5U);
   std::size_t intermediate = 0U;
   std::uint64_t prior_sequence = 0U;
-  for (const auto & state : recorder.states) {
+  for (const auto & state : states) {
     EXPECT_EQ(state.snapshot.arm[0].fresh_mask, 0x7fU);
     EXPECT_EQ(state.snapshot.arm[1].fresh_mask, 0x7fU);
     EXPECT_LE(state.snapshot.arm[0].measurement_runtime_monotonic_ns, state.runtime_now_ns);
@@ -143,7 +150,7 @@ TEST(VirtualControlSession, PublishesLaggingMeasuredStateAndCompletesOnFeedback)
     }
   }
   EXPECT_GT(intermediate, 2U);
-  const auto & terminal = recorder.states.back().snapshot.arm[0];
+  const auto & terminal = states.back().snapshot.arm[0];
   EXPECT_NEAR(terminal.q_model_rad[3], 0.2, 5.0e-4);
   EXPECT_NEAR(terminal.dq_model_rad_s[3], 0.0, 2.0e-2);
   EXPECT_GT(recorder.result->terminal_feedback_seq[0], recorder.result->seed_feedback_seq[0]);

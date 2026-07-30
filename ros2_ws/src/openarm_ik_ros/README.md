@@ -2,9 +2,10 @@
 
 `openarm_ik_ros_node` is the sole `/joint_states` authority for the Stage-A
 virtual controller. It publishes exactly the fourteen actuated arm joints from
-coherent `oa_snapshot` encoder feedback, including measured position, velocity,
-effort, and conservative measurement timestamps. It publishes no TF and no
-finger state. `robot_state_publisher` is the launch's only TF authority.
+coherent `oa_runtime_snapshot` encoder feedback, including measured position,
+velocity, effort, and conservative runtime-steady measurement timestamps. It
+publishes no TF and no finger state. `robot_state_publisher` is the launch's
+only TF authority.
 
 The RViz launch gives that publisher the derived
 `openarm_v10_bimanual_stage_a_visualization.urdf`. Because Stage A has no
@@ -31,11 +32,18 @@ transformed transactionally from their stamped source frame into
 deprecated `/openarm_ik/paired_xyz` compatibility topic. Cancel uses a disable
 stop and requires a process restart before another command.
 
-The backend is fixed to the canonical OpenArm v1.0 bimanual virtual manifest.
+The lower session consumes installed `OpenArm::Runtime` as its sole state,
+motion, model/TCP identity, clock, event, and plan authority. Runtime owns the
+virtual progression cadence; ROS only polls new measured generations and
+heartbeats active commands. The backend is fixed to the canonical OpenArm v1.0
+bimanual virtual manifest.
 Physical control, transport selection, CAN configuration, calibration,
 commissioning, simulator injection, and persistence endpoints are absent.
 Collision checking is unavailable, so healthy operation remains WARN with
-`collision_checked=false`.
+`collision_checked=false`. Diagnostics report the exact runtime capabilities,
+coordinate/model/TCP/scene digests, immutable-manifest authentication and
+persistence state, exact virtual inventory, and the fact that runtime
+calibration capabilities have no ROS endpoint.
 
 Use the compiled client after sourcing the ROS workspace:
 

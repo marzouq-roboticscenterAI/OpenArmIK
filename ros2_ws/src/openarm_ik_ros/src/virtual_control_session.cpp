@@ -284,6 +284,10 @@ private:
         if (steady_now < next_poll) {
           continue;
         }
+        drain_events();
+        if (adapter_faulted()) {
+          break;
+        }
         if (!heartbeat()) {
           break;
         }
@@ -408,7 +412,17 @@ private:
     if (status != OA_RUNTIME_OK) {
       throw std::runtime_error("runtime virtual arm failed: " + std::to_string(status));
     }
-    if (refresh_snapshot(false, true) == RefreshResult::failed) {
+    const auto snapshot_deadline = std::chrono::steady_clock::now() +
+      std::chrono::nanoseconds(kFeedbackTimeoutNs * 2U);
+    RefreshResult initial_snapshot = RefreshResult::failed;
+    do {
+      initial_snapshot = refresh_snapshot(false, true);
+      if (initial_snapshot != RefreshResult::failed) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::nanoseconds(kPollCycleNs));
+    } while (std::chrono::steady_clock::now() < snapshot_deadline);
+    if (initial_snapshot == RefreshResult::failed) {
       throw std::runtime_error("initial runtime measured snapshot is invalid");
     }
     drain_events();
@@ -639,6 +653,8 @@ private:
       } else if (status != OA_RUNTIME_OK) {
         reject_on_owner(std::move(*pending), status, "plan_report_failed");
       } else {
+        reject_on_owner(
+          std::move(*pending), OA_RUNTIME_EIDENTITY, "runtime_plan_identity_mismatch");
         fault_local(OA_RUNTIME_EIDENTITY, "runtime_plan_identity_mismatch");
       }
       return;
@@ -744,6 +760,16 @@ private:
     }
     status = oa_runtime_heartbeat(runtime_, command_id, OA_RUNTIME_CLOCK_MONOTONIC, deadline);
     if (status != OA_RUNTIME_OK) {
+      // Completion is produced by Runtime's cadence and can race this polling
+      // thread. Consume the terminal event before treating an idle command as
+      // a heartbeat failure.
+      drain_events();
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!active_) {
+          return health_.adapter_state != AdapterState::fault;
+        }
+      }
       fault_from_status(status, "heartbeat_failed");
       return false;
     }
@@ -978,8 +1004,32 @@ private:
 
   bool refresh_stopped_snapshot()
   {
-    return refresh_snapshot(false, false) != RefreshResult::failed &&
-           snapshot_.lifecycle == kLifecycleDisarmed;
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::nanoseconds(kFeedbackTimeoutNs * 2U);
+    do {
+      if (refresh_snapshot(false, false) != RefreshResult::failed &&
+        snapshot_.lifecycle == kLifecycleDisarmed)
+      {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::nanoseconds(kPollCycleNs));
+    } while (std::chrono::steady_clock::now() < deadline);
+    return false;
+  }
+
+  void refresh_terminal_snapshot()
+  {
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::nanoseconds(kFeedbackTimeoutNs * 2U);
+    do {
+      if (refresh_snapshot(false, false) != RefreshResult::failed &&
+        (snapshot_.lifecycle == kLifecycleDisarmed ||
+        snapshot_.lifecycle == kLifecycleFault || snapshot_.lifecycle == kLifecycleEstop))
+      {
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::nanoseconds(kPollCycleNs));
+    } while (std::chrono::steady_clock::now() < deadline);
   }
 
   bool adapter_faulted() const
@@ -1061,7 +1111,7 @@ private:
     }
     if (runtime_ != nullptr) {
       (void)oa_runtime_stop(runtime_, OA_RUNTIME_STOP_DISABLE);
-      (void)refresh_snapshot(false, false);
+      refresh_terminal_snapshot();
     }
     std::optional<Active> active;
     std::optional<SessionCommand> pending;
