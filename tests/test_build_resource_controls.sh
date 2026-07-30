@@ -71,9 +71,21 @@ set -euo pipefail
 printf 'colcon MAKEFLAGS=%s CMAKE_BUILD_PARALLEL_LEVEL=%s' "${MAKEFLAGS:-}" "${CMAKE_BUILD_PARALLEL_LEVEL:-}" >> "$OPENARM_BUILD_TEST_LOG"
 printf ' <%s>' "$@" >> "$OPENARM_BUILD_TEST_LOG"
 printf '\n' >> "$OPENARM_BUILD_TEST_LOG"
+build_base=
+while (($#)); do
+  case "$1" in
+    --build-base) build_base=$2; shift 2; continue ;;
+  esac
+  shift
+done
+mkdir -p "$build_base/openarm_ik_ros"
+: > "$build_base/openarm_ik_ros/libopenarm_virtual_control_session.a"
 EOF
 cat > "$fake_bin/nm" <<'EOF'
 #!/usr/bin/env bash
+if [[ "$1" == -u ]]; then
+  printf '                 U oa_runtime_create\n'
+fi
 exit 0
 EOF
 chmod +x "$fake_bin/cmake" "$fake_bin/colcon" "$fake_bin/nm"
@@ -135,6 +147,22 @@ kill "$lock_holder" 2>/dev/null || true
 wait "$lock_holder" 2>/dev/null || true
 [[ "$lock_status" == 3 ]]
 grep -Fq 'already being built' "$work_root/lock.out"
+
+flock "$output_root/.openarmik-build.lock" sleep 10 &
+native_lock_holder=$!
+sleep 0.1
+set +e
+PATH="$fake_bin:$PATH" OPENARM_BUILD_TEST_LOG="$command_log" \
+  OPENARM_BUILD_JOBS=2 "$root_dir/scripts/build_native.sh" \
+  --build-root "$output_root/native_build" \
+  --install-prefix "$output_root/install" \
+  --jobs 2 >"$work_root/native-lock.out" 2>&1
+native_lock_status=$?
+set -e
+kill "$native_lock_holder" 2>/dev/null || true
+wait "$native_lock_holder" 2>/dev/null || true
+[[ "$native_lock_status" == 3 ]]
+grep -Fq 'Native build root is already being built' "$work_root/native-lock.out"
 
 grep -Fq 'exec "$root_dir/scripts/launch_web_portal.sh" --build --firefox "$@"' \
   "$root_dir/run.sh"

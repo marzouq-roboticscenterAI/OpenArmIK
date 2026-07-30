@@ -19,10 +19,13 @@ The repository also contains:
 - [commission/README.md](commission/README.md): manual and supervised
   commissioning building blocks.
 - [control/README.md](control/README.md): the virtual controller core.
+- [runtime/README.md](runtime/README.md): the installed product facade and
+  immutable identity/capability authority used by ROS.
 
 Automatic CAN discovery cannot establish physical joint identity, side, sign,
 zero, gearing, firmware, or a safe motor mapping. Consequently this revision
-does not configure or move physical arms. A physical backend must remain
+does not query, configure, or move physical arms through the runtime. A
+physical backend must remain
 disarmed until those facts are commissioned and an independent E-stop and
 watchdog are installed.
 
@@ -35,13 +38,13 @@ watchdog are installed.
 ```
 
 The build command performs a clean Release build in dependency order (CAN,
-model, commission, transport, control, then ROS), installs everything under
-`ros2_ws/install`, and never uses sudo or configures an interface. Builds use at
-most two jobs by default; set `OPENARM_BUILD_JOBS` or pass `--jobs` to choose a
-different positive limit. ROS packages build sequentially so this limit remains
-global rather than multiplying across packages. To compile
+model, commission, transport, control, runtime, then ROS), installs everything
+under `ros2_ws/install`, and never uses sudo or configures an interface. Builds
+use at most two jobs by default; set `OPENARM_BUILD_JOBS` or pass `--jobs` to
+choose a different positive limit. ROS packages build sequentially so this
+limit remains global rather than multiplying across packages. To compile
 and run every registered hardware-free native CTest while verifying that all
-eight ROS tests are freshly registered, use:
+13 ROS tests are freshly registered, use:
 
 ```bash
 ./scripts/build.sh --tests
@@ -53,9 +56,10 @@ reuses compatible native and ROS build trees while reconfiguring them, and is
 what `./run.sh` uses to keep normal source-fresh launches inexpensive. A clean
 build remains the supported reset for removed install artifacts. Top-level
 `scripts/build.sh` invocations sharing the same canonical output root are
-serialized; distinct output roots are not. The portal and standalone RViz
-launchers also share one per-user GUI lock, so they cannot start duplicate ROS
-and RViz stacks together.
+serialized; direct native builds sharing the same canonical native build root
+use that lock too. Distinct output roots are not globally serialized. The portal
+and standalone RViz launchers also share one per-user GUI lock, so they cannot
+start duplicate ROS and RViz stacks together.
 A disposable build
 can be isolated with `--output-root /tmp/openarmik-build`; its setup file is
 then `/tmp/openarmik-build/install/setup.bash`. Output roots may contain spaces,
@@ -88,7 +92,11 @@ target scaling for RViz only, closes the RViz window before stopping ROS so
 duplicate joint-state/TF publishers. The window-close path is a compiled C++17
 Xlib utility installed with the ROS package; it has no Python runtime dependency.
 
-The launch starts only `robot_state_publisher`, the virtual adapter, and RViz. `robot_state_publisher` is the only TF authority. The pinned `openarm_description` package supplies mesh URI resolution; the installed robot description is copied from [model/generated/openarm_v10_bimanual.urdf](model/generated/openarm_v10_bimanual.urdf).
+The launch starts only `robot_state_publisher`, the virtual adapter, and RViz.
+`robot_state_publisher` is the only TF authority. The pinned
+`openarm_description` package supplies mesh URI resolution. Launch uses a
+derived visualization-only URDF with fixed, explicitly unmeasured fingers;
+the canonical generated URDF remains installed unchanged for model identity.
 
 In another sourced terminal, inspect the measured virtual controller or send an
 action goal with the compiled client:
@@ -111,19 +119,19 @@ a deprecated validated shim through the same reject-new arbiter.
 
 Action results are authoritative. Periodic and event-driven
 `diagnostic_msgs/DiagnosticArray` messages on `/openarm_ik/diagnostics` report
-the virtual backend, collision warning, adapter/controller lifecycle, executing
-state, coherent feedback masks, sequences, timestamps, ages, and skew. Healthy
-unchecked operation is WARN, never OK.
-
-RViz may report four unrealistic finger-inertia errors from the pinned canonical generated URDF. They are inherited model data; meshes and TF still load, and this adapter neither edits nor reinterprets that URDF.
+the runtime backend, immutable manifest/model/TCP/scene identity, exact virtual
+inventory, capability/persistence/calibration exposure, collision warning,
+adapter lifecycle, coherent feedback masks, sequences, timestamps, ages, and
+skew. Healthy unchecked operation is WARN, never OK.
 
 The native install exports CMake targets for dependency-safe consumption:
-`OpenArm::Can`, `OpenArm::Model`, `OpenArm::Transport`, and
-`OpenArm::Commission`. Existing model and transport target names remain
+`OpenArm::Can`, `OpenArm::Model`, `OpenArm::Transport`, `OpenArm::Commission`,
+`OpenArm::Control`, and `OpenArm::Runtime`. Existing model and transport target names remain
 available. Control discovers the installed model package instead of compiling a
 second model copy, and transport links the installed CAN target instead of
-embedding CAN objects. The ROS package likewise finds the installed model
-export instead of compiling monorepo-relative sources. Production archives do
+embedding CAN objects. The production ROS session links only the installed
+`OpenArm::Runtime` facade; only the separate portal geometry helper consumes
+the model target directly. Production archives do
 not contain the native suites' fault-injection hooks.
 
 `scripts/install_ros_dependencies.sh` is review-only unless explicitly passed

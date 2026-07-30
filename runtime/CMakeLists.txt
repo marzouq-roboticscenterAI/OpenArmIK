@@ -20,10 +20,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
-find_package(OpenArmCan 1 CONFIG REQUIRED)
 find_package(openarm_model 1 CONFIG REQUIRED)
 find_package(openarm_commission CONFIG REQUIRED)
-find_package(OpenArmTransport 1 CONFIG REQUIRED)
 find_package(openarm_control 1 CONFIG REQUIRED)
 
 if(NOT TARGET OpenArm::Model)
@@ -31,12 +29,6 @@ if(NOT TARGET OpenArm::Model)
     set_property(TARGET OpenArm::Model PROPERTY
         INTERFACE_LINK_LIBRARIES openarm_model::openarm_model)
 endif()
-if(NOT TARGET OpenArm::Transport)
-    add_library(OpenArm::Transport INTERFACE IMPORTED)
-    set_property(TARGET OpenArm::Transport PROPERTY
-        INTERFACE_LINK_LIBRARIES OpenArm::openarm_transport)
-endif()
-
 set(OA_RUNTIME_SOURCES
     src/calibration.cpp
     src/inventory.cpp
@@ -54,8 +46,7 @@ target_include_directories(openarm_runtime
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(openarm_runtime PUBLIC
-    OpenArm::Can OpenArm::Model OpenArm::Commission OpenArm::Transport
-    OpenArm::Control Threads::Threads)
+    OpenArm::Model OpenArm::Commission OpenArm::Control Threads::Threads)
 target_compile_options(openarm_runtime PRIVATE
     -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2 -Wconversion -Wsign-conversion)
 
@@ -73,8 +64,7 @@ if(BUILD_TESTING)
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(openarm_runtime_test PUBLIC
-        OpenArm::Can OpenArm::Model OpenArm::Commission OpenArm::Transport
-        OpenArm::Control Threads::Threads)
+        OpenArm::Model OpenArm::Commission OpenArm::Control Threads::Threads)
     target_compile_definitions(openarm_runtime_test PRIVATE OA_RUNTIME_ENABLE_TEST_HOOKS=1)
     target_compile_options(openarm_runtime_test PRIVATE
         -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2 -Wconversion -Wsign-conversion)

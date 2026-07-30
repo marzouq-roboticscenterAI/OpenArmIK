@@ -37,12 +37,6 @@
 
 namespace
 {
-constexpr std::uint64_t kCapabilityMeasuredVirtualExecution = 1ULL << 0U;
-constexpr std::uint64_t kCapabilityJointAction = 1ULL << 1U;
-constexpr std::uint64_t kCapabilityPairedTcpAction = 1ULL << 2U;
-constexpr std::uint64_t kCapabilityBits = kCapabilityMeasuredVirtualExecution |
-  kCapabilityJointAction | kCapabilityPairedTcpAction;
-
 using MoveJoint = openarm_control_msgs::action::MoveJoint;
 using MovePairedTcp = openarm_control_msgs::action::MovePairedTcp;
 using JointGoalHandle = rclcpp_action::ServerGoalHandle<MoveJoint>;
@@ -94,7 +88,11 @@ struct DiagnosticRecord
   std::string outcome{"none"};
   std::int64_t request_stamp_ns{};
   bool committed{};
-  std::uint32_t control_status{OA_CONTROL_OK};
+  std::uint32_t control_status{};
+  oa_runtime_status runtime_status{OA_RUNTIME_OK};
+  oa_runtime_facility runtime_facility{OA_RUNTIME_FACILITY_RUNTIME};
+  std::uint32_t lower_status{};
+  std::uint32_t system_error{};
   std::uint64_t command_id{};
   std::uint64_t seed_feedback_seq[2]{};
   std::uint64_t plan_duration_ns{};
@@ -242,7 +240,7 @@ private:
     const rclcpp_action::GoalUUID & uuid, const std::shared_ptr<const MoveJoint::Goal> goal)
   {
     std::string reason;
-    oa_side side{};
+    std::uint32_t side{};
     std::uint32_t joint{};
     if (!valid_stamp(goal->stamp, reason) ||
       !VirtualControlSession::map_joint(goal->joint_name, side, joint) ||
@@ -268,7 +266,7 @@ private:
   void accept_joint(const std::shared_ptr<JointGoalHandle> goal_handle)
   {
     const auto goal = goal_handle->get_goal();
-    oa_side side{};
+    std::uint32_t side{};
     std::uint32_t joint{};
     const std::string owner = uuid_string(goal_handle->get_goal_id());
     if (!VirtualControlSession::map_joint(goal->joint_name, side, joint)) {
@@ -462,7 +460,7 @@ private:
     auto result = std::make_shared<MoveJoint::Result>();
     CommandResult internal;
     internal.outcome = CommandResult::Outcome::rejected;
-    internal.control_status = OA_CONTROL_EINVAL;
+    internal.runtime_status = OA_RUNTIME_EINVAL;
     internal.reason = reason;
     const auto goal_id = goal->get_goal_id();
     fill_common_result(*result, internal, goal_id);
@@ -479,7 +477,7 @@ private:
     auto result = std::make_shared<MovePairedTcp::Result>();
     CommandResult internal;
     internal.outcome = CommandResult::Outcome::rejected;
-    internal.control_status = OA_CONTROL_EINVAL;
+    internal.runtime_status = OA_RUNTIME_EINVAL;
     internal.reason = reason;
     const auto goal_id = goal->get_goal_id();
     fill_common_result(*result, internal, goal_id);
@@ -532,11 +530,13 @@ private:
 
   bool publish_measured(const MeasuredState & measured)
   {
-    const auto oldest = std::min(measured.snapshot.arm[0].t_ns, measured.snapshot.arm[1].t_ns);
-    if (oldest > measured.controller_now_ns) {
+    const auto oldest = std::min(
+      measured.snapshot.arm[0].measurement_runtime_monotonic_ns,
+      measured.snapshot.arm[1].measurement_runtime_monotonic_ns);
+    if (oldest == 0U || oldest > measured.runtime_now_ns) {
       return false;
     }
-    const std::uint64_t age = measured.controller_now_ns - oldest;
+    const std::uint64_t age = measured.runtime_now_ns - oldest;
     const auto ros_now = now().nanoseconds();
     if (ros_now <= 0 || age > static_cast<std::uint64_t>(ros_now)) {
       return false;
@@ -547,17 +547,20 @@ private:
       if (last_ros_now_ns_ != 0 && ros_now < last_ros_now_ns_) {
         return false;
       }
-      if (last_controller_now_ns_ != 0) {
+      if (last_runtime_now_ns_ != 0) {
         const auto ros_delta = ros_now - last_ros_now_ns_;
-        const auto controller_delta = measured.controller_now_ns - last_controller_now_ns_;
+        if (measured.runtime_now_ns < last_runtime_now_ns_) {
+          return false;
+        }
+        const auto runtime_delta = measured.runtime_now_ns - last_runtime_now_ns_;
         const auto difference = std::llabs(
-          ros_delta - static_cast<std::int64_t>(controller_delta));
+          ros_delta - static_cast<std::int64_t>(runtime_delta));
         if (difference > 250000000LL || stamp <= last_measurement_stamp_ns_) {
           return false;
         }
       }
       last_ros_now_ns_ = ros_now;
-      last_controller_now_ns_ = measured.controller_now_ns;
+      last_runtime_now_ns_ = measured.runtime_now_ns;
       last_measurement_stamp_ns_ = stamp;
     }
 
@@ -570,9 +573,9 @@ private:
     state.effort.reserve(14U);
     for (std::size_t side = 0; side < 2U; ++side) {
       for (std::size_t joint = 0; joint < 7U; ++joint) {
-        state.position.push_back(measured.snapshot.arm[side].q[joint]);
-        state.velocity.push_back(measured.snapshot.arm[side].dq[joint]);
-        state.effort.push_back(measured.snapshot.arm[side].tau[joint]);
+        state.position.push_back(measured.snapshot.arm[side].q_model_rad[joint]);
+        state.velocity.push_back(measured.snapshot.arm[side].dq_model_rad_s[joint]);
+        state.effort.push_back(measured.snapshot.arm[side].tau_model_nm[joint]);
       }
     }
     joint_publisher_->publish(std::move(state));
@@ -600,7 +603,7 @@ private:
     next.owner = owner;
     next.reason = reason;
     next.outcome = "rejected";
-    next.control_status = OA_CONTROL_ESTATE;
+    next.runtime_status = OA_RUNTIME_ESTATE;
     std::lock_guard<std::mutex> lock(diagnostic_mutex_);
     diagnostic_record_ = std::move(next);
     diagnostic_dirty_.store(true);
@@ -620,6 +623,10 @@ private:
       (result.outcome == CommandResult::Outcome::canceled ? "canceled" :
       (result.outcome == CommandResult::Outcome::rejected ? "rejected" : "aborted"));
     next.control_status = result.control_status;
+    next.runtime_status = result.runtime_status;
+    next.runtime_facility = result.runtime_facility;
+    next.lower_status = result.lower_status;
+    next.system_error = result.system_error;
     next.command_id = result.command_id;
     next.seed_feedback_seq[0] = result.seed_feedback_seq[0];
     next.seed_feedback_seq[1] = result.seed_feedback_seq[1];
@@ -646,23 +653,34 @@ private:
     status.level = error ? diagnostic_msgs::msg::DiagnosticStatus::ERROR :
       diagnostic_msgs::msg::DiagnosticStatus::WARN;
     status.message = error ? health.reason : "virtual backend; collision unchecked";
-    const auto now_controller = health.controller_now_ns;
-    const auto left_age = now_controller >= health.snapshot.arm[0].t_ns ?
-      now_controller - health.snapshot.arm[0].t_ns : 0U;
-    const auto right_age = now_controller >= health.snapshot.arm[1].t_ns ?
-      now_controller - health.snapshot.arm[1].t_ns : 0U;
-    const auto skew = health.snapshot.arm[0].t_ns > health.snapshot.arm[1].t_ns ?
-      health.snapshot.arm[0].t_ns - health.snapshot.arm[1].t_ns :
-      health.snapshot.arm[1].t_ns - health.snapshot.arm[0].t_ns;
+    const auto now_runtime = health.runtime_now_ns;
+    const auto left_time = health.snapshot.arm[0].measurement_runtime_monotonic_ns;
+    const auto right_time = health.snapshot.arm[1].measurement_runtime_monotonic_ns;
+    const auto left_age = now_runtime >= left_time ? now_runtime - left_time : 0U;
+    const auto right_age = now_runtime >= right_time ? now_runtime - right_time : 0U;
+    const auto skew = left_time > right_time ? left_time - right_time : right_time - left_time;
     status.values = {
       field("backend", "virtual"),
-      field("capability_bits", std::to_string(kCapabilityBits)),
+      field("runtime_authority", "openarm_runtime"),
+      field("runtime_backend", std::to_string(health.capabilities.backend)),
+      field("capability_bits", std::to_string(health.capabilities.capabilities)),
+      field("runtime_clock_id", std::to_string(health.capabilities.clock_id)),
+      field("runtime_units_id", std::to_string(health.capabilities.units_id)),
+      field("runtime_xyz_frame_id", std::to_string(health.capabilities.xyz_frame_id)),
+      field("runtime_coordinate_identity_sha256",
+        health.capabilities.coordinate_identity_sha256),
       field("virtual_execution_enabled", "true"),
       field("physical_motion_authorized", "false"),
+      field("physical_motion_capability", boolean(
+        (health.capabilities.capabilities & OA_RUNTIME_CAP_PHYSICAL_MOTION) != 0U)),
+      field("physical_discovery_endpoint_exposed", "false"),
+      field("single_xyz_capability", boolean(
+        (health.capabilities.capabilities & OA_RUNTIME_CAP_SINGLE_XYZ_IK) != 0U)),
       field("collision_policy", "virtual_unchecked"),
       field("collision_checked", "false"),
       field("orientation_constrained", "false"),
       field("state_source", "oa_snapshot_encoder_feedback"),
+      field("runtime_state_source", "oa_runtime_snapshot_encoder_feedback"),
       field("adapter_state", VirtualControlSession::adapter_state_name(health.adapter_state)),
       field("lifecycle", std::to_string(health.snapshot.lifecycle)),
       field("executing", boolean(health.command_id != 0U)),
@@ -676,11 +694,41 @@ private:
       field("left_terminal_feedback_seq", std::to_string(health.terminal_feedback_seq[0])),
       field("right_terminal_feedback_seq", std::to_string(health.terminal_feedback_seq[1])),
       field("last_event", std::to_string(health.last_event)),
-      field("last_cause", std::to_string(health.last_cause)),
+      field("last_cause", std::to_string(health.last_error.lower_code)),
+      field("last_runtime_status", std::to_string(health.last_error.status)),
+      field("last_runtime_facility", std::to_string(health.last_error.facility)),
+      field("last_runtime_lower_status", std::to_string(health.last_error.lower_code)),
+      field("last_runtime_system_error", std::to_string(health.last_error.system_error)),
       field("manifest_revision", std::to_string(health.snapshot.manifest_revision)),
       field("model_revision", std::to_string(health.snapshot.model_revision)),
-      field("collision_scene_revision", "1"),
-      field("verify_epoch", std::to_string(health.verify_epoch)),
+      field("manifest_state", std::to_string(health.manifest.state)),
+      field("manifest_intended_backend", std::to_string(health.manifest.intended_backend)),
+      field("manifest_content_sha256", health.manifest.content_sha256),
+      field("manifest_integrity_kind", std::to_string(health.manifest.integrity_kind)),
+      field("manifest_authenticated", boolean(health.manifest.authenticated != 0U)),
+      field("manifest_checkpoint_authorized",
+        boolean(health.manifest.checkpoint_authorized != 0U)),
+      field("persistence_status", "built_in_immutable_manifest_not_persisted"),
+      field("calibration_status", "runtime_capable_ros_endpoint_not_exposed"),
+      field("discovery_status", "virtual_exact_inventory"),
+      field("inventory_revision", std::to_string(health.inventory.inventory_revision)),
+      field("inventory_interface_count", std::to_string(health.inventory.interface_count)),
+      field("inventory_motor_count", std::to_string(health.inventory.motor_count)),
+      field("inventory_unknown_mask", std::to_string(health.inventory.unknown_mask)),
+      field("inventory_ambiguous_mask", std::to_string(health.inventory.ambiguous_mask)),
+      field("inventory_unresolved_assignment",
+        std::to_string(health.inventory.unresolved_assignment)),
+      field("inventory_fingerprint_sha256", health.inventory.fingerprint_sha256),
+      field("left_model_id", health.model_identity[0].model_id),
+      field("right_model_id", health.model_identity[1].model_id),
+      field("left_tcp_frame", health.model_identity[0].tcp_frame),
+      field("right_tcp_frame", health.model_identity[1].tcp_frame),
+      field("left_tcp_revision", std::to_string(health.model_identity[0].tcp_revision)),
+      field("right_tcp_revision", std::to_string(health.model_identity[1].tcp_revision)),
+      field("collision_scene_revision",
+        std::to_string(health.model_identity[0].collision_scene_revision)),
+      field("verify_epoch_available", "false"),
+      field("verify_epoch", "0"),
       field("left_expected_mask", std::to_string(health.snapshot.arm[0].expected_mask)),
       field("left_fresh_mask", std::to_string(health.snapshot.arm[0].fresh_mask)),
       field("left_fault_mask", std::to_string(health.snapshot.arm[0].fault_mask)),
@@ -689,8 +737,8 @@ private:
       field("right_fault_mask", std::to_string(health.snapshot.arm[1].fault_mask)),
       field("left_feedback_seq", std::to_string(health.snapshot.arm[0].feedback_seq)),
       field("right_feedback_seq", std::to_string(health.snapshot.arm[1].feedback_seq)),
-      field("left_feedback_t_ns", std::to_string(health.snapshot.arm[0].t_ns)),
-      field("right_feedback_t_ns", std::to_string(health.snapshot.arm[1].t_ns)),
+      field("left_feedback_t_ns", std::to_string(left_time)),
+      field("right_feedback_t_ns", std::to_string(right_time)),
       field("left_feedback_age_ns", std::to_string(left_age)),
       field("right_feedback_age_ns", std::to_string(right_age)),
       field("pair_skew_ns", std::to_string(skew))};
@@ -704,6 +752,11 @@ private:
       status.values.push_back(field("reason", record.reason));
       status.values.push_back(field("outcome", record.outcome));
       status.values.push_back(field("result_control_status", std::to_string(record.control_status)));
+      status.values.push_back(field("result_runtime_status", std::to_string(record.runtime_status)));
+      status.values.push_back(field(
+        "result_runtime_facility", std::to_string(record.runtime_facility)));
+      status.values.push_back(field("result_lower_status", std::to_string(record.lower_status)));
+      status.values.push_back(field("result_system_error", std::to_string(record.system_error)));
       status.values.push_back(field("result_command_id", std::to_string(record.command_id)));
       status.values.push_back(field(
         "result_left_plan_seed_feedback_seq", std::to_string(record.seed_feedback_seq[0])));
@@ -746,7 +799,7 @@ private:
   DiagnosticRecord diagnostic_record_;
   std::mutex clock_mutex_;
   std::int64_t last_ros_now_ns_{};
-  std::uint64_t last_controller_now_ns_{};
+  std::uint64_t last_runtime_now_ns_{};
   std::int64_t last_measurement_stamp_ns_{};
 };
 }

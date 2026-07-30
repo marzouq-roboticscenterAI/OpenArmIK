@@ -12,10 +12,10 @@ find_package(ament_cmake REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(JPEG REQUIRED)
-find_package(openarm_control CONFIG REQUIRED)
 find_package(openarm_control_msgs REQUIRED)
 find_package(openarm_description REQUIRED)
 find_package(openarm_model CONFIG REQUIRED)
+find_package(openarm_runtime CONFIG REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -51,7 +51,7 @@ add_library(openarm_virtual_control_session STATIC src/virtual_control_session.c
 target_include_directories(openarm_virtual_control_session PUBLIC include)
 target_compile_options(openarm_virtual_control_session PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_virtual_control_session PUBLIC
-  openarm_control::openarm_control Threads::Threads)
+  OpenArm::Runtime Threads::Threads)
 
 add_executable(openarm_ik_ros_node src/openarm_ik_ros_node.cpp)
 target_include_directories(openarm_ik_ros_node PRIVATE include)
@@ -117,6 +117,7 @@ install(FILES "${openarm_model_GENERATED_URDF}" DESTINATION share/${PROJECT_NAME
 install(FILES "${OPENARM_STAGE_A_VISUALIZATION_URDF}" DESTINATION share/${PROJECT_NAME}/urdf)
 
 if(BUILD_TESTING)
+  target_compile_definitions(openarm_virtual_control_session PUBLIC OPENARM_IK_ROS_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   ament_add_gtest(test_virtual_control_session test/test_virtual_control_session.cpp)
@@ -155,7 +156,8 @@ if(BUILD_TESTING)
   add_test(
     NAME test_no_can_linkage
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_no_can_linkage.py
-      --executable $<TARGET_FILE:openarm_ik_ros_node>)
+      --executable $<TARGET_FILE:openarm_ik_ros_node>
+      --session-library $<TARGET_FILE:openarm_virtual_control_session>)
   get_filename_component(OPENARM_DESCRIPTION_SHARE "${openarm_description_DIR}/.." ABSOLUTE)
   add_test(
     NAME test_generated_urdf

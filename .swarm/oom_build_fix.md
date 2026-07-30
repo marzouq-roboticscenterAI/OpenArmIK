@@ -15,8 +15,9 @@ Date: 2026-07-29
   now preserves and reconfigures compatible native trees through
   `--reuse-build-trees`, and no longer asks colcon to clean its cache.
 - A nonblocking canonical-output-root lock now wraps the entire top-level build,
-  including cleanup. It is held by `flock --close`, so build descendants cannot
-  accidentally retain the lock after the launcher script exits.
+  including cleanup. Direct native builds use the same identity when they share
+  that native build root. The lock is held by `flock --close`, so build
+  descendants cannot accidentally retain it after the launcher script exits.
 - Both GUI launchers now use the same guarded per-user runtime lock and handle
   `HUP` through their existing exact-PID, process-group shutdown routines.
   Browser ownership and motion safety behavior were not changed.
@@ -37,5 +38,9 @@ Date: 2026-07-29
   `openarm_ik_ros`. The immediate incremental rebuild completed successfully;
   its colcon event log shows only up-to-date install work. The lock was released
   after completion and `openarm_portal` was installed.
+- After integrating `main` at `4d129a6`, a fresh one-job top-level build passed
+  against `/tmp/openarmik-oom-ros-merged.pwnQgU`, including the production ROS
+  runtime-authority archive check. The two-prefix native reuse regression also
+  passed with `OPENARM_BUILD_JOBS=1`.
 
 No full sanitizer or broad test matrix was run.

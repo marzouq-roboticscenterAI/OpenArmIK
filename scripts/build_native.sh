@@ -8,6 +8,7 @@ build_type=Release
 run_tests=0
 reuse_build_trees=0
 jobs=${OPENARM_BUILD_JOBS-2}
+original_args=("$@")
 
 usage() {
   cat <<'EOF'
@@ -130,6 +131,22 @@ xacro_pythonpath=/opt/ros/lyrical/lib/python3.14/site-packages
   exit 1
 }
 
+lock_root=$(dirname "$build_root")
+lock_file="$lock_root/.openarmik-build.lock"
+mkdir -p "$lock_root"
+if [[ ${OPENARM_NATIVE_BUILD_LOCK_HELD:-0} != 1 ]]; then
+  set +e
+  flock -n -E 75 --close "$lock_file" \
+    env OPENARM_NATIVE_BUILD_LOCK_HELD=1 "$0" "${original_args[@]}"
+  lock_status=$?
+  set -e
+  if ((lock_status == 75)); then
+    printf 'Native build root is already being built: %s\n' "$build_root" >&2
+    exit 3
+  fi
+  exit "$lock_status"
+fi
+
 mkdir -p "$build_root" "$install_prefix"
 tests_flag=OFF
 if ((run_tests)); then
@@ -184,8 +201,6 @@ configure_build_test_install() {
     runtime)
       assert_cache_value "$component_build/CMakeCache.txt" \
         openarm_control_DIR "$install_prefix/lib/cmake/openarm_control"
-      assert_cache_value "$component_build/CMakeCache.txt" \
-        OpenArmTransport_DIR "$install_prefix/lib/cmake/OpenArmTransport"
       ;;
   esac
   cmake --build "$component_build" --parallel "$jobs"
@@ -233,10 +248,8 @@ configure_build_test_install control \
 
 configure_build_test_install runtime \
   -DBUILD_TESTING="$tests_flag" \
-  -DOpenArmCan_DIR="$install_prefix/lib/cmake/OpenArmCan" \
   -Dopenarm_model_DIR="$install_prefix/lib/cmake/openarm_model" \
   -Dopenarm_commission_DIR="$install_prefix/lib/cmake/openarm_commission" \
-  -DOpenArmTransport_DIR="$install_prefix/lib/cmake/OpenArmTransport" \
   -Dopenarm_control_DIR="$install_prefix/lib/cmake/openarm_control" \
   -DOA_RUNTIME_ENABLE_SANITIZERS=OFF \
   -DOA_RUNTIME_ENABLE_THREAD_SANITIZER=OFF
@@ -249,6 +262,7 @@ transport_symbols=$(nm -gC --defined-only \
   "$install_prefix/lib/libopenarm_transport.a")
 runtime_symbols=$(nm -gC --defined-only \
   "$install_prefix/lib/libopenarm_runtime.a")
+runtime_references=$(nm -u "$install_prefix/lib/libopenarm_runtime.a")
 if [[ "$control_symbols" == *oa_control_test_* ]]; then
   printf 'Installed control archive exposes test-only symbols\n' >&2
   exit 1
@@ -263,6 +277,11 @@ if [[ "$transport_symbols" == *' T oa_can_'* ]]; then
 fi
 if [[ "$runtime_symbols" == *'_test_'* ]]; then
   printf 'Installed runtime archive exposes test-only symbols\n' >&2
+  exit 1
+fi
+if [[ "$runtime_references" == *'oa_can_'* ||
+      "$runtime_references" == *'oa_transport_'* ]]; then
+  printf 'Installed runtime archive reaches CAN codec or transport symbols\n' >&2
   exit 1
 fi
 
@@ -303,6 +322,13 @@ if ((run_tests)); then
     cmake --build "$consumer_build" --parallel "$jobs"
     "$consumer_build/openarm_installed_c11"
     "$consumer_build/openarm_installed_cxx17"
+    "$consumer_build/openarm_runtime_only_c11"
+    "$consumer_build/openarm_runtime_only_cxx17"
+    if ldd "$consumer_build/openarm_runtime_only_c11" | \
+         grep -Eiq 'python|openarm_(can|transport)'; then
+      printf 'Runtime-only installed consumer has a forbidden runtime dependency\n' >&2
+      exit 1
+    fi
   else
     printf '%s\n' \
       'Installed all-header consumers deferred until control export/status integration'

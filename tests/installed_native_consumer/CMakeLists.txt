@@ -38,11 +38,28 @@ target_link_libraries(openarm_installed_cxx17 PRIVATE ${openarm_components})
 set_target_properties(openarm_installed_cxx17 PROPERTIES
   CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
 
+add_executable(openarm_runtime_only_c11 runtime_only.c)
+target_link_libraries(openarm_runtime_only_c11 PRIVATE OpenArm::Runtime)
+set_target_properties(openarm_runtime_only_c11 PROPERTIES
+  C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
+  LINKER_LANGUAGE CXX)
+
+add_executable(openarm_runtime_only_cxx17 runtime_only.cpp)
+target_link_libraries(openarm_runtime_only_cxx17 PRIVATE OpenArm::Runtime)
+set_target_properties(openarm_runtime_only_cxx17 PROPERTIES
+  CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(openarm_installed_c11 PRIVATE
     -Wall -Wextra -Wpedantic -Werror)
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(openarm_installed_cxx17 PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+  target_compile_options(openarm_runtime_only_cxx17 PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(openarm_runtime_only_c11 PRIVATE
     -Wall -Wextra -Wpedantic -Werror)
 endif()
