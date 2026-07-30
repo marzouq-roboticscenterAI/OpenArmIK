@@ -807,18 +807,6 @@ extern "C" oa_runtime_status oa_runtime_plan_joint(
         plan->authority_id = pinned->plan_authority_id;
         plan->holds_authority = true;
     }
-    oa_snapshot current{};
-    openarm::runtime::control_init(current);
-    oa_control_status lower = oa_controller_snapshot(pinned->controller, &current);
-    if (lower != OA_CONTROL_OK) {
-        return openarm::runtime::record_error(
-            pinned, openarm::runtime::map_control(lower),
-            OA_RUNTIME_FACILITY_CONTROL, lower);
-    }
-    if (request->required_feedback_seq != current.arm[request->side].feedback_seq) {
-        return openarm::runtime::record_error(
-            pinned, OA_RUNTIME_ESTALE, OA_RUNTIME_FACILITY_RUNTIME);
-    }
     oa_joint_move move{};
     openarm::runtime::control_init(move);
     const std::uint64_t facade_now = openarm::runtime::now_ns();
@@ -838,12 +826,31 @@ extern "C" oa_runtime_status oa_runtime_plan_joint(
     move.jerk_scale = request->jerk_scale;
     move.position_tol_rad = request->position_tolerance_rad;
     move.velocity_tol_rad_s = request->velocity_tolerance_rad_s;
-    lower = oa_controller_plan_joint(pinned->controller, &move, &plan->plan);
-    status = openarm::runtime::map_control(lower);
-    if (status != OA_RUNTIME_OK) {
-        return openarm::runtime::record_error(
-            pinned, status, OA_RUNTIME_FACILITY_CONTROL, lower);
+    oa_control_status lower = OA_CONTROL_OK;
+    {
+        /* A public snapshot can become stale before this planner acquires the
+         * controller. Keep the runtime's sequence check and lower-level plan
+         * construction in one controller epoch so a valid stale race remains
+         * ESTALE rather than leaking the lower EINVAL mismatch. */
+        std::lock_guard<std::mutex> controller_lock(pinned->controller_mutex);
+        oa_snapshot current{};
+        openarm::runtime::control_init(current);
+        lower = oa_controller_snapshot(pinned->controller, &current);
+        if (lower == OA_CONTROL_OK &&
+            request->required_feedback_seq != current.arm[request->side].feedback_seq) {
+            return openarm::runtime::record_error(
+                pinned, OA_RUNTIME_ESTALE, OA_RUNTIME_FACILITY_RUNTIME);
+        }
+        if (lower == OA_CONTROL_OK) {
+            lower = oa_controller_plan_joint(pinned->controller, &move, &plan->plan);
+        }
     }
+    if (lower != OA_CONTROL_OK) {
+        return openarm::runtime::record_error(
+            pinned, openarm::runtime::map_control(lower),
+            OA_RUNTIME_FACILITY_CONTROL, lower);
+    }
+    status = openarm::runtime::map_control(lower);
     oa_runtime_plan *const handle = openarm::runtime::plans.insert(plan);
     if (handle == nullptr) {
         return openarm::runtime::record_error(
@@ -914,19 +921,6 @@ extern "C" oa_runtime_status oa_runtime_plan_paired_tcp_body(
         plan->authority_id = pinned->plan_authority_id;
         plan->holds_authority = true;
     }
-    oa_snapshot current{};
-    openarm::runtime::control_init(current);
-    oa_control_status lower = oa_controller_snapshot(pinned->controller, &current);
-    if (lower != OA_CONTROL_OK) {
-        return openarm::runtime::record_error(
-            pinned, openarm::runtime::map_control(lower),
-            OA_RUNTIME_FACILITY_CONTROL, lower);
-    }
-    if (request->required_feedback_seq[0] != current.arm[0].feedback_seq ||
-        request->required_feedback_seq[1] != current.arm[1].feedback_seq) {
-        return openarm::runtime::record_error(
-            pinned, OA_RUNTIME_ESTALE, OA_RUNTIME_FACILITY_RUNTIME);
-    }
     oa_paired_tcp_move move{};
     openarm::runtime::control_init(move);
     const std::uint64_t facade_now = openarm::runtime::now_ns();
@@ -948,12 +942,28 @@ extern "C" oa_runtime_status oa_runtime_plan_paired_tcp_body(
     move.collision_scene_revision = request->collision_scene_revision;
     move.max_branch_step_rad = request->maximum_branch_step_rad;
     move.min_singular_value = request->minimum_singular_value;
-    lower = oa_controller_plan_paired_tcp(pinned->controller, &move, &plan->plan);
-    status = openarm::runtime::map_control(lower);
-    if (status != OA_RUNTIME_OK) {
-        return openarm::runtime::record_error(
-            pinned, status, OA_RUNTIME_FACILITY_CONTROL, lower);
+    oa_control_status lower = OA_CONTROL_OK;
+    {
+        std::lock_guard<std::mutex> controller_lock(pinned->controller_mutex);
+        oa_snapshot current{};
+        openarm::runtime::control_init(current);
+        lower = oa_controller_snapshot(pinned->controller, &current);
+        if (lower == OA_CONTROL_OK &&
+            (request->required_feedback_seq[0] != current.arm[0].feedback_seq ||
+             request->required_feedback_seq[1] != current.arm[1].feedback_seq)) {
+            return openarm::runtime::record_error(
+                pinned, OA_RUNTIME_ESTALE, OA_RUNTIME_FACILITY_RUNTIME);
+        }
+        if (lower == OA_CONTROL_OK) {
+            lower = oa_controller_plan_paired_tcp(pinned->controller, &move, &plan->plan);
+        }
     }
+    if (lower != OA_CONTROL_OK) {
+        return openarm::runtime::record_error(
+            pinned, openarm::runtime::map_control(lower),
+            OA_RUNTIME_FACILITY_CONTROL, lower);
+    }
+    status = openarm::runtime::map_control(lower);
     oa_runtime_plan *const handle = openarm::runtime::plans.insert(plan);
     if (handle == nullptr) {
         return openarm::runtime::record_error(

@@ -58,3 +58,29 @@ commit; this work did not merge or modify main. The native helper itself still
 uses unconstrained `cmake --build --parallel`, so it was not used as evidence
 after the host-memory warning; current-code runtime, sanitizer, and installed
 consumer checks above were invoked explicitly with `--parallel 1`.
+
+## Follow-up: resumed-plan epoch handoff
+
+Independent review found that the resumed-plan retry could occasionally receive
+an unexpected status. The exact path is `OA_RUNTIME_EINVAL` with control
+facility and lower code `OA_CONTROL_EINVAL`: `oa_runtime_plan_joint()` first
+checked the requested sequence through one controller snapshot, released the
+controller, and then called the lower planner. If the virtual worker advanced
+in that gap, the lower planner's own sequence check returned `EINVAL` rather
+than a stale-observation status. The same two-call gap existed for paired TCP
+planning.
+
+Both planning paths now hold `controller_mutex` across their runtime sequence
+check and lower plan construction. An external snapshot that changes before
+the planner acquires that epoch returns `OA_RUNTIME_ESTALE`; it cannot leak a
+lower `EINVAL` after the runtime has accepted the sequence. The test retains
+failure-only diagnostics that print the public status plus last-error status,
+facility, and lower code if a future unexpected handoff result occurs.
+
+Follow-up verification used fresh single-job Release build
+`/var/tmp/openarmik-runtime-plan-handoff`: five sequential repeated runtime
+CTest passes completed without the handoff failure. The current release build
+also passed 2/2 in `17.92 s`; ASan+UBSan+leak passed 2/2 in `18.11 s`; and
+TSan passed 2/2 in `18.18 s`. The installed C11/C++17 and runtime-only
+C11/C++17 consumers, cppcheck, declaration/export `50/50` parity, and the
+no-CAN/no-transport symbol audit passed again.

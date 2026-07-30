@@ -65,6 +65,18 @@ std::size_t directory_entry_count(const char *path) {
     return count;
 }
 
+void require_resumed_plan_transient(oa_runtime *runtime, oa_runtime_status status) {
+    if (status == OA_RUNTIME_ESTALE || status == OA_RUNTIME_EBUSY) return;
+    oa_runtime_error_detail detail{};
+    init(detail);
+    const oa_runtime_status detail_status = oa_runtime_get_last_error(runtime, &detail);
+    std::fprintf(stderr,
+                 "resumed plan unexpected status=0x%08x last_error_status=0x%08x "
+                 "facility=%u lower=0x%08x detail_status=0x%08x\n",
+                 status, detail.status, detail.facility, detail.lower_code, detail_status);
+    std::exit(1);
+}
+
 void physical_observation_is_fail_closed(oa_runtime_manifest *manifest) {
     oa_runtime *virtual_runtime = nullptr;
     const auto virtual_config = virtual_options();
@@ -1898,8 +1910,7 @@ int main(int argc, char **argv) {
         /* Snapshot and plan run on separate threads. A newly resumed feedback
          * generation can advance between them; plan-destruction authority
          * release is likewise observable by the next scheduler turn. */
-        CHECK(fresh_plan_status == OA_RUNTIME_ESTALE ||
-              fresh_plan_status == OA_RUNTIME_EBUSY);
+        require_resumed_plan_transient(runtime, fresh_plan_status);
         if (attempt + 1U < 100U) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
