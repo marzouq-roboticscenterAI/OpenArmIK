@@ -81,18 +81,21 @@ TEST(VirtualControlSession, CanonicalNamesLimitsAndSingleReservation)
   VirtualControlSession session(
     [&recorder](const MeasuredState & value) {return recorder.state(value);}, []() {});
   EXPECT_EQ(VirtualControlSession::joint_names().size(), 14U);
-  oa_side side{};
+  std::uint32_t side{};
   std::uint32_t joint{};
   EXPECT_TRUE(VirtualControlSession::map_joint("openarm_left_joint7", side, joint));
-  EXPECT_EQ(side, OA_LEFT);
+  EXPECT_EQ(side, openarm_ik_ros::kLeftSide);
   EXPECT_EQ(joint, 6U);
   EXPECT_TRUE(VirtualControlSession::map_joint("openarm_right_joint1", side, joint));
-  EXPECT_EQ(side, OA_RIGHT);
+  EXPECT_EQ(side, openarm_ik_ros::kRightSide);
   EXPECT_EQ(joint, 0U);
   EXPECT_FALSE(VirtualControlSession::map_joint("joint1", side, joint));
-  EXPECT_TRUE(VirtualControlSession::joint_target_in_limits(OA_LEFT, 0U, -3.490659));
-  EXPECT_FALSE(VirtualControlSession::joint_target_in_limits(OA_LEFT, 0U, -3.490660));
-  EXPECT_FALSE(VirtualControlSession::joint_target_in_limits(OA_RIGHT, 0U, NAN));
+  EXPECT_TRUE(VirtualControlSession::joint_target_in_limits(
+    openarm_ik_ros::kLeftSide, 0U, -3.490659));
+  EXPECT_FALSE(VirtualControlSession::joint_target_in_limits(
+    openarm_ik_ros::kLeftSide, 0U, -3.490660));
+  EXPECT_FALSE(VirtualControlSession::joint_target_in_limits(
+    openarm_ik_ros::kRightSide, 0U, NAN));
   std::string reason;
   EXPECT_TRUE(session.reserve("first", reason));
   EXPECT_FALSE(session.reserve("second", reason));
@@ -112,7 +115,7 @@ TEST(VirtualControlSession, PublishesLaggingMeasuredStateAndCompletesOnFeedback)
   SessionCommand command;
   command.kind = SessionCommand::Kind::joint;
   command.owner = "joint";
-  command.side = OA_LEFT;
+  command.side = openarm_ik_ros::kLeftSide;
   command.joint = 3U;
   command.target_rad = 0.2;
   command.terminal = [&recorder](const CommandResult & value) {
@@ -128,21 +131,21 @@ TEST(VirtualControlSession, PublishesLaggingMeasuredStateAndCompletesOnFeedback)
   for (const auto & state : recorder.states) {
     EXPECT_EQ(state.snapshot.arm[0].fresh_mask, 0x7fU);
     EXPECT_EQ(state.snapshot.arm[1].fresh_mask, 0x7fU);
-    EXPECT_LE(state.snapshot.arm[0].t_ns, state.controller_now_ns);
-    EXPECT_LE(state.snapshot.arm[1].t_ns, state.controller_now_ns);
+    EXPECT_LE(state.snapshot.arm[0].measurement_runtime_monotonic_ns, state.runtime_now_ns);
+    EXPECT_LE(state.snapshot.arm[1].measurement_runtime_monotonic_ns, state.runtime_now_ns);
     if (prior_sequence != 0U) {
       EXPECT_GT(state.snapshot.arm[0].feedback_seq, prior_sequence);
     }
     prior_sequence = state.snapshot.arm[0].feedback_seq;
-    const double q = state.snapshot.arm[0].q[3];
+    const double q = state.snapshot.arm[0].q_model_rad[3];
     if (q > 1.0e-3 && q < 0.19) {
       ++intermediate;
     }
   }
   EXPECT_GT(intermediate, 2U);
   const auto & terminal = recorder.states.back().snapshot.arm[0];
-  EXPECT_NEAR(terminal.q[3], 0.2, 5.0e-4);
-  EXPECT_NEAR(terminal.dq[3], 0.0, 2.0e-2);
+  EXPECT_NEAR(terminal.q_model_rad[3], 0.2, 5.0e-4);
+  EXPECT_NEAR(terminal.dq_model_rad_s[3], 0.0, 2.0e-2);
   EXPECT_GT(recorder.result->terminal_feedback_seq[0], recorder.result->seed_feedback_seq[0]);
 }
 
@@ -180,7 +183,7 @@ TEST(VirtualControlSession, CancelDisableStopsAndRejectsLaterCommands)
   SessionCommand command;
   command.kind = SessionCommand::Kind::joint;
   command.owner = "cancel";
-  command.side = OA_RIGHT;
+  command.side = openarm_ik_ros::kRightSide;
   command.joint = 0U;
   command.target_rad = 0.8;
   command.terminal = [&recorder](const CommandResult & value) {
@@ -213,12 +216,12 @@ TEST(VirtualControlSession, ReservedCancelStopsThenTerminatesAcceptedCommandExac
     }));
   const auto stopped = session.health();
   EXPECT_EQ(stopped.owner, "reserved-cancel");
-  EXPECT_EQ(stopped.snapshot.lifecycle, OA_LIFECYCLE_DISARMED);
+  EXPECT_EQ(stopped.snapshot.lifecycle, openarm_ik_ros::kLifecycleDisarmed);
 
   SessionCommand command;
   command.kind = SessionCommand::Kind::joint;
   command.owner = "reserved-cancel";
-  command.side = OA_LEFT;
+  command.side = openarm_ik_ros::kLeftSide;
   command.joint = 0U;
   command.target_rad = 0.1;
   command.terminal = [&recorder](const CommandResult & value) {
@@ -229,8 +232,8 @@ TEST(VirtualControlSession, ReservedCancelStopsThenTerminatesAcceptedCommandExac
   EXPECT_EQ(recorder.terminal_count, 1U);
   EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::canceled);
   EXPECT_EQ(recorder.result->command_id, 0U);
-  EXPECT_EQ(recorder.result->lifecycle, OA_LIFECYCLE_DISARMED);
-  EXPECT_EQ(recorder.result->event, OA_EVENT_STOPPED);
+  EXPECT_EQ(recorder.result->lifecycle, openarm_ik_ros::kLifecycleDisarmed);
+  EXPECT_EQ(recorder.result->event, OA_RUNTIME_EVENT_STOPPED);
   EXPECT_FALSE(session.reserve("later", reason));
   EXPECT_EQ(reason, "stopped_requires_restart");
 }
@@ -250,7 +253,7 @@ TEST(VirtualControlSession, ReleasingCanceledReservationCannotRearmDisarmedContr
   const auto health = session.health();
   EXPECT_TRUE(health.owner.empty());
   EXPECT_EQ(health.adapter_state, openarm_ik_ros::AdapterState::stopped_requires_restart);
-  EXPECT_EQ(health.snapshot.lifecycle, OA_LIFECYCLE_DISARMED);
+  EXPECT_EQ(health.snapshot.lifecycle, openarm_ik_ros::kLifecycleDisarmed);
   EXPECT_FALSE(session.reserve("later", reason));
   EXPECT_EQ(reason, "stopped_requires_restart");
 }
@@ -269,7 +272,7 @@ TEST(VirtualControlSession, CompletionRetainsOwnershipThroughTerminalCallback)
   SessionCommand command;
   command.kind = SessionCommand::Kind::joint;
   command.owner = "completion-owner";
-  command.side = OA_LEFT;
+  command.side = openarm_ik_ros::kLeftSide;
   command.joint = 3U;
   command.target_rad = 0.02;
   command.terminal = [&](const CommandResult & value) {
@@ -319,7 +322,7 @@ TEST(VirtualControlSession, ThrowingTerminalCallbackCannotTerminateWorker)
   SessionCommand command;
   command.kind = SessionCommand::Kind::joint;
   command.owner = "throwing-terminal";
-  command.side = OA_LEFT;
+  command.side = openarm_ik_ros::kLeftSide;
   command.joint = 3U;
   command.target_rad = 0.02;
   command.terminal = [&](const CommandResult &) -> bool {
@@ -332,8 +335,10 @@ TEST(VirtualControlSession, ThrowingTerminalCallbackCannotTerminateWorker)
              health.adapter_state == openarm_ik_ros::AdapterState::fault;
     }, 10s));
   const auto health = session.health();
-  EXPECT_EQ(health.last_cause, OA_CONTROL_EFAULT);
-  EXPECT_EQ(health.snapshot.lifecycle, OA_LIFECYCLE_DISARMED);
+  EXPECT_EQ(health.last_error.status, OA_RUNTIME_EFAULT);
+  EXPECT_EQ(health.last_error.facility, OA_RUNTIME_FACILITY_RUNTIME);
+  EXPECT_EQ(health.last_error.lower_code, 0U);
+  EXPECT_EQ(health.snapshot.lifecycle, openarm_ik_ros::kLifecycleDisarmed);
   EXPECT_EQ(health.reason, "terminal_callback_failed");
   EXPECT_TRUE(health.owner.empty());
   const auto states_before = recorder.state_count();
@@ -359,7 +364,7 @@ TEST(VirtualControlSession, ThrowingFeedbackStopsPublicationAndReportsAuthoritat
   SessionCommand command;
   command.kind = SessionCommand::Kind::joint;
   command.owner = "feedback-failure";
-  command.side = OA_LEFT;
+  command.side = openarm_ik_ros::kLeftSide;
   command.joint = 3U;
   command.target_rad = 0.2;
   command.feedback = [&feedback_count](const openarm_ik_ros::CommandFeedback &) -> bool {
@@ -378,12 +383,14 @@ TEST(VirtualControlSession, ThrowingFeedbackStopsPublicationAndReportsAuthoritat
   EXPECT_EQ(feedback_count.load(), 1U);
   EXPECT_EQ(recorder.terminal_count, 1U);
   EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::aborted);
-  EXPECT_EQ(recorder.result->control_status, OA_CONTROL_EFAULT);
-  EXPECT_EQ(recorder.result->cause, OA_CONTROL_EFAULT);
-  EXPECT_EQ(recorder.result->event, OA_EVENT_FAULTED);
+  EXPECT_EQ(recorder.result->control_status, 0U);
+  EXPECT_EQ(recorder.result->runtime_status, OA_RUNTIME_EFAULT);
+  EXPECT_EQ(recorder.result->runtime_facility, OA_RUNTIME_FACILITY_RUNTIME);
+  EXPECT_EQ(recorder.result->cause, 0U);
+  EXPECT_EQ(recorder.result->event, OA_RUNTIME_EVENT_FAULTED);
   EXPECT_EQ(recorder.result->lifecycle, health.snapshot.lifecycle);
-  EXPECT_EQ(recorder.result->lifecycle, OA_LIFECYCLE_DISARMED);
-  EXPECT_EQ(health.last_cause, OA_CONTROL_EFAULT);
+  EXPECT_EQ(recorder.result->lifecycle, openarm_ik_ros::kLifecycleDisarmed);
+  EXPECT_EQ(health.last_error.status, OA_RUNTIME_EFAULT);
   EXPECT_EQ(health.reason, "feedback_callback_failed");
   EXPECT_TRUE(health.owner.empty());
   const auto states_before = recorder.state_count();
@@ -411,7 +418,7 @@ TEST(VirtualControlSession, ThrowingStateCallbackStopsPublicationAndTerminatesAc
   SessionCommand command;
   command.kind = SessionCommand::Kind::joint;
   command.owner = "state-failure";
-  command.side = OA_RIGHT;
+  command.side = openarm_ik_ros::kRightSide;
   command.joint = 0U;
   command.target_rad = 0.8;
   command.terminal = [&recorder](const CommandResult & value) {
@@ -429,12 +436,14 @@ TEST(VirtualControlSession, ThrowingStateCallbackStopsPublicationAndTerminatesAc
   const auto health = session.health();
   EXPECT_EQ(recorder.terminal_count, 1U);
   EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::aborted);
-  EXPECT_EQ(recorder.result->control_status, OA_CONTROL_EFAULT);
-  EXPECT_EQ(recorder.result->cause, OA_CONTROL_EFAULT);
-  EXPECT_EQ(recorder.result->event, OA_EVENT_FAULTED);
-  EXPECT_EQ(recorder.result->lifecycle, OA_LIFECYCLE_DISARMED);
-  EXPECT_EQ(health.snapshot.lifecycle, OA_LIFECYCLE_DISARMED);
-  EXPECT_EQ(health.last_cause, OA_CONTROL_EFAULT);
+  EXPECT_EQ(recorder.result->control_status, 0U);
+  EXPECT_EQ(recorder.result->runtime_status, OA_RUNTIME_EFAULT);
+  EXPECT_EQ(recorder.result->runtime_facility, OA_RUNTIME_FACILITY_RUNTIME);
+  EXPECT_EQ(recorder.result->cause, 0U);
+  EXPECT_EQ(recorder.result->event, OA_RUNTIME_EVENT_FAULTED);
+  EXPECT_EQ(recorder.result->lifecycle, openarm_ik_ros::kLifecycleDisarmed);
+  EXPECT_EQ(health.snapshot.lifecycle, openarm_ik_ros::kLifecycleDisarmed);
+  EXPECT_EQ(health.last_error.status, OA_RUNTIME_EFAULT);
   EXPECT_EQ(health.reason, "state_callback_failed");
   EXPECT_TRUE(health.owner.empty());
   const auto callbacks_before = callback_count.load();
@@ -445,7 +454,7 @@ TEST(VirtualControlSession, ThrowingStateCallbackStopsPublicationAndTerminatesAc
   EXPECT_EQ(reason, "adapter_fault");
 }
 
-TEST(VirtualControlSession, IdleCycleOverrunReportsAuthoritativeCoreFault)
+TEST(VirtualControlSession, SlowIdleConsumerDoesNotOwnRuntimeCadence)
 {
   Recorder recorder;
   std::atomic<std::size_t> callback_count{};
@@ -456,22 +465,23 @@ TEST(VirtualControlSession, IdleCycleOverrunReportsAuthoritativeCoreFault)
       }
       return recorder.state(value);
     }, []() {});
-  ASSERT_TRUE(wait_health(session, [](const auto & health) {
-      return health.adapter_state == openarm_ik_ros::AdapterState::fault;
+  ASSERT_TRUE(wait_health(session, [&callback_count](const auto & health) {
+      return callback_count.load() >= 5U &&
+             health.adapter_state == openarm_ik_ros::AdapterState::idle;
     }, 5s));
   const auto health = session.health();
-  EXPECT_EQ(health.snapshot.lifecycle, OA_LIFECYCLE_FAULT);
-  EXPECT_EQ(health.last_cause, OA_CONTROL_ETIMEOUT);
-  EXPECT_EQ(health.reason, "advance_failed");
+  EXPECT_EQ(health.snapshot.lifecycle, openarm_ik_ros::kLifecycleArmedIdle);
+  EXPECT_EQ(health.last_error.status, OA_RUNTIME_OK);
+  EXPECT_EQ(health.reason, "ready");
   const auto callbacks_before = callback_count.load();
   std::this_thread::sleep_for(100ms);
-  EXPECT_EQ(callback_count.load(), callbacks_before);
+  EXPECT_GT(callback_count.load(), callbacks_before);
   std::string reason;
-  EXPECT_FALSE(session.reserve("after-idle-overrun", reason));
-  EXPECT_EQ(reason, "adapter_fault");
+  EXPECT_TRUE(session.reserve("after-idle-stall", reason));
+  session.release("after-idle-stall", "test_release");
 }
 
-TEST(VirtualControlSession, NativeDeadlineFaultUsesAuthoritativeLifecycle)
+TEST(VirtualControlSession, SlowActiveConsumerDoesNotDuplicateRuntimeCadence)
 {
   Recorder recorder;
   std::atomic<bool> stall{};
@@ -487,7 +497,7 @@ TEST(VirtualControlSession, NativeDeadlineFaultUsesAuthoritativeLifecycle)
   SessionCommand command;
   command.kind = SessionCommand::Kind::joint;
   command.owner = "deadline-fault";
-  command.side = OA_RIGHT;
+  command.side = openarm_ik_ros::kRightSide;
   command.joint = 0U;
   command.target_rad = 0.8;
   command.terminal = [&recorder](const CommandResult & value) {
@@ -498,31 +508,26 @@ TEST(VirtualControlSession, NativeDeadlineFaultUsesAuthoritativeLifecycle)
       return health.adapter_state == openarm_ik_ros::AdapterState::executing;
     }, 10s));
   stall = true;
-  ASSERT_TRUE(wait_health(session, [](const auto & health) {
-      return health.adapter_state == openarm_ik_ros::AdapterState::fault;
-    }, 5s));
-  ASSERT_TRUE(recorder.wait_result(2s));
+  ASSERT_TRUE(recorder.wait_result(15s));
   const auto health = session.health();
   EXPECT_EQ(recorder.terminal_count, 1U);
-  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::aborted);
-  EXPECT_EQ(recorder.result->control_status, OA_CONTROL_ETIMEOUT);
-  EXPECT_EQ(recorder.result->cause, OA_CONTROL_ETIMEOUT);
-  EXPECT_EQ(recorder.result->lifecycle, health.snapshot.lifecycle);
-  EXPECT_EQ(recorder.result->lifecycle, OA_LIFECYCLE_FAULT);
-  EXPECT_EQ(recorder.result->event, OA_EVENT_FAULTED);
-  EXPECT_EQ(recorder.result->reason, "advance_failed");
+  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::completed);
+  EXPECT_EQ(recorder.result->control_status, 0U);
+  EXPECT_EQ(recorder.result->runtime_status, OA_RUNTIME_OK);
+  EXPECT_EQ(recorder.result->event, OA_RUNTIME_EVENT_COMPLETED);
+  EXPECT_EQ(recorder.result->reason, "completed_measured_feedback");
   EXPECT_GT(recorder.result->seed_feedback_seq[0], 0U);
   EXPECT_GT(recorder.result->seed_feedback_seq[1], 0U);
   EXPECT_GT(recorder.result->plan_duration_ns, 0U);
-  EXPECT_EQ(health.last_cause, OA_CONTROL_ETIMEOUT);
-  EXPECT_EQ(health.reason, "advance_failed");
+  EXPECT_EQ(health.adapter_state, openarm_ik_ros::AdapterState::idle);
+  EXPECT_EQ(health.reason, "completed");
   EXPECT_TRUE(health.owner.empty());
   const auto states_before = recorder.state_count();
   std::this_thread::sleep_for(100ms);
-  EXPECT_EQ(recorder.state_count(), states_before);
+  EXPECT_GT(recorder.state_count(), states_before);
   EXPECT_EQ(recorder.terminal_count, 1U);
-  EXPECT_FALSE(session.reserve("after-deadline-fault", reason));
-  EXPECT_EQ(reason, "adapter_fault");
+  EXPECT_TRUE(session.reserve("after-active-stall", reason));
+  session.release("after-active-stall", "test_release");
 }
 
 TEST(VirtualControlSession, ActiveShutdownStopsAndReportsMeasuredProvenanceOnce)
@@ -535,7 +540,7 @@ TEST(VirtualControlSession, ActiveShutdownStopsAndReportsMeasuredProvenanceOnce)
   SessionCommand command;
   command.kind = SessionCommand::Kind::joint;
   command.owner = "shutdown-active";
-  command.side = OA_RIGHT;
+  command.side = openarm_ik_ros::kRightSide;
   command.joint = 0U;
   command.target_rad = 0.8;
   command.terminal = [&recorder](const CommandResult & value) {
@@ -551,8 +556,8 @@ TEST(VirtualControlSession, ActiveShutdownStopsAndReportsMeasuredProvenanceOnce)
   ASSERT_TRUE(recorder.result.has_value());
   EXPECT_EQ(recorder.terminal_count, 1U);
   EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::aborted);
-  EXPECT_EQ(recorder.result->lifecycle, OA_LIFECYCLE_DISARMED);
-  EXPECT_EQ(recorder.result->event, OA_EVENT_ABORTED);
+  EXPECT_EQ(recorder.result->lifecycle, openarm_ik_ros::kLifecycleDisarmed);
+  EXPECT_EQ(recorder.result->event, OA_RUNTIME_EVENT_ABORTED);
   EXPECT_GT(recorder.result->seed_feedback_seq[0], 0U);
   EXPECT_GT(recorder.result->seed_feedback_seq[1], 0U);
   EXPECT_GT(recorder.result->plan_duration_ns, 0U);

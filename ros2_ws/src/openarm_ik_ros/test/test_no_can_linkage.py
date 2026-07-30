@@ -11,7 +11,18 @@ import tempfile
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", required=True)
+    parser.add_argument("--session-library", required=True)
     args = parser.parse_args()
+    undefined = subprocess.run(
+        ["nm", "-u", args.session_library], check=True, text=True, capture_output=True
+    ).stdout
+    forbidden = re.findall(
+        r"\b(?:oa_controller_|oa_motion_plan_|oa_manifest_(?!runtime))\w+", undefined
+    )
+    if forbidden:
+        raise SystemExit(f"session bypasses OpenArm::Runtime: {sorted(set(forbidden))}")
+    if "oa_runtime_create" not in undefined or "oa_runtime_snapshot_get" not in undefined:
+        raise SystemExit(f"session does not consume the runtime facade:\n{undefined}")
     linked = subprocess.run(["ldd", args.executable], check=True, text=True, capture_output=True).stdout
     if re.search(r"(?:openarm_can|socketcan|libcan)", linked, re.IGNORECASE):
         raise SystemExit(f"CAN linkage found:\n{linked}")
