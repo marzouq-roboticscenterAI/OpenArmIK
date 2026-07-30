@@ -3,7 +3,9 @@
 `openarm_units.h` owns the native length-unit contract. `oa_vec3d` is three
 IEEE binary64 `double` values; `oa_vec3d_convert` supports metres, centimetres,
 and inches without writing its output on invalid, non-finite, or overflowing
-input. `oa_ik_position_with_units` converts its target once at ingress, while
+input. Expanding conversions reject values at or above the conservative
+`DBL_MAX / |scale|` boundary under every standard floating-point rounding mode.
+`oa_ik_position_with_units` converts its target once at ingress, while
 all IK tolerances and diagnostics remain metres.
 
 This is a dependency-free ISO C11 forward-kinematics, geometric-Jacobian, and bounded position-IK library. It models exactly two chains from `openarm_body_link0` through the named `openarm_{left,right}_hand_tcp` frames in the flattened canonical bimanual v1.0 URDF.

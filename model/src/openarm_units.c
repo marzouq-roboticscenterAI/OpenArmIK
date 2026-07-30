@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "openarm_units.h"
 
+#include <float.h>
 #include <math.h>
 
 static int unit_scale(oa_length_unit unit, double *scale) {
@@ -26,6 +27,8 @@ oa_units_status oa_vec3d_convert(const oa_vec3d *input,
     double input_scale;
     double output_scale;
     double factor;
+    double absolute_factor;
+    double threshold;
     oa_vec3d converted;
 
     if (input == NULL || output == NULL ||
@@ -38,6 +41,14 @@ oa_units_status oa_vec3d_convert(const oa_vec3d *input,
     }
 
     factor = input_scale / output_scale;
+    absolute_factor = fabs(factor);
+    if (absolute_factor > 1.0) {
+        threshold = DBL_MAX / absolute_factor;
+        if (fabs(input->x) >= threshold || fabs(input->y) >= threshold ||
+            fabs(input->z) >= threshold) {
+            return OA_UNITS_EOVERFLOW;
+        }
+    }
     converted.x = input->x * factor;
     converted.y = input->y * factor;
     converted.z = input->z * factor;

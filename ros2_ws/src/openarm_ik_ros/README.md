@@ -54,6 +54,9 @@ ros2 run openarm_ik_ros openarm_control_cli move-paired-tcp \
   openarm_body_link0 0.20 0.30 0.85 0.20 -0.30 0.85
 ```
 
+All six `move-paired-tcp` XYZ arguments are metres; the legacy ROS CLI does not
+perform portal display-unit conversion.
+
 The CLI returns success only after the matching action reaches measured
 completion. `/use_sim_time=true`, nonfinite targets, unknown names, invalid or
 stale stamps, missing transforms, unreachable targets, and concurrent commands

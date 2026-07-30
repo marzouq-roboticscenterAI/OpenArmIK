@@ -308,12 +308,17 @@ void usage()
   std::cerr << "Usage:\n"
     "  openarm_control_cli status\n"
     "  openarm_control_cli move-joint JOINT_NAME TARGET_RAD\n"
-    "  openarm_control_cli move-paired-tcp FRAME LEFT_X LEFT_Y LEFT_Z RIGHT_X RIGHT_Y RIGHT_Z\n";
+    "  openarm_control_cli move-paired-tcp FRAME LEFT_X_METRES LEFT_Y_METRES LEFT_Z_METRES "
+    "RIGHT_X_METRES RIGHT_Y_METRES RIGHT_Z_METRES\n";
 }
 }
 
 int main(int argc, char ** argv)
 {
+  if (argc == 2 && std::string(argv[1]) == "--help") {
+    usage();
+    return 0;
+  }
   rclcpp::init(argc, argv);
   int result = 1;
   try {

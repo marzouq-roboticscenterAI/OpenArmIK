@@ -2,6 +2,7 @@
 #include "openarm_units.h"
 
 #include <float.h>
+#include <fenv.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -106,10 +107,57 @@ static void test_failure_contract(void) {
                            OA_LENGTH_UNIT_METRES, NULL) == OA_UNITS_EINVAL);
 }
 
+static void test_rounding_mode_overflow_contract(void) {
+    static const int modes[] = {
+        FE_TONEAREST,
+        FE_TOWARDZERO,
+        FE_DOWNWARD,
+        FE_UPWARD
+    };
+    const oa_vec3d sentinel = {7.25, -8.5, 9.75};
+    const int original_mode = fegetround();
+    size_t index;
+
+    CHECK(original_mode != -1);
+    if (original_mode == -1) {
+        return;
+    }
+    for (index = 0; index < sizeof(modes) / sizeof(modes[0]); ++index) {
+        volatile double centimetre_scale = 0.01;
+        double factor;
+        double threshold;
+        oa_vec3d output = sentinel;
+        oa_vec3d maximum = {DBL_MAX, 1.0, 2.0};
+        oa_vec3d negative_boundary;
+
+        CHECK(fesetround(modes[index]) == 0);
+        CHECK(oa_vec3d_convert(&maximum, OA_LENGTH_UNIT_METRES,
+                               OA_LENGTH_UNIT_CENTIMETRES, &output) ==
+              OA_UNITS_EOVERFLOW);
+        CHECK(unchanged(&output, &sentinel));
+
+        factor = 1.0 / centimetre_scale;
+        threshold = DBL_MAX / fabs(factor);
+        negative_boundary.x = -threshold;
+        negative_boundary.y = 1.0;
+        negative_boundary.z = 2.0;
+        if (modes[index] == FE_UPWARD) {
+            volatile double escaped_product = negative_boundary.x * factor;
+            CHECK(isfinite(escaped_product));
+        }
+        CHECK(oa_vec3d_convert(&negative_boundary, OA_LENGTH_UNIT_METRES,
+                               OA_LENGTH_UNIT_CENTIMETRES, &output) ==
+              OA_UNITS_EOVERFLOW);
+        CHECK(unchanged(&output, &sentinel));
+    }
+    CHECK(fesetround(original_mode) == 0);
+}
+
 int main(void) {
     test_unit_pairs();
     test_precision_and_alias();
     test_failure_contract();
+    test_rounding_mode_overflow_contract();
     if (failures != 0) {
         fprintf(stderr, "%d unit conversion failures\n", failures);
         return 1;

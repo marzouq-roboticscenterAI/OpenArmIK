@@ -160,6 +160,10 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_no_can_linkage.py
       --executable $<TARGET_FILE:openarm_ik_ros_node>
       --session-library $<TARGET_FILE:openarm_virtual_control_session>)
+  add_test(NAME test_openarm_control_cli_help COMMAND openarm_control_cli --help)
+  set_tests_properties(test_openarm_control_cli_help PROPERTIES
+    PASS_REGULAR_EXPRESSION
+      "LEFT_X_METRES LEFT_Y_METRES LEFT_Z_METRES RIGHT_X_METRES RIGHT_Y_METRES RIGHT_Z_METRES")
   get_filename_component(OPENARM_DESCRIPTION_SHARE "${openarm_description_DIR}/.." ABSOLUTE)
   add_test(
     NAME test_generated_urdf

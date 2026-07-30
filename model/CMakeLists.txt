@@ -17,6 +17,10 @@ set(OA_XACRO_PYTHONPATH "" CACHE STRING "PYTHONPATH required by xacro")
 set(OA_XACRO_AMENT_PREFIX "" CACHE STRING "Base AMENT_PREFIX_PATH required by xacro")
 
 add_library(openarm_model STATIC src/openarm_model.c src/openarm_units.c)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  set_source_files_properties(src/openarm_units.c PROPERTIES
+    COMPILE_OPTIONS -frounding-math)
+endif()
 add_library(OpenArm::Model ALIAS openarm_model)
 target_include_directories(openarm_model PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -68,6 +72,9 @@ if(OA_MODEL_BUILD_TESTS)
   add_executable(oa_units_tests tests/test_units.c)
   target_link_libraries(oa_units_tests PRIVATE openarm_model)
   target_compile_options(oa_units_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(oa_units_tests PRIVATE -frounding-math)
+  endif()
   add_test(NAME oa_units_tests COMMAND oa_units_tests)
   add_executable(oa_units_cxx17 tests/units_cxx17.cpp)
   target_link_libraries(oa_units_cxx17 PRIVATE openarm_model)

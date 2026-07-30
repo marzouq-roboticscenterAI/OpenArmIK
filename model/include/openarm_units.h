@@ -54,7 +54,10 @@ _Static_assert(offsetof(oa_vec3d, z) == 2 * sizeof(double), "oa_vec3d.z layout c
 #endif
 
 /* Convert all three coordinates with the binary64 scale associated with each
- * unit. input and output may be the same object. On failure output is unchanged. */
+ * unit. input and output may be the same object. On failure output is unchanged.
+ * Expanding conversions conservatively reject magnitudes at or above the
+ * DBL_MAX/|factor| boundary, independent of the caller's floating-point rounding
+ * mode. */
 oa_units_status oa_vec3d_convert(const oa_vec3d *input,
                                  oa_length_unit input_unit,
                                  oa_length_unit output_unit,
