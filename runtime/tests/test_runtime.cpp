@@ -2,6 +2,7 @@
 #include "openarm_control.h"
 #include "openarm_runtime.h"
 
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -13,13 +14,13 @@
 #include <future>
 #include <limits>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 
 extern "C" void oa_runtime_test_fail_allocation_after(std::int64_t countdown);
-extern "C" oa_runtime_status oa_runtime_test_transport_raii_probe(void);
 extern "C" int oa_runtime_test_hmac_sha256_known_vector(void);
 extern "C" void oa_runtime_test_fail_fsync_after(std::int64_t countdown);
 extern "C" void oa_runtime_test_fail_fsync_mask(std::uint64_t mask);
@@ -48,6 +49,167 @@ oa_runtime_options virtual_options() {
     options.maximum_cross_bus_skew_ns = 1000000U;
     options.collision_scene_revision = 1U;
     return options;
+}
+
+std::size_t directory_entry_count(const char *path) {
+    DIR *const directory = opendir(path);
+    CHECK(directory != nullptr);
+    std::size_t count = 0U;
+    for (dirent *entry = readdir(directory); entry != nullptr; entry = readdir(directory)) {
+        if (std::strcmp(entry->d_name, ".") != 0 &&
+            std::strcmp(entry->d_name, "..") != 0) {
+            ++count;
+        }
+    }
+    CHECK(closedir(directory) == 0);
+    return count;
+}
+
+void physical_observation_is_fail_closed(oa_runtime_manifest *manifest) {
+    oa_runtime *virtual_runtime = nullptr;
+    const auto virtual_config = virtual_options();
+    CHECK(oa_runtime_create(&virtual_config, manifest, &virtual_runtime) == OA_RUNTIME_OK);
+    oa_runtime_inventory *virtual_inventory = nullptr;
+    CHECK(oa_runtime_inventory_query(virtual_runtime, nullptr, &virtual_inventory) ==
+          OA_RUNTIME_OK);
+    oa_runtime_destroy(virtual_runtime);
+
+    auto options = virtual_options();
+    options.backend = OA_RUNTIME_BACKEND_SOCKETCAN_QUERY;
+    oa_runtime *runtime = nullptr;
+    const std::size_t fd_baseline = directory_entry_count("/proc/self/fd");
+    const std::size_t thread_baseline = directory_entry_count("/proc/self/task");
+    CHECK(oa_runtime_create(&options, manifest, &runtime) == OA_RUNTIME_OK);
+    CHECK(directory_entry_count("/proc/self/fd") == fd_baseline);
+    CHECK(directory_entry_count("/proc/self/task") == thread_baseline);
+
+    oa_runtime_capability_report capabilities{};
+    init(capabilities);
+    CHECK(oa_runtime_get_capabilities(runtime, &capabilities) == OA_RUNTIME_OK);
+    CHECK((capabilities.capabilities & OA_RUNTIME_CAP_INTERFACE_ENUMERATION) != 0U);
+    CHECK((capabilities.capabilities & (OA_RUNTIME_CAP_PHYSICAL_REGISTER_QUERY |
+                                        OA_RUNTIME_CAP_PHYSICAL_CONFIGURATION |
+                                        OA_RUNTIME_CAP_PHYSICAL_CALIBRATION_MOTION |
+                                        OA_RUNTIME_CAP_PHYSICAL_MOTION |
+                                        OA_RUNTIME_CAP_COLLISION_VALIDATED_MOTION |
+                                        OA_RUNTIME_CAP_MODEL_FK |
+                                        OA_RUNTIME_CAP_SINGLE_XYZ_IK |
+                                        OA_RUNTIME_CAP_PAIRED_XYZ_IK |
+                                        OA_RUNTIME_CAP_VIRTUAL_COORDINATES |
+                                        OA_RUNTIME_CAP_VIRTUAL_JOINT_MOTION |
+                                        OA_RUNTIME_CAP_VIRTUAL_PAIRED_XYZ_MOTION |
+                                        OA_RUNTIME_CAP_VIRTUAL_MANUAL_CALIBRATION |
+                                        OA_RUNTIME_CAP_VIRTUAL_SUPERVISED_CALIBRATION)) == 0U);
+
+    std::array<oa_runtime_interface, OA_RUNTIME_MAX_INTERFACES> interfaces{};
+    for (auto &interface : interfaces) init(interface);
+    std::size_t interface_count = 0U;
+    CHECK(oa_runtime_list_interfaces(runtime, interfaces.data(), interfaces.size(),
+                                     &interface_count) == OA_RUNTIME_OK);
+    CHECK(interface_count <= interfaces.size());
+    for (std::size_t index = 0U; index < interface_count; ++index) {
+        CHECK(interfaces[index].interface_kind == OA_RUNTIME_INTERFACE_KIND_PHYSICAL);
+        CHECK(interfaces[index].name[0] != '\0');
+    }
+
+    oa_runtime_inventory_query_options query{};
+    init(query);
+    std::snprintf(query.interface_name, sizeof(query.interface_name), "any");
+    query.per_query_timeout_ns = UINT64_MAX;
+    query.maximum_received_frames = UINT32_MAX;
+    query.candidate_count = OA_RUNTIME_MAX_QUERY_MOTORS;
+    for (auto &candidate : query.candidate) init(candidate);
+
+    oa_runtime_inventory *inventory = reinterpret_cast<oa_runtime_inventory *>(
+        static_cast<std::uintptr_t>(1U));
+    CHECK(oa_runtime_inventory_query(runtime, nullptr, &inventory) ==
+          OA_RUNTIME_EUNSUPPORTED);
+    CHECK(inventory == nullptr);
+    inventory = reinterpret_cast<oa_runtime_inventory *>(static_cast<std::uintptr_t>(1U));
+    CHECK(oa_runtime_inventory_query(runtime, &query, &inventory) ==
+          OA_RUNTIME_EUNSUPPORTED);
+    CHECK(inventory == nullptr);
+    query.struct_size = 0U;
+    inventory = reinterpret_cast<oa_runtime_inventory *>(static_cast<std::uintptr_t>(1U));
+    CHECK(oa_runtime_inventory_query(runtime, &query, &inventory) ==
+          OA_RUNTIME_EUNSUPPORTED);
+    CHECK(inventory == nullptr);
+
+    oa_runtime_manifest_preview preview{};
+    init(preview);
+    preview.valid = 1U;
+    preview.would_be_armable = 1U;
+    CHECK(oa_runtime_configuration_preview_physical(
+              manifest, virtual_inventory, &preview) == OA_RUNTIME_EUNSUPPORTED);
+    CHECK(preview.valid == 0U && preview.would_be_armable == 0U &&
+          preview.changed_motor_mask == 0U && preview.identity_change_mask == 0U &&
+          preview.mapping_change_mask == 0U && preview.limit_change_mask == 0U &&
+          preview.validation_status == OA_RUNTIME_EUNSUPPORTED);
+    CHECK(oa_runtime_configuration_apply_physical(runtime, manifest) ==
+          OA_RUNTIME_EUNSUPPORTED);
+    CHECK(oa_runtime_arm_virtual(runtime) == OA_RUNTIME_EUNSUPPORTED);
+    oa_commission_manual_options manual{};
+    manual.struct_size = sizeof(manual);
+    manual.abi_version = OA_COMMISSION_ABI_V1;
+    std::snprintf(manual.motor_serial, sizeof(manual.motor_serial), "unavailable");
+    oa_runtime_calibration *calibration = nullptr;
+    CHECK(oa_runtime_calibration_manual_begin(runtime, &manual, &calibration) ==
+          OA_RUNTIME_EUNSUPPORTED);
+    CHECK(calibration == nullptr);
+    oa_commission_recipe recipe{};
+    recipe.struct_size = sizeof(recipe);
+    recipe.abi_version = OA_COMMISSION_ABI_V1;
+    CHECK(oa_runtime_calibration_recipe_begin(runtime, &recipe, &calibration) ==
+          OA_RUNTIME_EUNSUPPORTED);
+    CHECK(calibration == nullptr);
+
+    const auto fast_start = std::chrono::steady_clock::now();
+    for (std::uint32_t attempt = 0U; attempt < 1000U; ++attempt) {
+        inventory = reinterpret_cast<oa_runtime_inventory *>(
+            static_cast<std::uintptr_t>(1U));
+        CHECK(oa_runtime_inventory_query(runtime, &query, &inventory) ==
+              OA_RUNTIME_EUNSUPPORTED);
+        CHECK(inventory == nullptr);
+    }
+    CHECK(std::chrono::steady_clock::now() - fast_start < std::chrono::seconds(2));
+    CHECK(directory_entry_count("/proc/self/fd") == fd_baseline);
+    CHECK(directory_entry_count("/proc/self/task") == thread_baseline);
+
+    constexpr std::size_t kRacers = 8U;
+    std::array<std::thread, kRacers> racers;
+    std::array<oa_runtime_status, kRacers> query_status{};
+    std::array<oa_runtime_status, kRacers> apply_status{};
+    std::array<oa_runtime_status, kRacers> preview_status{};
+    std::atomic<bool> start{false};
+    for (std::size_t index = 0U; index < racers.size(); ++index) {
+        racers[index] = std::thread([&, index] {
+            while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+            oa_runtime_manifest_preview local_preview{};
+            init(local_preview);
+            preview_status[index] = oa_runtime_configuration_preview_physical(
+                manifest, virtual_inventory, &local_preview);
+            oa_runtime_inventory *local_inventory = nullptr;
+            query_status[index] = oa_runtime_inventory_query(
+                runtime, &query, &local_inventory);
+            CHECK(local_inventory == nullptr);
+            apply_status[index] = oa_runtime_configuration_apply_physical(runtime, manifest);
+        });
+    }
+    const auto destroy_start = std::chrono::steady_clock::now();
+    start.store(true, std::memory_order_release);
+    oa_runtime_destroy(runtime);
+    for (auto &racer : racers) racer.join();
+    CHECK(std::chrono::steady_clock::now() - destroy_start < std::chrono::seconds(2));
+    for (std::size_t index = 0U; index < racers.size(); ++index) {
+        CHECK(preview_status[index] == OA_RUNTIME_EUNSUPPORTED);
+        CHECK(query_status[index] == OA_RUNTIME_EUNSUPPORTED ||
+              query_status[index] == OA_RUNTIME_EINVAL);
+        CHECK(apply_status[index] == OA_RUNTIME_EUNSUPPORTED ||
+              apply_status[index] == OA_RUNTIME_EINVAL);
+    }
+    CHECK(directory_entry_count("/proc/self/fd") == fd_baseline);
+    CHECK(directory_entry_count("/proc/self/task") == thread_baseline);
+    oa_runtime_inventory_destroy(virtual_inventory);
 }
 
 bool checkpoint_equal(const oa_runtime_persistence_checkpoint &left,
@@ -1476,7 +1638,6 @@ int main(int argc, char **argv) {
     if (argc > 1 && std::strcmp(argv[1], "--v2-recovery-crash") == 0) {
         return v2_recovery_crash_helper(argc, argv);
     }
-    CHECK(oa_runtime_test_transport_raii_probe() == OA_RUNTIME_OK);
     CHECK(oa_runtime_test_hmac_sha256_known_vector() == 1);
     oa_runtime_manifest *manifest = nullptr;
     CHECK(oa_runtime_manifest_create_virtual(&manifest) == OA_RUNTIME_OK);
@@ -1724,18 +1885,23 @@ int main(int argc, char **argv) {
     }
     CHECK(feedback_resumed);
     fresh_plan_status = OA_RUNTIME_ESTALE;
-    for (unsigned attempt = 0U;
-         attempt < 100U && fresh_plan_status == OA_RUNTIME_ESTALE; ++attempt) {
+    for (unsigned attempt = 0U; attempt < 100U; ++attempt) {
+        init(snapshot);
+        CHECK(oa_runtime_snapshot_get(runtime, &snapshot) == OA_RUNTIME_OK);
+        CHECK(oa_runtime_now_monotonic_ns(runtime, OA_RUNTIME_CLOCK_MONOTONIC, &now) ==
+              OA_RUNTIME_OK);
         move.required_feedback_seq = snapshot.arm[0].feedback_seq;
         move.target_model_rad = snapshot.arm[0].q_model_rad[0] + 0.01;
         move.expiry_runtime_monotonic_ns = now + 5000000000ULL;
         fresh_plan_status = oa_runtime_plan_joint(runtime, &move, &plan);
-        if (fresh_plan_status == OA_RUNTIME_ESTALE) {
+        if (fresh_plan_status == OA_RUNTIME_OK) break;
+        /* Snapshot and plan run on separate threads. A newly resumed feedback
+         * generation can advance between them; plan-destruction authority
+         * release is likewise observable by the next scheduler turn. */
+        CHECK(fresh_plan_status == OA_RUNTIME_ESTALE ||
+              fresh_plan_status == OA_RUNTIME_EBUSY);
+        if (attempt + 1U < 100U) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            init(snapshot);
-            CHECK(oa_runtime_snapshot_get(runtime, &snapshot) == OA_RUNTIME_OK);
-            CHECK(oa_runtime_now_monotonic_ns(
-                      runtime, OA_RUNTIME_CLOCK_MONOTONIC, &now) == OA_RUNTIME_OK);
         }
     }
     CHECK(fresh_plan_status == OA_RUNTIME_OK);
@@ -1908,71 +2074,7 @@ int main(int argc, char **argv) {
     CHECK(lifetime_ok.load());
     oa_runtime_destroy(lifetime_runtime);
 
-    auto query_options = virtual_options();
-    query_options.backend = OA_RUNTIME_BACKEND_SOCKETCAN_QUERY;
-    oa_runtime *query_runtime = nullptr;
-    CHECK(oa_runtime_create(&query_options, manifest, &query_runtime) == OA_RUNTIME_OK);
-    oa_runtime_capability_report query_capabilities{};
-    init(query_capabilities);
-    CHECK(oa_runtime_get_capabilities(query_runtime, &query_capabilities) == OA_RUNTIME_OK);
-    CHECK((query_capabilities.capabilities & OA_RUNTIME_CAP_PHYSICAL_REGISTER_QUERY) != 0U);
-    CHECK((query_capabilities.capabilities & OA_RUNTIME_CAP_PHYSICAL_CONFIGURATION) == 0U);
-    CHECK((query_capabilities.capabilities & (OA_RUNTIME_CAP_MODEL_FK |
-                                              OA_RUNTIME_CAP_SINGLE_XYZ_IK |
-                                              OA_RUNTIME_CAP_PAIRED_XYZ_IK)) == 0U);
-    std::uint64_t query_now_before = 0U;
-    std::uint64_t query_now_after = 0U;
-    CHECK(oa_runtime_now_monotonic_ns(query_runtime, OA_RUNTIME_CLOCK_MONOTONIC,
-                                      &query_now_before) == OA_RUNTIME_OK);
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    CHECK(oa_runtime_now_monotonic_ns(query_runtime, OA_RUNTIME_CLOCK_MONOTONIC,
-                                      &query_now_after) == OA_RUNTIME_OK);
-    CHECK(query_now_before > 0U && query_now_after > query_now_before);
-    init(kinematics);
-    CHECK(oa_runtime_get_kinematics(query_runtime, 2U, 0U, &kinematics) ==
-          OA_RUNTIME_EINVAL);
-    CHECK(oa_runtime_get_kinematics(query_runtime, 0U, 0U, &kinematics) ==
-          OA_RUNTIME_EUNSUPPORTED);
-    oa_runtime_inventory_query_options query{};
-    init(query);
-    std::snprintf(query.interface_name, sizeof(query.interface_name), "oa_absent");
-    query.per_query_timeout_ns = 1000000U;
-    query.maximum_received_frames = 1U;
-    oa_runtime_inventory_query_options semantic_bad = query;
-    semantic_bad.per_query_timeout_ns = 0U;
-    CHECK(oa_runtime_inventory_query(query_runtime, &semantic_bad, &inventory) ==
-          OA_RUNTIME_EINVAL);
-    oa_runtime_inventory_query_options abi_bad = query;
-    abi_bad.struct_size = 0U;
-    CHECK(oa_runtime_inventory_query(query_runtime, &abi_bad, &inventory) ==
-          OA_RUNTIME_EABI);
-    CHECK(oa_runtime_inventory_query(query_runtime, &query, &inventory) == OA_RUNTIME_OK);
-    init(inventory_summary);
-    CHECK(oa_runtime_inventory_get_summary(inventory, &inventory_summary) == OA_RUNTIME_OK);
-    CHECK(inventory_summary.interface_count == 0U && inventory_summary.motor_count == 0U);
-    CHECK(oa_runtime_arm_virtual(query_runtime) == OA_RUNTIME_EUNSUPPORTED);
-    CHECK(oa_runtime_configuration_apply_physical(query_runtime, manifest) ==
-          OA_RUNTIME_EUNSUPPORTED);
-    oa_commission_manual_options physical_manual{};
-    physical_manual.struct_size = sizeof(physical_manual);
-    physical_manual.abi_version = OA_COMMISSION_ABI_V1;
-    std::snprintf(physical_manual.motor_serial, sizeof(physical_manual.motor_serial), "x");
-    oa_runtime_calibration *physical_calibration = nullptr;
-    CHECK(oa_runtime_calibration_manual_begin(query_runtime, &physical_manual,
-                                              &physical_calibration) ==
-          OA_RUNTIME_EUNSUPPORTED);
-    oa_commission_recipe physical_recipe{};
-    physical_recipe.struct_size = sizeof(physical_recipe);
-    physical_recipe.abi_version = OA_COMMISSION_ABI_V1;
-    CHECK(oa_runtime_calibration_recipe_begin(query_runtime, &physical_recipe,
-                                              &physical_calibration) ==
-          OA_RUNTIME_EUNSUPPORTED);
-    physical_recipe.side = 2U;
-    CHECK(oa_runtime_calibration_recipe_begin(query_runtime, &physical_recipe,
-                                              &physical_calibration) ==
-          OA_RUNTIME_EINVAL);
-    oa_runtime_inventory_destroy(inventory);
-    oa_runtime_destroy(query_runtime);
+    physical_observation_is_fail_closed(manifest);
 
     auto offline_options = virtual_options();
     offline_options.backend = OA_RUNTIME_BACKEND_OFFLINE;
