@@ -72,6 +72,8 @@ for asset in portal.css portal.js viewer.js; do
 done
 printf '{"schema":1}\n' > "$output/install/openarm_ik_ros/share/openarm_ik_ros/viewer/manifest.json"
 printf '<robot/>\n' > "$output/install/openarm_ik_ros/share/openarm_ik_ros/viewer/stage_a.urdf"
+printf 'upstream Apache-2.0 license fixture\n' > \
+  "$output/install/openarm_ik_ros/share/openarm_ik_ros/viewer/openarm_description-LICENSE.txt"
 for mesh in body_link0_symp link0_symp link1_symp link2_symp link3_symp link4_symp link5_symp link6_symp link7_symp hand finger; do
   printf 'mesh %s\n' "$mesh" > "$output/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/$mesh.stl"
 done

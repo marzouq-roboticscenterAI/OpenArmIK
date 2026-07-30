@@ -50,6 +50,26 @@ openarm_configure_viewer_assets(
   "${OPENARM_DESCRIPTION_SHARE}" "${OPENARM_STAGE_A_VISUALIZATION_URDF}"
   "${OPENARM_VIEWER_ASSET_DIR}")
 add_custom_target(openarm_viewer_assets ALL DEPENDS "${OPENARM_VIEWER_STAGE_A_URDF}")
+set(OPENARM_VIEWER_INTEGRITY_INCLUDE
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/viewer_asset_integrity.inc")
+configure_file(
+  cmake/GenerateViewerAssetIntegrity.cmake.in
+  "${CMAKE_CURRENT_BINARY_DIR}/GenerateViewerAssetIntegrity.cmake" @ONLY)
+add_custom_command(
+  OUTPUT "${OPENARM_VIEWER_INTEGRITY_INCLUDE}"
+  COMMAND "${CMAKE_COMMAND}"
+    "-DOUTPUT=${OPENARM_VIEWER_INTEGRITY_INCLUDE}"
+    -P "${CMAKE_CURRENT_BINARY_DIR}/GenerateViewerAssetIntegrity.cmake"
+  DEPENDS
+    "${OPENARM_VIEWER_STAGE_A_URDF}"
+    "${OPENARM_VIEWER_MANIFEST}"
+    "${OPENARM_VIEWER_LICENSE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/web/portal.css"
+    "${CMAKE_CURRENT_SOURCE_DIR}/web/portal.js"
+    "${CMAKE_CURRENT_SOURCE_DIR}/web/viewer.js"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateViewerAssetIntegrity.cmake.in"
+  VERBATIM)
+add_custom_target(openarm_viewer_integrity ALL DEPENDS "${OPENARM_VIEWER_INTEGRITY_INCLUDE}")
 
 add_library(openarm_virtual_control_session STATIC src/virtual_control_session.cpp)
 target_include_directories(openarm_virtual_control_session PUBLIC include)
@@ -91,8 +111,9 @@ target_compile_options(openarm_portal_core PRIVATE -Wall -Wextra -Wpedantic -Wer
 target_link_libraries(openarm_portal_core PUBLIC openarm_model::openarm_model)
 
 add_executable(openarm_portal src/openarm_portal.cpp)
-add_dependencies(openarm_portal openarm_viewer_assets)
-target_include_directories(openarm_portal PRIVATE include)
+add_dependencies(openarm_portal openarm_viewer_assets openarm_viewer_integrity)
+target_include_directories(openarm_portal PRIVATE include "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_sources(openarm_portal PRIVATE "${OPENARM_VIEWER_INTEGRITY_INCLUDE}")
 target_compile_definitions(openarm_portal PRIVATE BOOST_ERROR_CODE_HEADER_ONLY)
 target_compile_options(openarm_portal PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_portal PRIVATE
@@ -119,6 +140,9 @@ install(FILES "${openarm_model_GENERATED_URDF}" DESTINATION share/${PROJECT_NAME
 install(FILES "${OPENARM_STAGE_A_VISUALIZATION_URDF}" DESTINATION share/${PROJECT_NAME}/urdf)
 install(FILES "${OPENARM_VIEWER_MANIFEST}" "${OPENARM_VIEWER_STAGE_A_URDF}"
   DESTINATION share/${PROJECT_NAME}/viewer)
+install(FILES "${OPENARM_VIEWER_LICENSE}"
+  DESTINATION share/${PROJECT_NAME}/viewer
+  RENAME openarm_description-LICENSE.txt)
 install(DIRECTORY "${OPENARM_VIEWER_MESH_DIRECTORY}/" DESTINATION share/${PROJECT_NAME}/viewer/mesh)
 install(DIRECTORY web/ DESTINATION share/${PROJECT_NAME}/web
   FILES_MATCHING PATTERN "*.css" PATTERN "*.js")
@@ -128,9 +152,11 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   ament_add_gtest(test_virtual_control_session test/test_virtual_control_session.cpp)
-  target_link_libraries(test_virtual_control_session openarm_virtual_control_session)
+  target_link_libraries(test_virtual_control_session
+    openarm_virtual_control_session openarm_portal_core)
   target_include_directories(test_virtual_control_session PRIVATE include)
   target_compile_options(test_virtual_control_session PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  set_tests_properties(test_virtual_control_session PROPERTIES TIMEOUT 300)
   ament_add_gtest(test_portal_core test/test_portal_core.cpp)
   target_link_libraries(test_portal_core
     openarm_portal_core
@@ -185,12 +211,25 @@ if(BUILD_TESTING)
       --canonical ${openarm_model_GENERATED_URDF}
       --visualization ${OPENARM_STAGE_A_VISUALIZATION_URDF}
       --manifest ${OPENARM_VIEWER_MANIFEST}
+      --license ${OPENARM_VIEWER_LICENSE}
       --description-root ${OPENARM_DESCRIPTION_SHARE}
       --generator ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateStageAVisualizationUrdf.cmake
       --cmake ${CMAKE_COMMAND})
   find_program(CHECK_URDF_EXECUTABLE NAMES check_urdf REQUIRED)
+  find_program(GECKODRIVER_EXECUTABLE NAMES geckodriver REQUIRED)
+  find_program(FIREFOX_EXECUTABLE NAMES firefox REQUIRED)
   add_test(NAME test_visualization_urdf_parser
-    COMMAND ${CHECK_URDF_EXECUTABLE} ${OPENARM_STAGE_A_VISUALIZATION_URDF})
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test/test_viewer_browser.sh
+      --portal $<TARGET_FILE:openarm_portal>
+      --web ${CMAKE_CURRENT_SOURCE_DIR}/web
+      --viewer ${OPENARM_VIEWER_ASSET_DIR}
+      --license ${OPENARM_VIEWER_LICENSE}
+      --geckodriver ${GECKODRIVER_EXECUTABLE}
+      --firefox ${FIREFOX_EXECUTABLE}
+      --check-urdf ${CHECK_URDF_EXECUTABLE}
+      --urdf ${OPENARM_STAGE_A_VISUALIZATION_URDF}
+      --oracle ${CMAKE_CURRENT_SOURCE_DIR}/test/viewer_browser_oracle.js)
+  set_tests_properties(test_visualization_urdf_parser PROPERTIES TIMEOUT 90)
   add_test(
     NAME test_invalid_expiry_parameter
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_invalid_expiry_parameter.py)

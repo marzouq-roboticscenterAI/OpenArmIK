@@ -619,6 +619,44 @@ bool normalise_move_to_metres(
   return true;
 }
 
+bool map_canonical_joint_state(
+  const std::vector<std::string> & names, const std::vector<double> & positions,
+  std::array<JointVector, 2> & output)
+{
+  constexpr std::size_t kJointCount = OA_DOF * 2U;
+  if (names.size() != kJointCount || positions.size() != kJointCount) {
+    return false;
+  }
+  std::array<bool, kJointCount> seen{};
+  std::array<JointVector, 2> mapped{};
+  for (std::size_t input = 0; input < kJointCount; ++input) {
+    if (!std::isfinite(positions[input])) {
+      return false;
+    }
+    std::size_t canonical = kJointCount;
+    for (std::size_t side = 0; side < 2U && canonical == kJointCount; ++side) {
+      const oa_model * model = side == 0U ?
+        oa_model_left_v10_bimanual() : oa_model_right_v10_bimanual();
+      for (std::size_t joint = 0; joint < OA_DOF; ++joint) {
+        if (names[input] == oa_model_joint_name(model, joint)) {
+          canonical = side * OA_DOF + joint;
+          break;
+        }
+      }
+    }
+    if (canonical == kJointCount || seen[canonical]) {
+      return false;
+    }
+    seen[canonical] = true;
+    mapped[canonical / OA_DOF][canonical % OA_DOF] = positions[input];
+  }
+  if (!std::all_of(seen.begin(), seen.end(), [](bool value) {return value;})) {
+    return false;
+  }
+  output = mapped;
+  return true;
+}
+
 const NominalTargetTable & nominal_targets(MoveRequest::Side side)
 {
   static constexpr NominalTargetTable left{{

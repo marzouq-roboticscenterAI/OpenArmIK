@@ -71,6 +71,8 @@ the pinned Stage-A URDF and allowlisted collision STL geometry. It is a
 feedback channel. Camera drag, wheel zoom, touch pinch, reset, resize, and
 stale overlays are browser-local and cannot issue a control request. Use
 `scripts/launch_rviz.sh` separately for stock RViz engineering views.
+The redistributed collision meshes carry the exact pinned upstream Apache-2.0
+license at `share/openarm_ik_ros/viewer/openarm_description-LICENSE.txt`.
 
 Portal controls remain virtual-only. Left/right requests use the freshest
 encoder-derived state as the opposite TCP target in a paired action. A sampled

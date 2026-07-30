@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openarm_ik_ros/virtual_control_session.hpp"
+#include "openarm_ik_ros/portal_core.hpp"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -51,6 +53,19 @@ struct Recorder
   {
     std::unique_lock<std::mutex> lock(mutex);
     return condition.wait_for(lock, timeout, [this]() {return result.has_value();});
+  }
+
+  bool wait_state(std::chrono::seconds timeout)
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    return condition.wait_for(lock, timeout, [this]() {return !states.empty();});
+  }
+
+  MeasuredState latest_state_and_clear_result()
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    result.reset();
+    return states.back();
   }
 
   std::size_t state_count()
@@ -178,6 +193,67 @@ TEST(VirtualControlSession, PairedNamedTargetsReachMeasuredCompletion)
   EXPECT_FALSE(recorder.result->collision_checked);
   EXPECT_GT(recorder.result->terminal_feedback_seq[0], recorder.result->seed_feedback_seq[0]);
   EXPECT_GT(recorder.result->terminal_feedback_seq[1], recorder.result->seed_feedback_seq[1]);
+}
+
+TEST(VirtualControlSession, AllPortalTargetsCompleteFromFreshMeasuredFeedback)
+{
+  namespace portal = openarm_ik_ros::portal;
+  Recorder recorder;
+  VirtualControlSession session(
+    [&recorder](const MeasuredState & value) {return recorder.state(value);}, []() {});
+  ASSERT_TRUE(recorder.wait_state(2s));
+  for (std::size_t target_index = 0; target_index < 9U; ++target_index) {
+    for (std::size_t selected = 0; selected < 2U; ++selected) {
+      const auto side = selected == 0U ?
+        portal::MoveRequest::Side::left : portal::MoveRequest::Side::right;
+      const portal::NominalTarget & target = portal::nominal_targets(side)[target_index];
+      const MeasuredState measured = recorder.latest_state_and_clear_result();
+      portal::GuardInput input;
+      for (std::size_t arm = 0; arm < 2U; ++arm) {
+        std::copy_n(
+          measured.snapshot.arm[arm].q_model_rad, OA_RUNTIME_DOF,
+          input.measured_q[arm].begin());
+      }
+      input.request.side = side;
+      input.request.target = target.point;
+      const portal::GuardResult guard = portal::NominalPathGuard().validate(input);
+      ASSERT_TRUE(guard.accepted) << target.id << " side=" << selected << ": " << guard.reason;
+      EXPECT_EQ(guard.commanded_tcp[selected], target.point);
+      const std::size_t opposite = 1U - selected;
+      oa_fk_result opposite_fk{};
+      const oa_model * opposite_model = opposite == 0U ?
+        oa_model_left_v10_bimanual() : oa_model_right_v10_bimanual();
+      ASSERT_EQ(oa_fk(opposite_model, input.measured_q[opposite].data(), &opposite_fk), OA_MODEL_OK);
+      const portal::Point opposite_measured{{
+        opposite_fk.hand_tcp.m[3], opposite_fk.hand_tcp.m[7], opposite_fk.hand_tcp.m[11]}};
+      EXPECT_EQ(guard.commanded_tcp[opposite], opposite_measured);
+
+      const std::string owner = std::string(target.id) + (selected == 0U ? "-left" : "-right");
+      std::string reason;
+      ASSERT_TRUE(session.reserve(owner, reason)) << reason;
+      SessionCommand command;
+      command.kind = SessionCommand::Kind::paired_tcp;
+      command.owner = owner;
+      command.left_tcp_m = guard.commanded_tcp[0];
+      command.right_tcp_m = guard.commanded_tcp[1];
+      command.terminal = [&recorder](const CommandResult & value) {
+          return recorder.terminal(value);
+        };
+      ASSERT_TRUE(session.submit(std::move(command), reason)) << reason;
+      ASSERT_TRUE(recorder.wait_result(40s)) << target.id << " side=" << selected;
+      ASSERT_TRUE(recorder.result.has_value());
+      EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::completed) <<
+        recorder.result->reason;
+      EXPECT_FALSE(recorder.result->collision_checked);
+      EXPECT_FALSE(recorder.result->motion_authorized);
+      EXPECT_GT(
+        recorder.result->terminal_feedback_seq[selected],
+        recorder.result->seed_feedback_seq[selected]);
+      ASSERT_TRUE(wait_health(session, [](const auto & health) {
+        return health.adapter_state == openarm_ik_ros::AdapterState::idle;
+      }, 2s));
+    }
+  }
 }
 
 TEST(VirtualControlSession, CancelDisableStopsAndRejectsLaterCommands)

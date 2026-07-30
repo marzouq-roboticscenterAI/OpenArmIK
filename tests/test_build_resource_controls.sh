@@ -475,7 +475,8 @@ for asset in portal.css portal.js viewer.js; do
   touch "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/web/$asset"
 done
 touch "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/manifest.json" \
-  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/stage_a.urdf"
+  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/stage_a.urdf" \
+  "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/openarm_description-LICENSE.txt"
 for mesh in body_link0_symp link0_symp link1_symp link2_symp link3_symp link4_symp link5_symp link6_symp link7_symp hand finger; do
   touch "$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/$mesh.stl"
 done

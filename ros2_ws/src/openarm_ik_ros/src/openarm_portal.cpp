@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cerrno>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <memory>
 #include <limits>
@@ -33,6 +34,7 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
 #include <sys/random.h>
 #include <unistd.h>
 
@@ -184,6 +186,88 @@ struct StaticAsset
   std::string_view content_type;
   std::uintmax_t maximum_size;
   std::uintmax_t exact_size;
+  std::string_view sha256;
+  bool served;
+};
+
+std::uint32_t rotate_right(std::uint32_t value, unsigned count)
+{
+  return (value >> count) | (value << (32U - count));
+}
+
+std::string sha256(std::string_view input)
+{
+  static constexpr std::array<std::uint32_t, 64> constants{{
+    0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U,
+    0x923f82a4U, 0xab1c5ed5U, 0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U,
+    0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U, 0xe49b69c1U, 0xefbe4786U,
+    0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
+    0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U,
+    0x06ca6351U, 0x14292967U, 0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U,
+    0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U, 0xa2bfe8a1U, 0xa81a664bU,
+    0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
+    0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU,
+    0x5b9cca4fU, 0x682e6ff3U, 0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U,
+    0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U,
+  }};
+  std::vector<unsigned char> bytes(input.begin(), input.end());
+  const std::uint64_t bit_length = static_cast<std::uint64_t>(bytes.size()) * 8U;
+  bytes.push_back(0x80U);
+  while ((bytes.size() % 64U) != 56U) {bytes.push_back(0U);}
+  for (int shift = 56; shift >= 0; shift -= 8) {
+    bytes.push_back(static_cast<unsigned char>((bit_length >> shift) & 0xffU));
+  }
+  std::array<std::uint32_t, 8> state{{
+    0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
+    0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U,
+  }};
+  for (std::size_t offset = 0; offset < bytes.size(); offset += 64U) {
+    std::array<std::uint32_t, 64> words{};
+    for (std::size_t index = 0; index < 16U; ++index) {
+      const std::size_t at = offset + index * 4U;
+      words[index] = (static_cast<std::uint32_t>(bytes[at]) << 24U) |
+        (static_cast<std::uint32_t>(bytes[at + 1U]) << 16U) |
+        (static_cast<std::uint32_t>(bytes[at + 2U]) << 8U) |
+        static_cast<std::uint32_t>(bytes[at + 3U]);
+    }
+    for (std::size_t index = 16U; index < words.size(); ++index) {
+      const std::uint32_t s0 = rotate_right(words[index - 15U], 7U) ^
+        rotate_right(words[index - 15U], 18U) ^ (words[index - 15U] >> 3U);
+      const std::uint32_t s1 = rotate_right(words[index - 2U], 17U) ^
+        rotate_right(words[index - 2U], 19U) ^ (words[index - 2U] >> 10U);
+      words[index] = words[index - 16U] + s0 + words[index - 7U] + s1;
+    }
+    auto working = state;
+    for (std::size_t index = 0; index < words.size(); ++index) {
+      const std::uint32_t sum1 = rotate_right(working[4], 6U) ^
+        rotate_right(working[4], 11U) ^ rotate_right(working[4], 25U);
+      const std::uint32_t choice =
+        (working[4] & working[5]) ^ ((~working[4]) & working[6]);
+      const std::uint32_t temporary1 =
+        working[7] + sum1 + choice + constants[index] + words[index];
+      const std::uint32_t sum0 = rotate_right(working[0], 2U) ^
+        rotate_right(working[0], 13U) ^ rotate_right(working[0], 22U);
+      const std::uint32_t majority = (working[0] & working[1]) ^
+        (working[0] & working[2]) ^ (working[1] & working[2]);
+      const std::uint32_t temporary2 = sum0 + majority;
+      for (std::size_t word = 7U; word > 0U; --word) {working[word] = working[word - 1U];}
+      working[4] += temporary1;
+      working[0] = temporary1 + temporary2;
+    }
+    for (std::size_t index = 0; index < state.size(); ++index) {
+      state[index] += working[index];
+    }
+  }
+  std::ostringstream output;
+  output << std::hex << std::setfill('0');
+  for (const std::uint32_t word : state) {output << std::setw(8) << word;}
+  return output.str();
+}
+
+struct VerifiedAsset
+{
+  StaticAsset specification;
+  std::string bytes;
 };
 
 class ViewerAssets
@@ -198,59 +282,51 @@ public:
   bool ready() const {return ready_;}
   const std::string & reason() const {return reason_;}
 
-  const StaticAsset * find(std::string_view route) const
+  const VerifiedAsset * find(std::string_view route) const
   {
-    for (const StaticAsset & asset : assets()) {
-      if (asset.route == route) {return &asset;}
+    for (const VerifiedAsset & asset : loaded_) {
+      if (asset.specification.served && asset.specification.route == route) {return &asset;}
     }
     return nullptr;
   }
 
-  const std::filesystem::path path(const StaticAsset & asset) const
-  {
-    return share_directory_ / asset.relative;
-  }
-
 private:
-  static const std::array<StaticAsset, 16> & assets()
+  static const std::array<StaticAsset, 17> & assets()
   {
-    static const std::array<StaticAsset, 16> value{{
-      {"/web/portal.css", "web/portal.css", "text/css; charset=utf-8", 65536, 0},
-      {"/web/portal.js", "web/portal.js", "application/javascript; charset=utf-8", 65536, 0},
-      {"/web/viewer.js", "web/viewer.js", "application/javascript; charset=utf-8", 131072, 0},
-      {"/viewer/manifest.json", "viewer/manifest.json", "application/json; charset=utf-8", 16384, 0},
-      {"/viewer/stage_a.urdf", "viewer/stage_a.urdf", "application/xml; charset=utf-8", 131072, 0},
-      {"/viewer/mesh/body_link0_symp.stl", "viewer/mesh/body_link0_symp.stl", "model/stl", 293284, 293284},
-      {"/viewer/mesh/link0_symp.stl", "viewer/mesh/link0_symp.stl", "model/stl", 40284, 40284},
-      {"/viewer/mesh/link1_symp.stl", "viewer/mesh/link1_symp.stl", "model/stl", 17784, 17784},
-      {"/viewer/mesh/link2_symp.stl", "viewer/mesh/link2_symp.stl", "model/stl", 13384, 13384},
-      {"/viewer/mesh/link3_symp.stl", "viewer/mesh/link3_symp.stl", "model/stl", 156984, 156984},
-      {"/viewer/mesh/link4_symp.stl", "viewer/mesh/link4_symp.stl", "model/stl", 1139984, 1139984},
-      {"/viewer/mesh/link5_symp.stl", "viewer/mesh/link5_symp.stl", "model/stl", 751484, 751484},
-      {"/viewer/mesh/link6_symp.stl", "viewer/mesh/link6_symp.stl", "model/stl", 30084, 30084},
-      {"/viewer/mesh/link7_symp.stl", "viewer/mesh/link7_symp.stl", "model/stl", 23884, 23884},
-      {"/viewer/mesh/hand.stl", "viewer/mesh/hand.stl", "model/stl", 18284, 18284},
-      {"/viewer/mesh/finger.stl", "viewer/mesh/finger.stl", "model/stl", 13284, 13284},
-    }};
+    static const std::array<StaticAsset, 17> value =
+#include "viewer_asset_integrity.inc"
+    ;
     return value;
   }
 
   void validate()
   {
     try {
+      constexpr std::uintmax_t kMaximumResidentBytes = 3U * 1024U * 1024U;
+      std::uintmax_t total_size = 0U;
+      loaded_.reserve(assets().size());
       for (const StaticAsset & asset : assets()) {
-        const std::filesystem::path asset_path = path(asset);
+        const std::filesystem::path asset_path = share_directory_ / asset.relative;
         if (!std::filesystem::is_regular_file(asset_path)) {
           reason_ = "required viewer asset is missing";
           return;
         }
         const std::uintmax_t size = std::filesystem::file_size(asset_path);
-        if (size == 0 || size > asset.maximum_size ||
-          (asset.exact_size != 0 && size != asset.exact_size))
+        if (size == 0 || size > asset.maximum_size || size != asset.exact_size ||
+          total_size > kMaximumResidentBytes - size)
         {
           reason_ = "required viewer asset has an invalid size";
           return;
         }
+        std::ifstream input(asset_path, std::ios::binary);
+        std::string bytes{
+          std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>{}};
+        if (input.bad() || bytes.size() != asset.exact_size || sha256(bytes) != asset.sha256) {
+          reason_ = "required viewer asset failed its pinned SHA-256";
+          return;
+        }
+        total_size += size;
+        loaded_.push_back({asset, std::move(bytes)});
       }
       ready_ = true;
       reason_ = "viewer assets ready";
@@ -262,6 +338,7 @@ private:
   std::filesystem::path share_directory_;
   bool ready_{false};
   std::string reason_;
+  std::vector<VerifiedAsset> loaded_;
 };
 }  // namespace
 
@@ -527,9 +604,6 @@ private:
 
   void update_state(const sensor_msgs::msg::JointState & message)
   {
-    if (message.name.size() != message.position.size()) {
-      return;
-    }
     const FreshnessEvidence freshness{
       rclcpp::Time(message.header.stamp).nanoseconds(), steady_now_ns()};
     if (!fresh_at_use(
@@ -539,22 +613,7 @@ private:
       return;
     }
     std::array<JointVector, 2> next{};
-    for (std::size_t side = 0; side < 2; ++side) {
-      const oa_model * model = side == 0 ? oa_model_left_v10_bimanual() :
-        oa_model_right_v10_bimanual();
-      for (std::size_t joint = 0; joint < OA_DOF; ++joint) {
-        const std::string expected = oa_model_joint_name(model, joint);
-        const auto found = std::find(message.name.begin(), message.name.end(), expected);
-        if (found == message.name.end()) {
-          return;
-        }
-        const std::size_t index = static_cast<std::size_t>(found - message.name.begin());
-        if (!std::isfinite(message.position[index])) {
-          return;
-        }
-        next[side][joint] = message.position[index];
-      }
-    }
+    if (!map_canonical_joint_state(message.name, message.position, next)) {return;}
     std::lock_guard<std::mutex> lock(mutex_);
     measured_q_ = next;
     state_freshness_ = freshness;
@@ -648,58 +707,126 @@ public:
         }
         continue;
       }
-      if (active_requests_.fetch_add(1) >= 8) {
-        active_requests_.fetch_sub(1);
-        socket.close(error);
+      if (intake_admitted_.fetch_add(1) >= kMaximumIntake) {
+        intake_admitted_.fetch_sub(1);
+        reject_socket(socket);
         continue;
       }
       try {
-        asio::post(pool_, [this, socket = std::move(socket)]() mutable {
+        asio::post(intake_pool_, [this, socket = std::move(socket)]() mutable {
           try {
             beast::tcp_stream stream(std::move(socket));
             stream.expires_after(std::chrono::seconds(2));
-            serve(stream);
-            beast::error_code ignored;
-            stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
+            intake(std::move(stream));
           } catch (const std::exception & exception) {
-            std::fprintf(stderr, "openarm_portal request: %s\n", exception.what());
+            std::fprintf(stderr, "openarm_portal intake: %s\n", exception.what());
           }
-          active_requests_.fetch_sub(1);
+          intake_admitted_.fetch_sub(1);
         });
       } catch (...) {
-        active_requests_.fetch_sub(1);
+        intake_admitted_.fetch_sub(1);
         throw;
       }
     }
     beast::error_code ignored;
     acceptor_.close(ignored);
     node_->begin_shutdown();
-    pool_.join();
+    intake_pool_.join();
+    static_pool_.join();
+    api_pool_.join();
   }
 
 private:
-  bool write_asset(
-    beast::tcp_stream & stream, const http::request<http::string_body> & request,
-    const StaticAsset & asset)
+  using Request = http::request<http::string_body>;
+  static constexpr unsigned kMaximumIntake = 16U;
+  static constexpr unsigned kStaticWorkers = 2U;
+  static constexpr unsigned kStaticPending = 1U;
+  static constexpr unsigned kMaximumApi = 8U;
+
+  static void close_stream(beast::tcp_stream & stream)
   {
-    beast::error_code error;
-    http::file_body::value_type body;
-    const std::filesystem::path asset_path = assets_.path(asset);
-    body.open(asset_path.string().c_str(), beast::file_mode::scan, error);
-    if (error) {
-      write_json(stream, http::status::service_unavailable,
-        "{\"error\":\"viewer asset is unavailable\"}");
-      return false;
-    }
-    http::response<http::file_body> response{http::status::ok, request.version()};
-    response.set(http::field::content_type, asset.content_type);
-    response.content_length(body.size());
-    response.body() = std::move(body);
+    beast::error_code ignored;
+    stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
+    stream.socket().close(ignored);
+  }
+
+  static void reject_socket(tcp::socket & socket)
+  {
+    beast::error_code ignored;
+    socket.set_option(asio::socket_base::linger(true, 0), ignored);
+    socket.close(ignored);
+  }
+
+  static void reject_stream(beast::tcp_stream & stream)
+  {
+    beast::error_code ignored;
+    stream.socket().set_option(asio::socket_base::linger(true, 0), ignored);
+    stream.socket().close(ignored);
+  }
+
+  bool write_asset(
+    beast::tcp_stream & stream, const Request & request, const VerifiedAsset & asset)
+  {
+    http::response<http::string_body> response{http::status::ok, request.version()};
+    response.set(http::field::content_type, asset.specification.content_type);
+    response.body() = asset.bytes;
     write_response(stream, response);
     return true;
   }
 
-  void serve(beast::tcp_stream & stream)
+  void dispatch_static(beast::tcp_stream stream, Request request)
+  {
+    if (static_admitted_.fetch_add(1) >= kStaticWorkers + kStaticPending) {
+      static_admitted_.fetch_sub(1);
+      reject_stream(stream);
+      return;
+    }
+    try {
+      asio::post(static_pool_,
+        [this, stream = std::move(stream), request = std::move(request)]() mutable {
+          try {
+            stream.expires_after(std::chrono::seconds(1));
+            beast::error_code ignored;
+            stream.socket().set_option(asio::socket_base::send_buffer_size(16384), ignored);
+            serve_static(stream, request);
+            close_stream(stream);
+          } catch (const std::exception & exception) {
+            std::fprintf(stderr, "openarm_portal static request: %s\n", exception.what());
+          }
+          static_admitted_.fetch_sub(1);
+        });
+    } catch (...) {
+      static_admitted_.fetch_sub(1);
+      throw;
+    }
+  }
+
+  void dispatch_api(beast::tcp_stream stream, Request request)
+  {
+    if (api_admitted_.fetch_add(1) >= kMaximumApi) {
+      api_admitted_.fetch_sub(1);
+      reject_stream(stream);
+      return;
+    }
+    try {
+      asio::post(api_pool_,
+        [this, stream = std::move(stream), request = std::move(request)]() mutable {
+          try {
+            stream.expires_after(std::chrono::seconds(2));
+            serve_api(stream, request);
+            close_stream(stream);
+          } catch (const std::exception & exception) {
+            std::fprintf(stderr, "openarm_portal API request: %s\n", exception.what());
+          }
+          api_admitted_.fetch_sub(1);
+        });
+    } catch (...) {
+      api_admitted_.fetch_sub(1);
+      throw;
+    }
+  }
+
+  void intake(beast::tcp_stream stream)
   {
     beast::flat_buffer buffer;
     http::request_parser<http::string_body> parser;
@@ -710,32 +837,52 @@ private:
     if (error) {
       return;
     }
-    const auto & request = parser.get();
+    Request request = parser.release();
     const std::string target(request.target());
     std::string reason;
     const SafeRequestHeaders request_headers = safe_headers(request);
     if (!safe_policy_.validate_read(request_headers, reason)) {
       write_json(stream, http::status::forbidden,
         "{\"error\":\"" + json_escape(reason) + "\"}");
+      close_stream(stream);
       return;
     }
     if (request.method() == http::verb::get && !request.body().empty()) {
       write_json(stream, http::status::bad_request, "{\"error\":\"GET body is not allowed\"}");
+      close_stream(stream);
       return;
     }
-    if (request.method() == http::verb::get && target == "/") {
+    const bool static_route = request.method() == http::verb::get &&
+      (target == "/" || (assets_.ready() && assets_.find(target) != nullptr));
+    if (static_route) {
+      dispatch_static(std::move(stream), std::move(request));
+    } else {
+      dispatch_api(std::move(stream), std::move(request));
+    }
+  }
+
+  void serve_static(beast::tcp_stream & stream, const Request & request)
+  {
+    const std::string target(request.target());
+    if (target == "/") {
       http::response<http::string_body> response{http::status::ok, request.version()};
       response.set(http::field::content_type, "text/html; charset=utf-8");
       response.body() = page_;
       write_response(stream, response);
       return;
     }
-    if (request.method() == http::verb::get && assets_.ready()) {
-      if (const StaticAsset * asset = assets_.find(target)) {
+    if (const VerifiedAsset * asset = assets_.find(target)) {
         (void)write_asset(stream, request, *asset);
         return;
-      }
     }
+    write_json(stream, http::status::not_found, "{\"error\":\"route not found\"}");
+  }
+
+  void serve_api(beast::tcp_stream & stream, const Request & request)
+  {
+    const std::string target(request.target());
+    std::string reason;
+    const SafeRequestHeaders request_headers = safe_headers(request);
     if (request.method() == http::verb::get && target == "/api/health") {
       write_json(stream, assets_.ready() ? http::status::ok : http::status::service_unavailable,
         std::string("{\"healthy\":") + (assets_.ready() ? "true" : "false") +
@@ -838,8 +985,12 @@ private:
 
   asio::io_context context_;
   tcp::acceptor acceptor_;
-  asio::thread_pool pool_{4};
-  std::atomic_uint active_requests_{0};
+  asio::thread_pool intake_pool_{4};
+  asio::thread_pool static_pool_{kStaticWorkers};
+  asio::thread_pool api_pool_{4};
+  std::atomic_uint intake_admitted_{0};
+  std::atomic_uint static_admitted_{0};
+  std::atomic_uint api_admitted_{0};
   std::shared_ptr<PortalNode> node_;
   std::string csrf_;
   std::string authority_;

@@ -252,6 +252,7 @@ openarm_launch_artifact_paths() {
     "viewer_js|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/web/viewer.js" \
     "viewer_manifest|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/manifest.json" \
     "viewer_urdf|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/stage_a.urdf" \
+    "viewer_license|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/openarm_description-LICENSE.txt" \
     "viewer_body|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/body_link0_symp.stl" \
     "viewer_link0|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/link0_symp.stl" \
     "viewer_link1|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/link1_symp.stl" \

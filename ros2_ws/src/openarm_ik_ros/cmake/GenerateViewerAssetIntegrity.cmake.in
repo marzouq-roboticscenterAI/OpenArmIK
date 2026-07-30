@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+set(entries
+  "/web/portal.css|web/portal.css|text/css|65536|@CMAKE_CURRENT_SOURCE_DIR@/web/portal.css|1"
+  "/web/portal.js|web/portal.js|application/javascript|65536|@CMAKE_CURRENT_SOURCE_DIR@/web/portal.js|1"
+  "/web/viewer.js|web/viewer.js|application/javascript|131072|@CMAKE_CURRENT_SOURCE_DIR@/web/viewer.js|1"
+  "/viewer/manifest.json|viewer/manifest.json|application/json|16384|@OPENARM_VIEWER_MANIFEST@|1"
+  "/viewer/stage_a.urdf|viewer/stage_a.urdf|application/xml|131072|@OPENARM_VIEWER_STAGE_A_URDF@|1"
+  "/viewer/mesh/body_link0_symp.stl|viewer/mesh/body_link0_symp.stl|model/stl|293284|@OPENARM_VIEWER_MESH_DIRECTORY@/body_link0_symp.stl|1"
+  "/viewer/mesh/link0_symp.stl|viewer/mesh/link0_symp.stl|model/stl|40284|@OPENARM_VIEWER_MESH_DIRECTORY@/link0_symp.stl|1"
+  "/viewer/mesh/link1_symp.stl|viewer/mesh/link1_symp.stl|model/stl|17784|@OPENARM_VIEWER_MESH_DIRECTORY@/link1_symp.stl|1"
+  "/viewer/mesh/link2_symp.stl|viewer/mesh/link2_symp.stl|model/stl|13384|@OPENARM_VIEWER_MESH_DIRECTORY@/link2_symp.stl|1"
+  "/viewer/mesh/link3_symp.stl|viewer/mesh/link3_symp.stl|model/stl|156984|@OPENARM_VIEWER_MESH_DIRECTORY@/link3_symp.stl|1"
+  "/viewer/mesh/link4_symp.stl|viewer/mesh/link4_symp.stl|model/stl|1139984|@OPENARM_VIEWER_MESH_DIRECTORY@/link4_symp.stl|1"
+  "/viewer/mesh/link5_symp.stl|viewer/mesh/link5_symp.stl|model/stl|751484|@OPENARM_VIEWER_MESH_DIRECTORY@/link5_symp.stl|1"
+  "/viewer/mesh/link6_symp.stl|viewer/mesh/link6_symp.stl|model/stl|30084|@OPENARM_VIEWER_MESH_DIRECTORY@/link6_symp.stl|1"
+  "/viewer/mesh/link7_symp.stl|viewer/mesh/link7_symp.stl|model/stl|23884|@OPENARM_VIEWER_MESH_DIRECTORY@/link7_symp.stl|1"
+  "/viewer/mesh/hand.stl|viewer/mesh/hand.stl|model/stl|18284|@OPENARM_VIEWER_MESH_DIRECTORY@/hand.stl|1"
+  "/viewer/mesh/finger.stl|viewer/mesh/finger.stl|model/stl|13284|@OPENARM_VIEWER_MESH_DIRECTORY@/finger.stl|1"
+  "|viewer/openarm_description-LICENSE.txt|text/plain|11357|@OPENARM_VIEWER_LICENSE@|0")
+
+if(NOT DEFINED OUTPUT)
+  message(FATAL_ERROR "OUTPUT is required")
+endif()
+file(WRITE "${OUTPUT}" "{{\n")
+foreach(entry IN LISTS entries)
+  string(REPLACE "|" ";" fields "${entry}")
+  list(GET fields 0 route)
+  list(GET fields 1 relative)
+  list(GET fields 2 content_type)
+  list(GET fields 3 maximum_size)
+  list(GET fields 4 source)
+  list(GET fields 5 served)
+  if(NOT EXISTS "${source}")
+    message(FATAL_ERROR "Viewer integrity input is missing: ${source}")
+  endif()
+  file(SIZE "${source}" exact_size)
+  file(SHA256 "${source}" sha256)
+  if(exact_size EQUAL 0 OR exact_size GREATER maximum_size)
+    message(FATAL_ERROR "Viewer integrity input violates its bound: ${source}")
+  endif()
+  file(APPEND "${OUTPUT}"
+    "  {\"${route}\", \"${relative}\", \"${content_type}\", ${maximum_size}, ${exact_size}, \"${sha256}\", ${served}},\n")
+endforeach()
+file(APPEND "${OUTPUT}" "}}\n")

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace openarm_ik_ros::portal
 {
@@ -167,6 +168,9 @@ bool guard_handoff_valid(
   std::int64_t state_maximum_age_ns, std::int64_t diagnostic_maximum_age_ns);
 bool normalise_move_to_metres(
   const UnitMoveRequest & input, MoveRequest & output, std::string & reason);
+bool map_canonical_joint_state(
+  const std::vector<std::string> & names, const std::vector<double> & positions,
+  std::array<JointVector, 2> & output);
 NominalTestSamples nominal_test_samples(MoveRequest::Side side);
 const NominalTargetTable & nominal_targets(MoveRequest::Side side);
 std::string json_number(double value);

@@ -85,6 +85,8 @@ packages=(
   pkg-config
   git
   curl
+  jq
+  firefox
   cppcheck
   lcov
   procps
@@ -163,6 +165,14 @@ verify_installed() {
   fi
   [[ -r /opt/ros/lyrical/setup.bash ]] || {
     printf '%s\n' 'Packages are installed, but the ROS setup file is missing.' >&2
+    return 1
+  }
+  command -v geckodriver >/dev/null 2>&1 || {
+    printf '%s\n' 'Browser fidelity tests require geckodriver (the Firefox snap provides it on this platform).' >&2
+    return 1
+  }
+  geckodriver --version >/dev/null 2>&1 || {
+    printf '%s\n' 'geckodriver is present but cannot execute.' >&2
     return 1
   }
   printf '\nAll OpenArmIK system dependencies are installed.\n'

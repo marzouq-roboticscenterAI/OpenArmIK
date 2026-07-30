@@ -12,8 +12,10 @@
 #include <iterator>
 #include <limits>
 #include <sstream>
+#include <set>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 namespace portal = openarm_ik_ros::portal;
 using PairedAction = openarm_control_msgs::action::MovePairedTcp;
@@ -56,6 +58,75 @@ portal::Point tcp(std::size_t side, const portal::JointVector & q)
     oa_model_right_v10_bimanual();
   EXPECT_EQ(oa_fk(model, q.data(), &result), OA_MODEL_OK);
   return {result.hand_tcp.m[3], result.hand_tcp.m[7], result.hand_tcp.m[11]};
+}
+
+bool inverse_from(
+  std::size_t side, const portal::Point & target, const portal::JointVector & seed,
+  portal::JointVector & output)
+{
+  oa_ik_options options{};
+  options.abi_version = OA_MODEL_ABI_VERSION;
+  options.struct_size = sizeof(options);
+  std::copy(seed.begin(), seed.end(), options.seed);
+  std::copy(seed.begin(), seed.end(), options.posture);
+  std::fill(std::begin(options.posture_weight), std::end(options.posture_weight), 1.0);
+  options.position_tolerance_m = 1.0e-6;
+  options.max_joint_step_rad = 0.12;
+  options.damping_min = 1.0e-5;
+  options.damping_max = 0.1;
+  options.limit_margin_rad = 1.0e-5;
+  options.max_iterations = 500;
+  oa_ik_diagnostics diagnostics{};
+  const oa_model * model = side == 0U ?
+    oa_model_left_v10_bimanual() : oa_model_right_v10_bimanual();
+  if (oa_ik_position_v2(
+      model, target.data(), &options, OA_IK_DIAGNOSTICS_VERSION,
+      sizeof(diagnostics), &diagnostics) != OA_MODEL_OK ||
+    diagnostics.position_error_m > 1.0e-5)
+  {
+    return false;
+  }
+  std::copy(std::begin(diagnostics.q), std::end(diagnostics.q), output.begin());
+  return true;
+}
+
+portal::JointVector quantize_endpoint(std::size_t side, const portal::JointVector & input)
+{
+  portal::JointVector output{};
+  for (std::size_t joint = 0; joint < output.size(); ++joint) {
+    const double scale = ((side + joint) & 1U) == 0U ? 1.0 : -1.0;
+    constexpr double offset = 0.125;
+    constexpr double span = 12.5;
+    constexpr double maximum = 65535.0;
+    const double raw = (input[joint] - offset) / scale;
+    const double unit = (std::clamp(raw, -span, span) + span) / (2.0 * span);
+    const double encoded = std::round(unit * maximum);
+    output[joint] = scale * (encoded / maximum * (2.0 * span) - span) + offset;
+  }
+  return output;
+}
+
+bool guarded_path_endpoint(
+  std::size_t side, const portal::JointVector & start, const portal::Point & target,
+  portal::JointVector & output)
+{
+  portal::JointVector current = start;
+  const portal::Point begin = tcp(side, start);
+  for (std::size_t sample = 1U; sample < 17U; ++sample) {
+    const double fraction = static_cast<double>(sample) / 16.0;
+    portal::Point waypoint{};
+    for (std::size_t axis = 0; axis < waypoint.size(); ++axis) {
+      waypoint[axis] = begin[axis] + fraction * (target[axis] - begin[axis]);
+    }
+    portal::JointVector next{};
+    if (!inverse_from(side, waypoint, current, next)) {return false;}
+    for (std::size_t joint = 0; joint < current.size(); ++joint) {
+      if (std::abs(next[joint] - current[joint]) > 0.35) {return false;}
+    }
+    current = next;
+  }
+  output = quantize_endpoint(side, current);
+  return true;
 }
 
 std::string read_file(const char * path)
@@ -306,6 +377,99 @@ TEST(ViewerSnapshot, SerializesStrictJointOrderAndBinary64Positions)
   EXPECT_EQ(absent.find("position_rad"), std::string::npos);
 }
 
+TEST(JointStateMapping, RequiresExactUnambiguousCanonicalSet)
+{
+  std::vector<std::string> names;
+  std::vector<double> positions;
+  for (std::size_t side = 0; side < 2U; ++side) {
+    const oa_model * model = side == 0U ?
+      oa_model_left_v10_bimanual() : oa_model_right_v10_bimanual();
+    for (std::size_t joint = 0; joint < OA_DOF; ++joint) {
+      names.emplace_back(oa_model_joint_name(model, joint));
+      positions.push_back(static_cast<double>(side * OA_DOF + joint) + 0.125);
+    }
+  }
+  std::array<portal::JointVector, 2> mapped{};
+  ASSERT_TRUE(portal::map_canonical_joint_state(names, positions, mapped));
+  EXPECT_DOUBLE_EQ(mapped[0][0], 0.125);
+  EXPECT_DOUBLE_EQ(mapped[1][6], 13.125);
+
+  std::reverse(names.begin(), names.end());
+  std::reverse(positions.begin(), positions.end());
+  ASSERT_TRUE(portal::map_canonical_joint_state(names, positions, mapped));
+  EXPECT_DOUBLE_EQ(mapped[0][0], 0.125);
+  EXPECT_DOUBLE_EQ(mapped[1][6], 13.125);
+
+  auto invalid_names = names;
+  auto invalid_positions = positions;
+  invalid_names.push_back("extra_joint");
+  invalid_positions.push_back(99.0);
+  EXPECT_FALSE(portal::map_canonical_joint_state(invalid_names, invalid_positions, mapped));
+  invalid_names = names;
+  invalid_positions = positions;
+  invalid_names.pop_back();
+  invalid_positions.pop_back();
+  EXPECT_FALSE(portal::map_canonical_joint_state(invalid_names, invalid_positions, mapped));
+  invalid_names = names;
+  invalid_positions = positions;
+  invalid_names.back() = invalid_names.front();
+  invalid_positions.back() = -123.0;
+  EXPECT_FALSE(portal::map_canonical_joint_state(invalid_names, invalid_positions, mapped));
+  invalid_names = names;
+  invalid_positions = positions;
+  invalid_names.back() = "unknown_joint";
+  EXPECT_FALSE(portal::map_canonical_joint_state(invalid_names, invalid_positions, mapped));
+  invalid_positions = positions;
+  invalid_positions.pop_back();
+  EXPECT_FALSE(portal::map_canonical_joint_state(names, invalid_positions, mapped));
+  invalid_positions = positions;
+  invalid_positions[3] = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(portal::map_canonical_joint_state(names, invalid_positions, mapped));
+}
+
+TEST(ViewerKinematicsOracle, AsymmetricLinkAndFixedFingerTransformsMatchPublicModel)
+{
+  const std::array<portal::JointVector, 2> q{{
+    {{0.11,-0.22,0.33,-0.44,0.55,-0.66,0.77}},
+    {{-0.17,0.28,-0.39,0.46,-0.58,0.69,-0.73}},
+  }};
+  const std::array<std::array<double, 16>, 2> browser_link7{{
+    {{-0.2161366642,-0.5748510957,-0.7891964316,0,
+      -0.2587691844,-0.7456699610,0.6140152812,0,
+      -0.9414475560,0.3369309008,0.0124128778,0,
+      -0.1303039938,0.2732512355,0.3110575974,1}},
+    {{0.1511632949,0.8105254769,-0.5658605695,0,
+      0.7984836102,-0.4375739694,-0.4134647548,0,
+      -0.5827295184,-0.3893296719,-0.7133364081,0,
+      0.0184688978,-0.2327470928,0.2813513875,1}},
+  }};
+  const std::array<portal::Point, 2> fixed_finger_mesh_translation{{
+    {{0.4071400464,0.1186301410,0.2764943242}},
+    {{0.3798556924,-0.0349969082,0.6611446142}},
+  }};
+  for (std::size_t side = 0; side < 2U; ++side) {
+    oa_fk_result fk{};
+    const oa_model * model = side == 0U ?
+      oa_model_left_v10_bimanual() : oa_model_right_v10_bimanual();
+    ASSERT_EQ(oa_fk(model, q[side].data(), &fk), OA_MODEL_OK);
+    for (std::size_t column = 0; column < 4U; ++column) {
+      for (std::size_t row = 0; row < 4U; ++row) {
+        EXPECT_NEAR(
+          browser_link7[side][column * 4U + row],
+          fk.link_post[6].m[row * 4U + column], 2.0e-6);
+      }
+    }
+    const portal::Point local{{0.0, side == 0U ? -0.045 : 0.045, -0.558501}};
+    for (std::size_t row = 0; row < 3U; ++row) {
+      const double world = fk.link_post[6].m[row * 4U + 3U] +
+        fk.link_post[6].m[row * 4U] * local[0] +
+        fk.link_post[6].m[row * 4U + 1U] * local[1] +
+        fk.link_post[6].m[row * 4U + 2U] * local[2];
+      EXPECT_NEAR(world, fixed_finger_mesh_translation[side][row], 2.0e-6);
+    }
+  }
+}
+
 TEST(ViewerScript, UsesSequentialThirtyHertzPollingAndLocalOnlyCameraEvents)
 {
   const std::string viewer = read_file(OPENARM_VIEWER_JS_PATH);
@@ -328,8 +492,15 @@ TEST(ViewerScript, UsesSequentialThirtyHertzPollingAndLocalOnlyCameraEvents)
   EXPECT_NE(viewer.find("webglcontextlost"), std::string::npos);
   EXPECT_NE(viewer.find("addEventListener('pointermove'"), std::string::npos);
   EXPECT_NE(viewer.find("addEventListener('wheel'"), std::string::npos);
-  EXPECT_NE(viewer.find("addEventListener('touchmove'"), std::string::npos);
+  EXPECT_NE(viewer.find("const active = new Map()"), std::string::npos);
+  EXPECT_NE(viewer.find("if (active.size >= 2)"), std::string::npos);
+  EXPECT_EQ(viewer.find("addEventListener('touchmove'"), std::string::npos);
   EXPECT_NE(viewer.find("reset-view"), std::string::npos);
+  EXPECT_NE(viewer.find("nonfinite STL vertex"), std::string::npos);
+  EXPECT_NE(viewer.find("MAX_ENCODED_BYTES = 2498724"), std::string::npos);
+  EXPECT_NE(viewer.find("MAX_GPU_BYTES = MAX_TRIANGLES * 9 * 4"), std::string::npos);
+  EXPECT_NE(viewer.find("document.addEventListener('visibilitychange'"), std::string::npos);
+  EXPECT_NE(viewer.find("MAX_CONTEXT_LOSSES = 2"), std::string::npos);
   EXPECT_EQ(viewer.find("method: 'POST'"), std::string::npos);
   EXPECT_EQ(viewer.find("/api/move"), std::string::npos);
   EXPECT_EQ(viewer.find("http://"), std::string::npos);
@@ -399,10 +570,35 @@ TEST(NominalPathGuard, AllNinePresetsPerArmParseAndPassButNearbyPoleApproachFail
   const auto & right_targets = portal::nominal_targets(portal::MoveRequest::Side::right);
   ASSERT_EQ(left_targets.size(), 9U);
   ASSERT_EQ(right_targets.size(), 9U);
-  EXPECT_EQ(left_targets.front().id, "small");
-  EXPECT_EQ(left_targets.back().id, "far_high");
-  EXPECT_EQ(left_targets[2].point, (portal::Point{0.039973, 0.143469, 0.116000}));
-  EXPECT_EQ(right_targets[8].point, (portal::Point{0.050081, -0.153527, 0.136000}));
+  static constexpr std::array<std::string_view, 9> ids{{
+    "small", "medium", "large", "forward_low", "forward_mid", "forward_high",
+    "high", "mid_high", "far_high"}};
+  static constexpr std::array<std::string_view, 9> labels{{
+    "Small forward/up", "Medium forward/up", "Large forward/up", "Low reach",
+    "Mid reach", "Far reach", "High", "High near", "High far"}};
+  static constexpr std::array<portal::Point, 9> expected_left{{
+    {0.019973, 0.143469, 0.096000}, {0.029973, 0.143469, 0.106000},
+    {0.039973, 0.143469, 0.116000}, {0.039973, 0.153469, 0.086000},
+    {0.049973, 0.153469, 0.096000}, {0.059973, 0.153469, 0.106000},
+    {0.029973, 0.153469, 0.136000}, {0.019973, 0.153469, 0.126000},
+    {0.049973, 0.153469, 0.136000}}};
+  static constexpr std::array<portal::Point, 9> expected_right{{
+    {0.020081, -0.143527, 0.096000}, {0.030081, -0.143527, 0.106000},
+    {0.040081, -0.143527, 0.116000}, {0.040081, -0.153527, 0.086000},
+    {0.050081, -0.153527, 0.096000}, {0.060081, -0.153527, 0.106000},
+    {0.030081, -0.153527, 0.136000}, {0.020081, -0.153527, 0.126000},
+    {0.050081, -0.153527, 0.136000}}};
+  std::set<std::string_view> unique_ids;
+  for (std::size_t index = 0; index < ids.size(); ++index) {
+    EXPECT_EQ(left_targets[index].id, ids[index]);
+    EXPECT_EQ(right_targets[index].id, ids[index]);
+    EXPECT_EQ(left_targets[index].label, labels[index]);
+    EXPECT_EQ(right_targets[index].label, labels[index]);
+    EXPECT_EQ(left_targets[index].point, expected_left[index]);
+    EXPECT_EQ(right_targets[index].point, expected_right[index]);
+    unique_ids.insert(left_targets[index].id);
+  }
+  EXPECT_EQ(unique_ids.size(), ids.size());
   for (const auto side : {portal::MoveRequest::Side::left, portal::MoveRequest::Side::right}) {
     const auto & targets = portal::nominal_targets(side);
     for (const portal::NominalTarget & target : targets) {
@@ -416,6 +612,30 @@ TEST(NominalPathGuard, AllNinePresetsPerArmParseAndPassButNearbyPoleApproachFail
       const portal::GuardResult result = portal::NominalPathGuard().validate(input);
       EXPECT_TRUE(result.accepted) << json.str() << ": " << result.reason;
       EXPECT_GE(result.minimum_nominal_clearance_m, 0.025);
+      const std::size_t selected = side == portal::MoveRequest::Side::left ? 0U : 1U;
+      const std::size_t opposite = 1U - selected;
+      EXPECT_EQ(result.commanded_tcp[selected], target.point);
+      EXPECT_EQ(result.commanded_tcp[opposite], tcp(opposite, input.measured_q[opposite]));
+
+      for (const auto & unit : std::array<std::pair<std::string_view, double>, 2>{{
+          {"cm", 100.0}, {"in", 1.0 / 0.0254}}})
+      {
+        std::ostringstream v2;
+        v2 << "{\"side\":\"" <<
+          (side == portal::MoveRequest::Side::left ? "left" : "right") <<
+          "\",\"unit\":\"" << unit.first << "\",\"x\":" <<
+          portal::json_number(target.point[0] * unit.second) << ",\"y\":" <<
+          portal::json_number(target.point[1] * unit.second) << ",\"z\":" <<
+          portal::json_number(target.point[2] * unit.second) << '}';
+        portal::UnitMoveRequest encoded;
+        portal::MoveRequest normalized;
+        ASSERT_TRUE(portal::StrictJson::parse_move_v2(v2.str(), encoded, reason)) << reason;
+        ASSERT_TRUE(portal::normalise_move_to_metres(encoded, normalized, reason)) << reason;
+        EXPECT_EQ(normalized.side, side);
+        for (std::size_t axis = 0; axis < 3U; ++axis) {
+          EXPECT_NEAR(normalized.target[axis], target.point[axis], 3.0e-17);
+        }
+      }
     }
   }
 
@@ -424,6 +644,46 @@ TEST(NominalPathGuard, AllNinePresetsPerArmParseAndPassButNearbyPoleApproachFail
   const portal::GuardResult rejected = portal::NominalPathGuard().validate(input);
   EXPECT_FALSE(rejected.accepted);
   EXPECT_NE(rejected.reason.find("central pole keepout"), std::string::npos) << rejected.reason;
+}
+
+TEST(NominalPathGuard, EndpointQuantizedCrossStateMatrixRetainsAuditedClearance)
+{
+  constexpr double measured_neutral = 6.67582207984907e-05;
+  std::array<portal::JointVector, 2> neutral{};
+  for (auto & side : neutral) {side.fill(measured_neutral);}
+  std::array<std::array<portal::JointVector, 9>, 2> endpoints{};
+  for (std::size_t side = 0; side < 2U; ++side) {
+    const auto portal_side = side == 0U ?
+      portal::MoveRequest::Side::left : portal::MoveRequest::Side::right;
+    const auto & targets = portal::nominal_targets(portal_side);
+    for (std::size_t target = 0; target < targets.size(); ++target) {
+      ASSERT_TRUE(guarded_path_endpoint(
+        side, neutral[side], targets[target].point, endpoints[side][target]));
+    }
+  }
+  std::size_t checked = 0U;
+  double minimum = std::numeric_limits<double>::infinity();
+  for (std::size_t left = 0; left <= 9U; ++left) {
+    for (std::size_t right = 0; right <= 9U; ++right) {
+      portal::GuardInput input;
+      input.measured_q[0] = left == 0U ? neutral[0] : endpoints[0][left - 1U];
+      input.measured_q[1] = right == 0U ? neutral[1] : endpoints[1][right - 1U];
+      for (std::size_t side = 0; side < 2U; ++side) {
+        input.request.side = side == 0U ?
+          portal::MoveRequest::Side::left : portal::MoveRequest::Side::right;
+        for (const portal::NominalTarget & target : portal::nominal_targets(input.request.side)) {
+          input.request.target = target.point;
+          const portal::GuardResult result = portal::NominalPathGuard().validate(input);
+          ASSERT_TRUE(result.accepted) << "state=(" << left << ',' << right << ") side=" <<
+            side << " target=" << target.id << " reason=" << result.reason;
+          minimum = std::min(minimum, result.minimum_nominal_clearance_m);
+          ++checked;
+        }
+      }
+    }
+  }
+  EXPECT_EQ(checked, 1800U);
+  EXPECT_GE(minimum, 0.0265278);
 }
 
 TEST(NominalPathGuard, RetainsClearanceForDocumentedNearbyJointThreePosture)

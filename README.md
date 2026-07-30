@@ -118,6 +118,8 @@ compiled Xlib close helper. The web portal does not start RViz, XComposite, or
 a JPEG encoder; it uses a same-origin WebGL2 measured-pose visual proxy backed
 by the pinned Stage-A URDF and 11 allowlisted collision STL files. The proxy is
 explicitly not collision checking and is not a claim of RViz pixel fidelity.
+The installed viewer payload includes the pinned upstream Apache-2.0 license
+beside its manifest and mesh directory.
 
 The standalone RViz launch starts `robot_state_publisher`, the virtual adapter,
 and RViz. The web launcher starts only the controller and portal.

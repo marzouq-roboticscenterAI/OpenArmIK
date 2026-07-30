@@ -166,6 +166,7 @@ def main():
     parser.add_argument("--canonical", required=True, type=Path)
     parser.add_argument("--visualization", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--license", required=True, type=Path)
     parser.add_argument("--description-root", required=True, type=Path)
     parser.add_argument("--generator", required=True, type=Path)
     parser.add_argument("--cmake", required=True, type=Path)
@@ -251,7 +252,11 @@ def main():
         "repository": "https://github.com/enactic/openarm_description",
         "commit": "6c7b720f1ba48e8bafa3a3dc752c45f397b42221",
         "license": "Apache-2.0",
+        "license_file": "viewer/openarm_description-LICENSE.txt",
+        "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
     }
+    assert args.license.stat().st_size == 11357
+    assert hashlib.sha256(args.license.read_bytes()).hexdigest() == manifest["upstream"]["license_sha256"]
     meshes = manifest["meshes"]
     assert len(meshes) == 11
     assert manifest["total_bytes"] == 2498724
