@@ -143,6 +143,27 @@ TEST(CoordinateUnits, V2NormalizesMetresCentimetresAndInchesOnce)
     EXPECT_NEAR(normalized.target[1], -0.0508, 2.0e-17);
     EXPECT_NEAR(normalized.target[2], 0.0762, 2.0e-17);
   }
+
+  constexpr double canonical = 0.020081;
+  struct DisplayUnit
+  {
+    const char * token;
+    double units_per_metre;
+  };
+  const DisplayUnit units[] = {{"cm", 100.0}, {"in", 1.0 / 0.0254}};
+  for (const DisplayUnit & unit : units) {
+    const double displayed = canonical * unit.units_per_metre;
+    const std::string body = std::string{"{\"side\":\"left\",\"unit\":\""} + unit.token +
+      "\",\"x\":" + portal::json_number(displayed) + ",\"y\":0,\"z\":0}";
+    portal::UnitMoveRequest request;
+    portal::MoveRequest normalized;
+    std::string reason;
+    ASSERT_TRUE(portal::StrictJson::parse_move_v2(body, request, reason)) << reason;
+    ASSERT_TRUE(portal::normalise_move_to_metres(request, normalized, reason)) << reason;
+    const double one_ulp = std::nextafter(canonical, std::numeric_limits<double>::infinity()) -
+      canonical;
+    EXPECT_LE(std::abs(normalized.target[0] - canonical), one_ulp);
+  }
 }
 
 TEST(CoordinateUnits, Binary64SurvivesJsonNormalizationAndRosActionAssignment)
@@ -193,10 +214,16 @@ TEST(PortalPage, DefaultsToCentimetresAndPreservesCanonicalMetreTargets)
   EXPECT_NE(page.find("function selectUnit(next){if(!allFieldsValid())"), std::string::npos);
   EXPECT_NE(page.find("unit=next;updateUnitText();renderAll()"), std::string::npos);
   EXPECT_NE(page.find("const metresPerUnit={cm:0.01,in:0.0254}"), std::string::npos);
-  EXPECT_NE(page.find("const unitsPerMetre={cm:100,in:1/0.0254}"), std::string::npos);
-  EXPECT_NE(page.find("post('/api/v2/move',{side,unit:'m',x:target[0],y:target[1],z:target[2]})"),
+  EXPECT_NE(page.find("const unitsPerMetre={cm:100.0,in:1.0/0.0254}"), std::string::npos);
+  EXPECT_NE(page.find("values=target.map(value=>value*unitsPerMetre[unit])"), std::string::npos);
+  EXPECT_NE(page.find("post('/api/v2/move',{side,unit,x:values[0],y:values[1],z:values[2]})"),
     std::string::npos);
   EXPECT_NE(page.find("const target=targetsM[side]"), std::string::npos);
+  const std::size_t move_begin = page.find("function move(side)");
+  const std::size_t move_end = page.find("\nfor(const side of sides)", move_begin);
+  ASSERT_NE(move_begin, std::string::npos);
+  ASSERT_NE(move_end, std::string::npos);
+  EXPECT_EQ(page.substr(move_begin, move_end - move_begin).find("parseDecimal"), std::string::npos);
   EXPECT_EQ(page.find("__CSRF__"), std::string::npos);
   EXPECT_NE(page.find("const csrf='test-token'"), std::string::npos);
 }

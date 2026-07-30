@@ -28,7 +28,7 @@ const csrf='__CSRF__';
 const samplesM={left:{small:[__LSX__,__LSY__,__LSZ__],medium:[__LMX__,__LMY__,__LMZ__]},right:{small:[__RSX__,__RSY__,__RSZ__],medium:[__RMX__,__RMY__,__RMZ__]}};
 const axes=['x','y','z'],sides=['left','right'];
 const metresPerUnit={cm:0.01,in:0.0254};
-const unitsPerMetre={cm:100,in:1/0.0254};
+const unitsPerMetre={cm:100.0,in:1.0/0.0254};
 const unitDigits={cm:4,in:6};
 const unitNames={cm:'centimetres (cm)',in:'inches (in)'};
 const decimalPattern=/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
@@ -63,7 +63,7 @@ async function state(){
   }catch(error){$('age').textContent='State unavailable';$('left').disabled=true;$('right').disabled=true}
 }
 async function post(path,body={}){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(body)});const value=await response.json();if(!response.ok)throw new Error(value.error||'request rejected');$('status').textContent=value.message}
-function move(side){for(let index=0;index<3;++index){const id=fieldId(side,index);if(!fieldState[id].valid||targetsM[side][index]===null){setError('Correct every XYZ field before submitting. Use a period (.) as the decimal separator.');return}}const target=targetsM[side];post('/api/v2/move',{side,unit:'m',x:target[0],y:target[1],z:target[2]}).then(()=>{$('form-notice').textContent='Submitted '+side+' target shown in '+unitNames[unit]+'; its canonical metre values were preserved.'}).catch(error=>setError(error.message))}
+function move(side){for(let index=0;index<3;++index){const id=fieldId(side,index);if(!fieldState[id].valid||targetsM[side][index]===null){setError('Correct every XYZ field before submitting. Use a period (.) as the decimal separator.');return}}const target=targetsM[side],values=target.map(value=>value*unitsPerMetre[unit]);post('/api/v2/move',{side,unit,x:values[0],y:values[1],z:values[2]}).then(()=>{$('form-notice').textContent='Submitted '+side+' target in '+unitNames[unit]+' from its preserved canonical metre values; the server normalized it once to metres.'}).catch(error=>setError(error.message))}
 for(const side of sides)for(let index=0;index<3;++index)$(fieldId(side,index)).addEventListener('input',()=>validateField(side,index));
 for(const button of document.querySelectorAll('button.preset'))button.addEventListener('click',()=>preset(button.dataset.side,button.dataset.preset));
 for(const radio of document.querySelectorAll('input[name="coordinate-unit"]'))radio.addEventListener('change',()=>{if(radio.checked)selectUnit(radio.value)});
