@@ -7,6 +7,11 @@ if (($# != 1)); then
 fi
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+jobs=${OPENARM_BUILD_JOBS-2}
+[[ "$jobs" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'OPENARM_BUILD_JOBS must be a positive integer: %s\n' "$jobs" >&2
+  exit 2
+}
 work_root=$1
 if [[ "$work_root" != /* ]]; then
   work_root="$PWD/$work_root"
@@ -28,12 +33,15 @@ mkdir -p "$work_root"
   --build-root "$build_root" \
   --install-prefix "$prefix_a" \
   --build-type Release \
+  --jobs "$jobs" \
   --tests
 
 "$root_dir/scripts/build_native.sh" \
   --build-root "$build_root" \
   --install-prefix "$prefix_b" \
   --build-type Release \
+  --jobs "$jobs" \
+  --reuse-build-trees \
   --tests
 
 assert_cache_value() {
@@ -101,9 +109,9 @@ while IFS= read -r cache_file; do
 done < <(find "$build_root" -name CMakeCache.txt -type f -print)
 
 transport_verbose=$(cmake --build "$build_root/transport" \
-  --target openarm_transport_tests --parallel --clean-first --verbose 2>&1)
+  --target openarm_transport_tests --parallel "$jobs" --clean-first --verbose 2>&1)
 control_verbose=$(cmake --build "$build_root/control" \
-  --target openarm_control_tests --parallel --clean-first --verbose 2>&1)
+  --target openarm_control_tests --parallel "$jobs" --clean-first --verbose 2>&1)
 linked_output="$transport_verbose"$'\n'"$control_verbose"
 if [[ "$linked_output" == *"$prefix_a"* ||
       "$linked_output" != *"$prefix_b/include"* ||
@@ -115,7 +123,7 @@ fi
 
 cmake --build "$build_root/installed_native_consumer" \
   --target openarm_installed_c11 openarm_installed_cxx17 \
-  --parallel --clean-first --verbose >/dev/null
+  --parallel "$jobs" --clean-first --verbose >/dev/null
 for consumer in openarm_installed_c11 openarm_installed_cxx17; do
   consumer_dir="$build_root/installed_native_consumer/CMakeFiles/$consumer.dir"
   flags_file="$consumer_dir/flags.make"

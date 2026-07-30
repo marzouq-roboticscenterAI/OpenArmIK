@@ -2,11 +2,25 @@
 set -eo pipefail
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-runtime_dir=${XDG_RUNTIME_DIR:-/tmp}
-lock_file="$runtime_dir/openarmik-rviz-$UID.lock"
+runtime_dir=${XDG_RUNTIME_DIR:-}
+if [[ -z "$runtime_dir" || ! -d "$runtime_dir" || ! -w "$runtime_dir" ]]; then
+  runtime_dir="/tmp/openarmik-runtime-$UID"
+  if [[ -L "$runtime_dir" ]]; then
+    printf 'Refusing symlinked fallback runtime directory: %s\n' "$runtime_dir" >&2
+    exit 1
+  fi
+  if [[ -e "$runtime_dir" && ! -O "$runtime_dir" ]]; then
+    printf 'Fallback runtime directory is owned by another user: %s\n' \
+      "$runtime_dir" >&2
+    exit 1
+  fi
+  mkdir -m 700 -p -- "$runtime_dir"
+  chmod 700 -- "$runtime_dir"
+fi
+lock_file="$runtime_dir/openarmik-gui-$UID.lock"
 exec 9>"$lock_file"
 if ! flock -n 9; then
-  printf 'OpenArm RViz is already running; close it or press Ctrl+C in its terminal.\n' >&2
+  printf 'An OpenArm GUI is already running; close it or press Ctrl+C in its terminal.\n' >&2
   exit 3
 fi
 for variable in SNAP SNAP_ARCH SNAP_COMMON SNAP_CONTEXT SNAP_COOKIE SNAP_DATA SNAP_INSTANCE_KEY SNAP_LIBRARY_PATH SNAP_NAME SNAP_REAL_HOME SNAP_REEXEC SNAP_REVISION SNAP_USER_COMMON SNAP_USER_DATA GTK_PATH GTK_EXE_PREFIX GTK_IM_MODULE_FILE GDK_PIXBUF_MODULEDIR GDK_PIXBUF_MODULE_FILE GIO_MODULE_DIR QT_PLUGIN_PATH QT_QPA_PLATFORMTHEME XDG_DATA_DIRS; do
@@ -124,7 +138,7 @@ shutdown() {
     return
   fi
   shutting_down=1
-  trap - EXIT INT TERM
+  trap - EXIT HUP INT TERM
 
   if [[ -n "$rviz_pid" ]] && process_is_running "$rviz_pid"; then
     if ! "$close_helper" "$rviz_pid" --timeout 3; then
@@ -150,6 +164,7 @@ shutdown() {
 }
 
 trap 'printf "\nStopping OpenArm RViz...\n"; shutdown 130' INT
+trap 'shutdown 129' HUP
 trap 'shutdown 143' TERM
 trap 'shutdown $?' EXIT
 

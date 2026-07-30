@@ -38,8 +38,11 @@ watchdog are installed.
 ```
 
 The build command performs a clean Release build in dependency order (CAN,
-model, commission, transport, control, runtime, then ROS), installs everything under
-`ros2_ws/install`, and never uses sudo or configures an interface. To compile
+model, commission, transport, control, runtime, then ROS), installs everything
+under `ros2_ws/install`, and never uses sudo or configures an interface. Builds
+use at most two jobs by default; set `OPENARM_BUILD_JOBS` or pass `--jobs` to
+choose a different positive limit. ROS packages build sequentially so this
+limit remains global rather than multiplying across packages. To compile
 and run every registered hardware-free native CTest while verifying that all
 13 ROS tests are freshly registered, use:
 
@@ -48,8 +51,22 @@ and run every registered hardware-free native CTest while verifying that all
 ```
 
 The transport `vcan0` smoke test is not registered in this hardware-free
-profile. Standalone transport builds retain that test by default. Use
-`--incremental` only when deliberately reusing prior output. A disposable build
+profile. Standalone transport builds retain that test by default. `--incremental`
+reuses compatible native and ROS build trees while reconfiguring them, and is
+what `./run.sh` uses to keep normal source-fresh launches inexpensive. A clean
+build remains the supported reset for removed install artifacts. Top-level
+`scripts/build.sh` invocations sharing the same canonical output root are
+serialized. Direct native builds serialize on both their canonical build root
+and install prefix; distinct roots and prefixes are not globally serialized.
+The lock descriptors stay in a waiting supervisor and are closed in the build
+process before cleanup, CMake, CTest, colcon, or test executables run. Recursive
+public build requests therefore contend normally instead of inheriting lock
+ownership. Robot models always come from the fetched
+`upstream/openarm_description` checkout; ambient variables cannot substitute a
+different description.
+The portal and standalone RViz launchers also share one per-user GUI lock, so
+they cannot start duplicate ROS and RViz stacks together.
+A disposable build
 can be isolated with `--output-root /tmp/openarmik-build`; its setup file is
 then `/tmp/openarmik-build/install/setup.bash`. Output roots may contain spaces,
 but `:` and `;` are rejected because they are prefix-list delimiters used by
@@ -62,6 +79,17 @@ be run without ROS:
 ```bash
 reuse_root=$(mktemp -d /tmp/openarmik-prefix-reuse.XXXXXX)
 ./tests/test_native_prefix_reuse.sh "$reuse_root"
+```
+
+The fast resource-control regression uses real `flock`, CMake, and CTest in an
+isolated temporary fixture, plus narrow command shims for top-level argument
+propagation. It checks process-group signal cleanup, lock-FD noninheritance,
+recursive contention, pinned description identity, job propagation,
+incremental tree reuse, and build-root/install-prefix locking without compiling
+the project or running sanitizers:
+
+```bash
+./tests/test_build_resource_controls.sh
 ```
 
 On this Wayland hybrid-GPU laptop the launcher uses Mesa software OpenGL with

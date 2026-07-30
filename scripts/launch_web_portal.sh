@@ -126,10 +126,10 @@ if [[ -z "$runtime_dir" || ! -d "$runtime_dir" || ! -w "$runtime_dir" ]]; then
   mkdir -m 700 -p -- "$runtime_dir"
   chmod 700 -- "$runtime_dir"
 fi
-lock_file="$runtime_dir/openarmik-portal-$UID.lock"
+lock_file="$runtime_dir/openarmik-gui-$UID.lock"
 exec 9>"$lock_file"
 if ! flock -n 9; then
-  printf '%s\n' 'The OpenArm portal is already running for this user.' >&2
+  printf '%s\n' 'An OpenArm GUI is already running for this user.' >&2
   exit 3
 fi
 
@@ -282,7 +282,7 @@ shutdown() {
     return
   fi
   shutting_down=1
-  trap - EXIT INT TERM
+  trap - EXIT HUP INT TERM
 
   if [[ -n "$portal_pid" ]] && process_is_running "$portal_pid"; then
     stop_group TERM "$portal_pid"
@@ -306,6 +306,7 @@ shutdown() {
 }
 
 trap 'printf "\nStopping OpenArm portal demo...\n"; shutdown 130' INT
+trap 'shutdown 129' HUP
 trap 'shutdown 143' TERM
 trap 'shutdown $?' EXIT
 
@@ -363,7 +364,7 @@ if ((open_browser)); then
     printf 'Browser executable not found: %s\n' "$browser_command" >&2
     exit 1
   }
-  "$browser_command" "$url" >/dev/null 2>&1 || \
+  "$browser_command" "$url" 9>&- >/dev/null 2>&1 || \
     printf 'Could not open a browser automatically; visit %s\n' "$url" >&2
 fi
 
