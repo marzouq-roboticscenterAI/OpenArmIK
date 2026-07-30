@@ -171,6 +171,8 @@ public:
     input.measured_q = measured_q_;
     input.state_sequence = state_sequence_;
     input.diagnostic_sequence = diagnostic_sequence_;
+    input.state_freshness = state_freshness_;
+    input.diagnostic_freshness = diagnostic_freshness_;
     for (std::size_t side = 0; side < 2; ++side) {
       oa_fk_result fk{};
       const oa_model * model = side == 0 ? oa_model_left_v10_bimanual() :
@@ -214,14 +216,9 @@ public:
     {
       const std::int64_t time_now = now().nanoseconds();
       const std::int64_t steady_now = steady_now_ns();
-      if (stopping_ || stop_requested != 0 || input.state_sequence == 0 ||
-        input.state_sequence != state_sequence_ ||
-        input.diagnostic_sequence == 0 || input.diagnostic_sequence != diagnostic_sequence_ ||
-        !have_state_ || !fresh_at_use(
-          state_freshness_, time_now, steady_now,
-          std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count()) ||
-        !diagnostic_valid_ || !fresh_at_use(
-          diagnostic_freshness_, time_now, steady_now,
+      if (stopping_ || stop_requested != 0 || !guard_handoff_valid(
+          input, handoff_evidence_locked(), time_now, steady_now,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count(),
           std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count()))
       {
         reason = "measured state changed or became untrusted during guard evaluation; retry";
@@ -294,13 +291,9 @@ public:
       };
     const std::int64_t send_time_now = now().nanoseconds();
     const std::int64_t send_steady_now = steady_now_ns();
-    if (stopping_ || stop_requested != 0 || !have_state_ || !diagnostic_valid_ ||
-      input.state_sequence != state_sequence_ ||
-      input.diagnostic_sequence != diagnostic_sequence_ || !fresh_at_use(
-        state_freshness_, send_time_now, send_steady_now,
-        std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count()) ||
-      !fresh_at_use(
-        diagnostic_freshness_, send_time_now, send_steady_now,
+    if (stopping_ || stop_requested != 0 || !guard_handoff_valid(
+        input, handoff_evidence_locked(), send_time_now, send_steady_now,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count(),
         std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count()))
     {
       goal_active_ = false;
@@ -320,8 +313,8 @@ public:
     }
     state_lock.unlock();
     reason = request.side == MoveRequest::Side::left ?
-      "Left target submitted with Right target set to freshest measured TCP" :
-      "Right target submitted with Left target set to freshest measured TCP";
+      "Left target submitted with Right target set to the guarded measured TCP" :
+      "Right target submitted with Left target set to the guarded measured TCP";
     return true;
   }
 
@@ -380,6 +373,13 @@ public:
   }
 
 private:
+  GuardHandoffEvidence handoff_evidence_locked() const
+  {
+    return {
+      measured_q_, state_sequence_, diagnostic_sequence_, state_freshness_,
+      diagnostic_freshness_, have_state_, diagnostic_valid_};
+  }
+
   void update_state(const sensor_msgs::msg::JointState & message)
   {
     if (message.name.size() != message.position.size()) {
@@ -440,7 +440,8 @@ private:
       const bool valid = producer_fresh &&
         status.level == diagnostic_msgs::msg::DiagnosticStatus::WARN &&
         value("backend") == "virtual" && value("physical_motion_authorized") == "false" &&
-        value("collision_checked") == "false" && masks;
+        value("collision_checked") == "false" && value("adapter_state") == "idle" &&
+        value("lifecycle") == "4" && value("executing") == "false" && masks;
       std::lock_guard<std::mutex> lock(mutex_);
       diagnostic_valid_ = valid;
       diagnostic_reason_ = valid ? std::string{} :

@@ -18,6 +18,12 @@ namespace openarm_ik_ros::portal
 using JointVector = std::array<double, OA_DOF>;
 using Point = std::array<double, 3>;
 
+struct FreshnessEvidence
+{
+  std::int64_t producer_time_ns{0};
+  std::int64_t receipt_steady_ns{0};
+};
+
 struct MoveRequest
 {
   enum class Side {left, right};
@@ -30,7 +36,20 @@ struct GuardInput
   std::array<JointVector, 2> measured_q{};
   std::uint64_t state_sequence{0};
   std::uint64_t diagnostic_sequence{0};
+  FreshnessEvidence state_freshness{};
+  FreshnessEvidence diagnostic_freshness{};
   MoveRequest request{};
+};
+
+struct GuardHandoffEvidence
+{
+  std::array<JointVector, 2> measured_q{};
+  std::uint64_t state_sequence{0};
+  std::uint64_t diagnostic_sequence{0};
+  FreshnessEvidence state_freshness{};
+  FreshnessEvidence diagnostic_freshness{};
+  bool have_state{false};
+  bool diagnostic_valid{false};
 };
 
 struct GuardResult
@@ -49,12 +68,6 @@ struct MutationHeaders
   std::string_view csrf;
   std::string_view content_type;
   std::size_t content_length{0};
-};
-
-struct FreshnessEvidence
-{
-  std::int64_t producer_time_ns{0};
-  std::int64_t receipt_steady_ns{0};
 };
 
 struct NominalTestSamples
@@ -109,6 +122,10 @@ bool process_executable_matches(std::int64_t pid, std::string_view expected_path
 bool fresh_at_use(
   const FreshnessEvidence & evidence, std::int64_t now_time_ns,
   std::int64_t now_steady_ns, std::int64_t maximum_age_ns);
+bool guard_handoff_valid(
+  const GuardInput & guarded, const GuardHandoffEvidence & current,
+  std::int64_t now_time_ns, std::int64_t now_steady_ns,
+  std::int64_t state_maximum_age_ns, std::int64_t diagnostic_maximum_age_ns);
 bool xcomposite_version_supported(int major, int minor);
 NominalTestSamples nominal_test_samples(MoveRequest::Side side);
 bool truecolor_masks_valid(const TrueColorMasks & masks);
