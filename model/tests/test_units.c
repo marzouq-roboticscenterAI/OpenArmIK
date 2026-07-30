@@ -108,11 +108,23 @@ static void test_failure_contract(void) {
 }
 
 static void test_rounding_mode_overflow_contract(void) {
+#if !defined(FE_TONEAREST) && !defined(FE_TOWARDZERO) && \
+    !defined(FE_DOWNWARD) && !defined(FE_UPWARD)
+#error "At least one ISO C floating-point rounding mode is required"
+#endif
     static const int modes[] = {
+#ifdef FE_TONEAREST
         FE_TONEAREST,
+#endif
+#ifdef FE_TOWARDZERO
         FE_TOWARDZERO,
+#endif
+#ifdef FE_DOWNWARD
         FE_DOWNWARD,
+#endif
+#ifdef FE_UPWARD
         FE_UPWARD
+#endif
     };
     const oa_vec3d sentinel = {7.25, -8.5, 9.75};
     const int original_mode = fegetround();
@@ -141,10 +153,12 @@ static void test_rounding_mode_overflow_contract(void) {
         negative_boundary.x = -threshold;
         negative_boundary.y = 1.0;
         negative_boundary.z = 2.0;
+#ifdef FE_UPWARD
         if (modes[index] == FE_UPWARD) {
             volatile double escaped_product = negative_boundary.x * factor;
             CHECK(isfinite(escaped_product));
         }
+#endif
         CHECK(oa_vec3d_convert(&negative_boundary, OA_LENGTH_UNIT_METRES,
                                OA_LENGTH_UNIT_CENTIMETRES, &output) ==
               OA_UNITS_EOVERFLOW);
