@@ -111,6 +111,15 @@ fi
   printf 'Missing ROS setup: /opt/ros/lyrical/setup.bash\n' >&2
   exit 1
 }
+[[ -x /opt/ros/lyrical/bin/xacro ]] || {
+  printf 'Missing ROS xacro executable: %s\n' /opt/ros/lyrical/bin/xacro >&2
+  exit 1
+}
+[[ -d /opt/ros/lyrical/lib/python3.14/site-packages ]] || {
+  printf 'Missing ROS xacro Python package path: %s\n' \
+    /opt/ros/lyrical/lib/python3.14/site-packages >&2
+  exit 1
+}
 
 native_build="$output_root/native_build"
 install_prefix="$output_root/install"

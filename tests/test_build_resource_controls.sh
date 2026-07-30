@@ -46,6 +46,99 @@ ctest --test-dir "$real_fixture/build" --output-on-failure
 # The mutation callback and a real grandchild must share one private process
 # group, and neither may inherit either lock descriptor.
 source "$root_dir/scripts/build_lock.sh"
+
+# Lock directories are created atomically and accepted only after owner, type,
+# symlink, and exact-mode validation. Every fixture remains below work_root.
+security_root="$work_root/lock-security"
+mkdir -m 700 "$security_root"
+secure_base="$security_root/secure-base"
+mkdir -m 700 "$secure_base"
+secure_candidate=$(openarm_prepare_lock_dir "$secure_base" "$EUID")
+[[ "$secure_candidate" == "$secure_base/openarmik-build-locks-$UID" ]]
+[[ $(stat -c '%a' "$secure_candidate") == 700 ]]
+[[ $(openarm_prepare_lock_dir "$secure_base" "$EUID") == "$secure_candidate" ]]
+
+# The same object is attacker-owned relative to a different expected euid.
+set +e
+openarm_prepare_lock_dir "$secure_base" "$((EUID + 1))" \
+  > "$work_root/attacker-owned.out" 2>&1
+attacker_owned_status=$?
+set -e
+[[ "$attacker_owned_status" == 2 ]]
+
+world_base="$security_root/world-base"
+mkdir -m 700 "$world_base"
+mkdir -m 777 "$world_base/openarmik-build-locks-$UID"
+set +e
+openarm_prepare_lock_dir "$world_base" "$EUID" \
+  > "$work_root/world-writable.out" 2>&1
+world_status=$?
+set -e
+[[ "$world_status" == 2 ]]
+
+# A permissive existing directory is rejected; no chmod repair can be masked.
+masked_base="$security_root/masked-base"
+mkdir -m 700 "$masked_base"
+mkdir -m 755 "$masked_base/openarmik-build-locks-$UID"
+masked_bin="$security_root/masked-bin"
+mkdir "$masked_bin"
+cat > "$masked_bin/chmod" <<'EOF'
+#!/usr/bin/env bash
+touch "$OPENARM_MASKED_CHMOD_MARKER"
+exit 0
+EOF
+chmod +x "$masked_bin/chmod"
+set +e
+PATH="$masked_bin:$PATH" OPENARM_MASKED_CHMOD_MARKER="$work_root/chmod-called" \
+  openarm_prepare_lock_dir "$masked_base" "$EUID" \
+  > "$work_root/masked-mode.out" 2>&1
+masked_status=$?
+set -e
+[[ "$masked_status" == 2 && ! -e "$work_root/chmod-called" ]]
+
+# Deterministically replace the child with a symlink at mkdir time. Validation
+# must reject it before any lock-file open can touch the victim directory.
+race_base="$security_root/race-base"
+victim_dir="$security_root/victim"
+race_bin="$security_root/race-bin"
+mkdir -m 700 "$race_base" "$victim_dir" "$race_bin"
+printf '%s\n' 'do-not-truncate' > "$victim_dir/sentinel"
+cat > "$race_bin/mkdir" <<'EOF'
+#!/usr/bin/env bash
+candidate=${!#}
+ln -s -- "$OPENARM_RACE_TARGET" "$candidate"
+exit 1
+EOF
+chmod +x "$race_bin/mkdir"
+set +e
+PATH="$race_bin:$PATH" OPENARM_RACE_TARGET="$victim_dir" \
+  openarm_prepare_lock_dir "$race_base" "$EUID" \
+  > "$work_root/symlink-race.out" 2>&1
+race_status=$?
+set -e
+[[ "$race_status" == 2 ]]
+[[ "$(<"$victim_dir/sentinel")" == do-not-truncate ]]
+[[ $(find "$victim_dir" -mindepth 1 -maxdepth 1 | wc -l) == 1 ]]
+race_mutation="$work_root/race-mutation"
+race_callback() { touch "$race_mutation"; }
+set +e
+XDG_RUNTIME_DIR="$race_base" \
+  openarm_run_with_locks "$work_root/race-resource" -- race_callback \
+  > "$work_root/race-public.out" 2>&1
+race_public_status=$?
+set -e
+[[ "$race_public_status" == 2 && ! -e "$race_mutation" ]]
+[[ "$(<"$victim_dir/sentinel")" == do-not-truncate ]]
+[[ $(find "$victim_dir" -mindepth 1 -maxdepth 1 | wc -l) == 1 ]]
+
+insecure_xdg="$security_root/insecure-xdg"
+mkdir -m 777 "$insecure_xdg"
+[[ $(XDG_RUNTIME_DIR="$insecure_xdg" openarm_choose_lock_base) == /tmp ]]
+symlink_xdg="$security_root/symlink-xdg"
+ln -s "$secure_base" "$symlink_xdg"
+[[ $(XDG_RUNTIME_DIR="$symlink_xdg" openarm_choose_lock_base) == /tmp ]]
+[[ $(XDG_RUNTIME_DIR="$secure_base" openarm_choose_lock_base) == "$secure_base" ]]
+
 fd_resource_a=$(realpath -m -- "$work_root/fd-resource-a")
 fd_resource_b=$(realpath -m -- "$work_root/fd-resource-b")
 fd_lock_a=$(lock_file_for "$fd_resource_a")

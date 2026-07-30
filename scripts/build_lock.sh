@@ -1,29 +1,74 @@
 #!/usr/bin/env bash
 # Shared helpers for build scripts. This file is sourced; it does not run a body.
 
-openarm_lock_dir() {
-  local candidate=${XDG_RUNTIME_DIR:-}
-  if [[ -z "$candidate" || ! -d "$candidate" || ! -w "$candidate" ]]; then
-    candidate="/tmp/openarmik-build-locks-$UID"
-    if [[ -L "$candidate" || ( -e "$candidate" && ! -O "$candidate" ) ]]; then
-      printf 'Refusing unsafe build lock directory: %s\n' "$candidate" >&2
-      return 2
-    fi
-    mkdir -m 700 -p -- "$candidate"
-    chmod 700 -- "$candidate"
+openarm_lock_base_is_secure() {
+  local path=$1 expected_owner=$2 require_sticky=$3 metadata owner mode kind
+  local stat_status
+  metadata=$(LC_ALL=C stat -c '%u:%a:%F' -- "$path" 2>/dev/null)
+  stat_status=$?
+  ((stat_status == 0)) || return 1
+  IFS=: read -r owner mode kind <<<"$metadata"
+  [[ "$owner" == "$expected_owner" && "$kind" == directory &&
+     ! -L "$path" && -w "$path" && -x "$path" &&
+     "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  if ((require_sticky)); then
+    (((8#$mode & 01000) != 0)) || return 1
   else
-    if [[ -L "$candidate" || ! -O "$candidate" ]]; then
-      printf 'Refusing unsafe XDG runtime directory for build locks: %s\n' "$candidate" >&2
-      return 2
-    fi
-    candidate="$candidate/openarmik-build-locks-$UID"
-    if [[ -L "$candidate" || ( -e "$candidate" && ! -O "$candidate" ) ]]; then
-      printf 'Refusing unsafe build lock directory: %s\n' "$candidate" >&2
-      return 2
-    fi
-    mkdir -m 700 -p -- "$candidate"
-    chmod 700 -- "$candidate"
+    (((8#$mode & 0022) == 0)) || return 1
   fi
+}
+
+openarm_choose_lock_base() {
+  local candidate=${XDG_RUNTIME_DIR:-}
+  if [[ -n "$candidate" ]] &&
+     openarm_lock_base_is_secure "$candidate" "$EUID" 0; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  if ! openarm_lock_base_is_secure /tmp 0 1; then
+    printf '%s\n' 'Refusing unsafe /tmp base for build locks.' >&2
+    return 2
+  fi
+  printf '%s\n' /tmp
+}
+
+openarm_prepare_lock_dir() {
+  local base=$1 expected_owner=$2 candidate metadata owner mode kind mkdir_status
+  local stat_status
+  candidate="$base/openarmik-build-locks-$UID"
+  if mkdir -m 700 -- "$candidate" 2>/dev/null; then
+    mkdir_status=0
+  else
+    mkdir_status=$?
+    if [[ ! -e "$candidate" && ! -L "$candidate" ]]; then
+      printf 'Could not create build lock directory: %s (mkdir status %s)\n' \
+        "$candidate" "$mkdir_status" >&2
+      return 2
+    fi
+  fi
+  metadata=$(LC_ALL=C stat -c '%u:%a:%F' -- "$candidate" 2>/dev/null)
+  stat_status=$?
+  if ((stat_status != 0)); then
+    printf 'Could not inspect build lock directory: %s\n' "$candidate" >&2
+    return 2
+  fi
+  IFS=: read -r owner mode kind <<<"$metadata"
+  if [[ "$owner" != "$expected_owner" || "$kind" != directory ||
+        -L "$candidate" || "$mode" != 700 ]]; then
+    printf 'Refusing unsafe build lock directory: %s\n' "$candidate" >&2
+    return 2
+  fi
+  printf '%s\n' "$candidate"
+}
+
+openarm_lock_dir() {
+  local base candidate status
+  base=$(openarm_choose_lock_base)
+  status=$?
+  ((status == 0)) || return "$status"
+  candidate=$(openarm_prepare_lock_dir "$base" "$EUID")
+  status=$?
+  ((status == 0)) || return "$status"
   printf '%s\n' "$candidate"
 }
 

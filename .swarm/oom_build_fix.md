@@ -61,6 +61,14 @@ Date: 2026-07-29
   against its exact callback PGID. It reaps the leader, retains locks until the
   group is empty, and restores caller signal traps and monitor mode. The test
   creates and removes only its `mktemp` tree.
+- Lock-directory setup now accepts an XDG runtime base only after explicit
+  owner/type/mode checks, otherwise validates the root-owned sticky `/tmp`
+  base. Its fixed per-user child is created atomically with mode 0700 and is
+  revalidated without a chmod repair before any lock file is opened. Fixture
+  tests cover owner mismatch, permissive modes, insecure XDG fallback, and a
+  deterministic mkdir-time symlink race without touching the victim directory.
+- Top-level read-only validation again checks the xacro executable and Python
+  package directory before acquiring locks or performing clean mutations.
 
 No full sanitizer or broad test matrix was run. Build locks are per canonical
 mutable resource, not a host-wide mutex for unrelated output roots and install
