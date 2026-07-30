@@ -11,7 +11,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build_native.sh --build-root PATH --install-prefix PATH [OPTIONS]
 
-Build and install CAN, model, commission, transport, and control in dependency
+Build and install CAN, model, commission, transport, control, and runtime in dependency
 order. Build and install paths must be supplied explicitly. Reusing a build
 root with a different install prefix deterministically refreshes dependencies.
 
@@ -136,6 +136,7 @@ configure_build_test_install() {
   local component=$1
   shift
   local component_build="$build_root/$component"
+  cmake -E remove_directory "$component_build"
   cmake -S "$root_dir/$component" -B "$component_build" \
     -DCMAKE_BUILD_TYPE="$build_type" \
     -DCMAKE_INSTALL_PREFIX="$install_prefix" \
@@ -153,6 +154,12 @@ configure_build_test_install() {
     control)
       assert_cache_value "$component_build/CMakeCache.txt" \
         openarm_model_DIR "$install_prefix/lib/cmake/openarm_model"
+      ;;
+    runtime)
+      assert_cache_value "$component_build/CMakeCache.txt" \
+        openarm_control_DIR "$install_prefix/lib/cmake/openarm_control"
+      assert_cache_value "$component_build/CMakeCache.txt" \
+        OpenArmTransport_DIR "$install_prefix/lib/cmake/OpenArmTransport"
       ;;
   esac
   cmake --build "$component_build" --parallel
@@ -198,12 +205,24 @@ configure_build_test_install control \
   -DOA_CONTROL_SANITIZERS=OFF \
   -DOA_CONTROL_TSAN=OFF
 
+configure_build_test_install runtime \
+  -DBUILD_TESTING="$tests_flag" \
+  -DOpenArmCan_DIR="$install_prefix/lib/cmake/OpenArmCan" \
+  -Dopenarm_model_DIR="$install_prefix/lib/cmake/openarm_model" \
+  -Dopenarm_commission_DIR="$install_prefix/lib/cmake/openarm_commission" \
+  -DOpenArmTransport_DIR="$install_prefix/lib/cmake/OpenArmTransport" \
+  -Dopenarm_control_DIR="$install_prefix/lib/cmake/openarm_control" \
+  -DOA_RUNTIME_ENABLE_SANITIZERS=OFF \
+  -DOA_RUNTIME_ENABLE_THREAD_SANITIZER=OFF
+
 control_symbols=$(nm -gC --defined-only \
   "$install_prefix/lib/libopenarm_control.a")
 commission_symbols=$(nm -gC --defined-only \
   "$install_prefix/lib/libopenarm_commission.a")
 transport_symbols=$(nm -gC --defined-only \
   "$install_prefix/lib/libopenarm_transport.a")
+runtime_symbols=$(nm -gC --defined-only \
+  "$install_prefix/lib/libopenarm_runtime.a")
 if [[ "$control_symbols" == *oa_control_test_* ]]; then
   printf 'Installed control archive exposes test-only symbols\n' >&2
   exit 1
@@ -216,6 +235,10 @@ if [[ "$transport_symbols" == *' T oa_can_'* ]]; then
   printf 'Installed transport archive embeds CAN implementation symbols\n' >&2
   exit 1
 fi
+if [[ "$runtime_symbols" == *'_test_'* ]]; then
+  printf 'Installed runtime archive exposes test-only symbols\n' >&2
+  exit 1
+fi
 
 if ((run_tests)); then
   control_config="$install_prefix/lib/cmake/openarm_control/openarm_controlConfig.cmake"
@@ -225,6 +248,7 @@ if ((run_tests)); then
      [[ "$model_header" == *OPENARM_DISABLE_LEGACY_GENERIC_STATUS* ]] &&
      [[ "$control_header" == *OPENARM_DISABLE_LEGACY_GENERIC_STATUS* ]]; then
     consumer_build="$build_root/installed_native_consumer"
+    cmake -E remove_directory "$consumer_build"
     cmake -S "$root_dir/tests/installed_native_consumer" -B "$consumer_build" \
       -DCMAKE_BUILD_TYPE="$build_type" \
       -DCMAKE_PREFIX_PATH="$install_prefix" \
@@ -232,7 +256,8 @@ if ((run_tests)); then
       -Dopenarm_model_DIR="$install_prefix/lib/cmake/openarm_model" \
       -Dopenarm_commission_DIR="$install_prefix/lib/cmake/openarm_commission" \
       -DOpenArmTransport_DIR="$install_prefix/lib/cmake/OpenArmTransport" \
-      -Dopenarm_control_DIR="$install_prefix/lib/cmake/openarm_control"
+      -Dopenarm_control_DIR="$install_prefix/lib/cmake/openarm_control" \
+      -Dopenarm_runtime_DIR="$install_prefix/lib/cmake/openarm_runtime"
     assert_cache_value "$consumer_build/CMakeCache.txt" \
       CMAKE_PREFIX_PATH "$install_prefix"
     assert_cache_value "$consumer_build/CMakeCache.txt" \
@@ -245,6 +270,8 @@ if ((run_tests)); then
       OpenArmTransport_DIR "$install_prefix/lib/cmake/OpenArmTransport"
     assert_cache_value "$consumer_build/CMakeCache.txt" \
       openarm_control_DIR "$install_prefix/lib/cmake/openarm_control"
+    assert_cache_value "$consumer_build/CMakeCache.txt" \
+      openarm_runtime_DIR "$install_prefix/lib/cmake/openarm_runtime"
     cmake --build "$consumer_build" --parallel
     "$consumer_build/openarm_installed_c11"
     "$consumer_build/openarm_installed_cxx17"

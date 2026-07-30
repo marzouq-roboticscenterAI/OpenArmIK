@@ -6,6 +6,7 @@ find_package(openarm_model 1 CONFIG REQUIRED)
 find_package(openarm_commission CONFIG REQUIRED)
 find_package(OpenArmTransport 1 CONFIG REQUIRED)
 find_package(openarm_control 1 CONFIG REQUIRED)
+find_package(openarm_runtime 1 CONFIG REQUIRED)
 
 if(NOT TARGET OpenArm::Model)
   add_library(OpenArm::Model INTERFACE IMPORTED)
@@ -23,7 +24,8 @@ set(openarm_components
   OpenArm::Model
   OpenArm::Commission
   OpenArm::Transport
-  OpenArm::Control)
+  OpenArm::Control
+  OpenArm::Runtime)
 
 add_executable(openarm_installed_c11 all_headers.c)
 target_link_libraries(openarm_installed_c11 PRIVATE ${openarm_components})
