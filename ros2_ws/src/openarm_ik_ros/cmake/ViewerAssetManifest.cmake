@@ -8,6 +8,7 @@ function(openarm_configure_viewer_assets description_share stage_urdf output_dir
      NOT license_hash STREQUAL "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4")
     message(FATAL_ERROR "The pinned openarm_description Apache-2.0 license changed")
   endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${license_source}")
   set(entries
     "body_link0_symp.stl|assets/robot/openarm_v1.0/mesh/body/collision/body_link0_symp.stl|293284|6c18bbf7e86b03e3faf802e61e8eb438b38dcbcf146d97cffe6e808c65e9a72a|5864"
     "link0_symp.stl|assets/robot/openarm_v1.0/mesh/arm/collision/link0_symp.stl|40284|baf52578e1d9e6225f3818cae82b6074a0b948d3cef8e9a3e6dfafca78507590|804"

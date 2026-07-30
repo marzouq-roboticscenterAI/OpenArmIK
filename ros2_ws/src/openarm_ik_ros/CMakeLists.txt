@@ -215,6 +215,13 @@ if(BUILD_TESTING)
       --description-root ${OPENARM_DESCRIPTION_SHARE}
       --generator ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateStageAVisualizationUrdf.cmake
       --cmake ${CMAKE_COMMAND})
+  add_test(
+    NAME test_viewer_configure_dependency
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test/test_viewer_configure_dependency.sh
+      --module ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ViewerAssetManifest.cmake
+      --license ${OPENARM_VIEWER_LICENSE}
+      --description ${OPENARM_DESCRIPTION_SHARE}
+      --cmake ${CMAKE_COMMAND})
   find_program(CHECK_URDF_EXECUTABLE NAMES check_urdf REQUIRED)
   find_program(GECKODRIVER_EXECUTABLE NAMES geckodriver REQUIRED)
   find_program(FIREFOX_EXECUTABLE NAMES firefox REQUIRED)

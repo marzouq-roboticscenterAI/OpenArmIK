@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cerrno>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -677,6 +678,59 @@ private:
 
 class PortalServer
 {
+private:
+  using Request = http::request<http::string_body>;
+  static constexpr unsigned kMaximumIntake = 16U;
+  static constexpr auto kIntakeDeadline = std::chrono::milliseconds(500);
+  static constexpr unsigned kStaticWorkers = 2U;
+  static constexpr unsigned kStaticPending = 1U;
+  static constexpr unsigned kMaximumApi = 8U;
+
+  class IntakeSession : public std::enable_shared_from_this<IntakeSession>
+  {
+  public:
+    IntakeSession(PortalServer & server, tcp::socket socket)
+    : server_(server), stream_(std::move(socket))
+    {
+      parser_.header_limit(8192);
+      parser_.body_limit(512);
+    }
+
+    void start()
+    {
+      stream_.expires_after(kIntakeDeadline);
+      const auto self = shared_from_this();
+      http::async_read(stream_, buffer_, parser_,
+        [self](beast::error_code error, std::size_t) {
+          self->complete(error);
+        });
+    }
+
+    void cancel()
+    {
+      beast::error_code ignored;
+      stream_.socket().cancel(ignored);
+      stream_.socket().shutdown(tcp::socket::shutdown_both, ignored);
+      stream_.socket().close(ignored);
+    }
+
+  private:
+    void complete(beast::error_code error)
+    {
+      if (error) {
+        server_.finish_intake(shared_from_this());
+        return;
+      }
+      server_.complete_intake(
+        shared_from_this(), std::move(stream_), parser_.release());
+    }
+
+    PortalServer & server_;
+    beast::tcp_stream stream_;
+    beast::flat_buffer buffer_;
+    http::request_parser<http::string_body> parser_;
+  };
+
 public:
   PortalServer(unsigned short port, std::shared_ptr<PortalNode> node)
   : context_(1), acceptor_(context_), node_(std::move(node)), csrf_(token()),
@@ -694,11 +748,13 @@ public:
   void run()
   {
     while (stop_requested == 0) {
+      context_.restart();
+      context_.poll();
       tcp::socket socket(context_);
       beast::error_code error;
       acceptor_.accept(socket, error);
       if (error == asio::error::would_block || error == asio::error::try_again) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
         continue;
       }
       if (error) {
@@ -707,54 +763,22 @@ public:
         }
         continue;
       }
-      if (intake_admitted_.fetch_add(1) >= kMaximumIntake) {
-        intake_admitted_.fetch_sub(1);
-        reject_socket(socket);
-        continue;
-      }
-      try {
-        asio::post(intake_pool_, [this, socket = std::move(socket)]() mutable {
-          try {
-            beast::tcp_stream stream(std::move(socket));
-            stream.expires_after(std::chrono::seconds(2));
-            intake(std::move(stream));
-          } catch (const std::exception & exception) {
-            std::fprintf(stderr, "openarm_portal intake: %s\n", exception.what());
-          }
-          intake_admitted_.fetch_sub(1);
-        });
-      } catch (...) {
-        intake_admitted_.fetch_sub(1);
-        throw;
-      }
+      start_intake(std::move(socket));
     }
     beast::error_code ignored;
     acceptor_.close(ignored);
+    cancel_intakes();
     node_->begin_shutdown();
-    intake_pool_.join();
     static_pool_.join();
     api_pool_.join();
   }
 
 private:
-  using Request = http::request<http::string_body>;
-  static constexpr unsigned kMaximumIntake = 16U;
-  static constexpr unsigned kStaticWorkers = 2U;
-  static constexpr unsigned kStaticPending = 1U;
-  static constexpr unsigned kMaximumApi = 8U;
-
   static void close_stream(beast::tcp_stream & stream)
   {
     beast::error_code ignored;
     stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
     stream.socket().close(ignored);
-  }
-
-  static void reject_socket(tcp::socket & socket)
-  {
-    beast::error_code ignored;
-    socket.set_option(asio::socket_base::linger(true, 0), ignored);
-    socket.close(ignored);
   }
 
   static void reject_stream(beast::tcp_stream & stream)
@@ -826,18 +850,30 @@ private:
     }
   }
 
-  void intake(beast::tcp_stream stream)
+  void start_intake(tcp::socket socket)
   {
-    beast::flat_buffer buffer;
-    http::request_parser<http::string_body> parser;
-    parser.header_limit(8192);
-    parser.body_limit(512);
-    beast::error_code error;
-    http::read(stream, buffer, parser, error);
-    if (error) {
-      return;
+    if (active_intakes_.size() >= kMaximumIntake) {
+      const auto oldest = active_intakes_.front();
+      active_intakes_.pop_front();
+      oldest->cancel();
     }
-    Request request = parser.release();
+    auto session = std::make_shared<IntakeSession>(*this, std::move(socket));
+    active_intakes_.push_back(session);
+    session->start();
+  }
+
+  void finish_intake(const std::shared_ptr<IntakeSession> & session)
+  {
+    const auto position = std::find(active_intakes_.begin(), active_intakes_.end(), session);
+    if (position != active_intakes_.end()) {
+      active_intakes_.erase(position);
+    }
+  }
+
+  void complete_intake(
+    const std::shared_ptr<IntakeSession> & session, beast::tcp_stream stream, Request request)
+  {
+    finish_intake(session);
     const std::string target(request.target());
     std::string reason;
     const SafeRequestHeaders request_headers = safe_headers(request);
@@ -859,6 +895,18 @@ private:
     } else {
       dispatch_api(std::move(stream), std::move(request));
     }
+  }
+
+  void cancel_intakes()
+  {
+    const auto intakes = std::move(active_intakes_);
+    active_intakes_.clear();
+    for (const auto & intake : intakes) {
+      intake->cancel();
+    }
+    context_.restart();
+    context_.poll();
+    context_.stop();
   }
 
   void serve_static(beast::tcp_stream & stream, const Request & request)
@@ -985,12 +1033,11 @@ private:
 
   asio::io_context context_;
   tcp::acceptor acceptor_;
-  asio::thread_pool intake_pool_{4};
   asio::thread_pool static_pool_{kStaticWorkers};
   asio::thread_pool api_pool_{4};
-  std::atomic_uint intake_admitted_{0};
   std::atomic_uint static_admitted_{0};
   std::atomic_uint api_admitted_{0};
+  std::deque<std::shared_ptr<IntakeSession>> active_intakes_;
   std::shared_ptr<PortalNode> node_;
   std::string csrf_;
   std::string authority_;

@@ -29,7 +29,31 @@ printf 'viewer browser gate: check_urdf passed\n'
 work_root=$(mktemp -d "${PWD}/viewer-browser.XXXXXX")
 portal_pid= driver_pid= session_id=
 slow_pids=()
+partial_fds=()
+close_partial_clients() {
+  local fd
+  for fd in "${partial_fds[@]}"; do
+    eval "exec ${fd}>&-" || true
+  done
+  partial_fds=()
+}
+open_partial_clients() {
+  local client fd
+  partial_fds=()
+  for client in $(seq 1 16); do
+    if exec {fd}<>"/dev/tcp/127.0.0.1/${portal_port}"; then
+      partial_fds+=("$fd")
+      printf 'POST /api/stop HTTP/1.1\r\nHost: 127.0.0.1:%s\r\nOrigin: http://127.0.0.1:%s\r\nSec-Fetch-Site: same-origin\r\nContent-Type: application/json\r\nX-CSRF-Token: %s\r\nContent-Length: 512\r\nConnection: close\r\n\r\n{' \
+        "$portal_port" "$portal_port" "$csrf" >&"$fd" || true
+    fi
+  done
+  [[ ${#partial_fds[@]} -eq 16 ]] || {
+    printf 'could not open 16 partial-body clients\n' >&2
+    return 1
+  }
+}
 cleanup() {
+  close_partial_clients
   if [[ -n "$session_id" ]]; then
     curl -fsS -X DELETE "http://127.0.0.1:${driver_port}/session/${session_id}" >/dev/null 2>&1 || true
   fi
@@ -117,8 +141,41 @@ stop_elapsed_ms=$((($(date +%s%N) - stop_begin) / 1000000))
   exit 1
 }
 kill "${slow_pids[@]}" >/dev/null 2>&1 || true
+for slow_pid in "${slow_pids[@]}"; do
+  wait "$slow_pid" >/dev/null 2>&1 || true
+done
 slow_pids=()
 printf 'viewer browser gate: eight static clients left stop available in %s ms\n' "$stop_elapsed_ms"
+
+# Sixteen syntactically valid requests that withhold their declared bodies must
+# neither occupy worker threads nor prevent the next authenticated stop request.
+baseline_fds=$(find "/proc/${portal_pid}/fd" -mindepth 1 -maxdepth 1 -type l | wc -l)
+baseline_threads=$(find "/proc/${portal_pid}/task" -mindepth 1 -maxdepth 1 -type d | wc -l)
+open_partial_clients
+sleep .15
+stop_begin=$(date +%s%N)
+stop_code=$(curl -sS --connect-timeout 0.2 --max-time 0.75 -o "$work_root/intake-stop.json" \
+  -w '%{http_code}' -H "Host: 127.0.0.1:${portal_port}" \
+  -H "Origin: http://127.0.0.1:${portal_port}" -H 'Sec-Fetch-Site: same-origin' \
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: ${csrf}" \
+  --data '{}' "http://127.0.0.1:${portal_port}/api/stop")
+intake_stop_elapsed_ms=$((($(date +%s%N) - stop_begin) / 1000000))
+[[ "$stop_code" == 200 && "$intake_stop_elapsed_ms" -lt 750 ]] || {
+  printf 'partial-body stop failed: code=%s elapsed_ms=%s\n' \
+    "$stop_code" "$intake_stop_elapsed_ms" >&2
+  exit 1
+}
+sleep .55
+expired_fds=$(find "/proc/${portal_pid}/fd" -mindepth 1 -maxdepth 1 -type l | wc -l)
+expired_threads=$(find "/proc/${portal_pid}/task" -mindepth 1 -maxdepth 1 -type d | wc -l)
+[[ "$expired_fds" -le "$baseline_fds" && "$expired_threads" -eq "$baseline_threads" ]] || {
+  printf 'partial-body deadline leaked resources: fds=%s/%s threads=%s/%s\n' \
+    "$expired_fds" "$baseline_fds" "$expired_threads" "$baseline_threads" >&2
+  exit 1
+}
+close_partial_clients
+printf 'viewer browser gate: sixteen partial bodies left stop available in %s ms; deadline reclaimed all server resources\n' \
+  "$intake_stop_elapsed_ms"
 
 mkdir -p "$work_root/profiles"
 "$geckodriver" --host 127.0.0.1 --port "$driver_port" --log debug \
@@ -175,10 +232,24 @@ jq -e '.value.ok == true' <<<"$oracle_response" >/dev/null || {
 }
 jq -c '.value' <<<"$oracle_response"
 
-# The same on-disk mutation must fail the next startup's pinned hash validation.
+# Partial request bodies must also be cancelled during process shutdown instead
+# of extending SIGTERM by an intake timeout or a blocked worker join.
+open_partial_clients
+sleep .15
+term_begin=$(date +%s%N)
 kill "$portal_pid"
 wait "$portal_pid"
+term_elapsed_ms=$((($(date +%s%N) - term_begin) / 1000000))
+[[ "$term_elapsed_ms" -lt 1000 ]] || {
+  printf 'partial-body SIGTERM cleanup took %s ms\n' "$term_elapsed_ms" >&2
+  exit 1
+}
 portal_pid=
+close_partial_clients
+printf 'viewer browser gate: partial-body SIGTERM cleanup completed in %s ms\n' \
+  "$term_elapsed_ms"
+
+# The same on-disk mutation must fail the next startup's pinned hash validation.
 corrupt_port=$((driver_port + 1))
 "$prefix/lib/openarm_ik_ros/openarm_portal" --port "$corrupt_port" \
   >"$work_root/corrupt-portal.log" 2>&1 &
