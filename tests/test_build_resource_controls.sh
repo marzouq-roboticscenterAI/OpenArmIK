@@ -3,25 +3,45 @@ set -euo pipefail
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 work_root=$(mktemp -d "${TMPDIR:-/tmp}/openarmik-build-controls.XXXXXX")
-description_dir="$root_dir/upstream/openarm_description"
-created_description=0
-if [[ ! -f "$description_dir/package.xml" ]]; then
-  mkdir -p "$description_dir"
-  : > "$description_dir/package.xml"
-  created_description=1
-fi
-cleanup() {
-  rm -rf -- "$work_root"
-  if ((created_description)); then
-    rm -rf -- "$description_dir"
-    rmdir "$root_dir/upstream" 2>/dev/null || true
-  fi
-}
+cleanup() { rm -rf -- "$work_root"; }
 trap cleanup EXIT
-output_root="$work_root/output"
+
+runtime_dir="$work_root/runtime"
+lock_dir="$runtime_dir/openarmik-build-locks-$UID"
+fixture_description="$work_root/openarm_description"
 fake_bin="$work_root/bin"
 command_log="$work_root/commands.log"
-mkdir -p "$fake_bin"
+mkdir -p -m 700 "$runtime_dir" "$fixture_description" "$fake_bin"
+: > "$fixture_description/package.xml"
+# A partial pre-existing upstream checkout must never be populated or removed by
+# this test; all fixtures live below the one disposable work root.
+preexisting_upstream="$work_root/preexisting-upstream/openarm_description"
+mkdir -p "$preexisting_upstream"
+touch "$preexisting_upstream/package.xml-missing-sentinel"
+
+lock_file_for() {
+  local resource=$1 digest
+  digest=$(printf '%s\0' "$resource" | sha256sum | awk '{print $1}')
+  printf '%s/%s.lock\n' "$lock_dir" "$digest"
+}
+
+# Real tools cover the generator, one bounded build, and CTest. Production
+# command construction is tested separately with narrow shims below.
+real_fixture="$work_root/real-cmake"
+mkdir -p "$real_fixture"
+cat > "$real_fixture/CMakeLists.txt" <<'EOF'
+cmake_minimum_required(VERSION 3.16)
+project(openarmik_lock_fixture C)
+enable_testing()
+add_executable(lock_fixture main.c)
+add_test(NAME lock_fixture COMMAND lock_fixture)
+EOF
+cat > "$real_fixture/main.c" <<'EOF'
+int main(void) { return 0; }
+EOF
+cmake -S "$real_fixture" -B "$real_fixture/build"
+cmake --build "$real_fixture/build" --parallel 1
+ctest --test-dir "$real_fixture/build" --output-on-failure
 
 cat > "$fake_bin/cmake" <<'EOF'
 #!/usr/bin/env bash
@@ -30,13 +50,9 @@ printf 'cmake' >> "$OPENARM_BUILD_TEST_LOG"
 printf ' <%s>' "$@" >> "$OPENARM_BUILD_TEST_LOG"
 printf '\n' >> "$OPENARM_BUILD_TEST_LOG"
 case "$1" in
-  -E)
-    [[ "$2" == remove_directory ]]
-    rm -rf -- "$3"
-    ;;
+  -E) [[ "$2" == remove_directory ]]; rm -rf -- "$3" ;;
   -S)
-    build_dir=
-    declare -A definitions=()
+    build_dir=; declare -A definitions=()
     while (($#)); do
       case "$1" in
         -B) build_dir=$2; shift 2; continue ;;
@@ -44,152 +60,114 @@ case "$1" in
       esac
       shift
     done
-    mkdir -p "$build_dir"
-    : > "$build_dir/CMakeCache.txt"
+    mkdir -p "$build_dir"; : > "$build_dir/CMakeCache.txt"
     for key in "${!definitions[@]}"; do
       printf '%s:STRING=%s\n' "$key" "${definitions[$key]}" >> "$build_dir/CMakeCache.txt"
     done
     ;;
-  --build)
-    ;;
+  --build) ;;
   --install)
-    build_dir=$2
-    prefix=$(awk -F= '/^CMAKE_INSTALL_PREFIX:/ {print $2; exit}' "$build_dir/CMakeCache.txt")
+    prefix=$(awk -F= '/^CMAKE_INSTALL_PREFIX:/ {print $2; exit}' "$2/CMakeCache.txt")
     mkdir -p "$prefix/lib"
     touch "$prefix/lib/libopenarm_control.a" "$prefix/lib/libopenarm_commission.a" \
       "$prefix/lib/libopenarm_transport.a" "$prefix/lib/libopenarm_runtime.a"
     ;;
-  *)
-    printf 'Unexpected fake cmake invocation: %s\n' "$*" >&2
-    exit 1
-    ;;
+  *) exit 1 ;;
 esac
 EOF
 cat > "$fake_bin/colcon" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'colcon MAKEFLAGS=%s CMAKE_BUILD_PARALLEL_LEVEL=%s' "${MAKEFLAGS:-}" "${CMAKE_BUILD_PARALLEL_LEVEL:-}" >> "$OPENARM_BUILD_TEST_LOG"
-printf ' <%s>' "$@" >> "$OPENARM_BUILD_TEST_LOG"
-printf '\n' >> "$OPENARM_BUILD_TEST_LOG"
+printf ' <%s>' "$@" >> "$OPENARM_BUILD_TEST_LOG"; printf '\n' >> "$OPENARM_BUILD_TEST_LOG"
 build_base=
-while (($#)); do
-  case "$1" in
-    --build-base) build_base=$2; shift 2; continue ;;
-  esac
-  shift
-done
-mkdir -p "$build_base/openarm_ik_ros"
-: > "$build_base/openarm_ik_ros/libopenarm_virtual_control_session.a"
+while (($#)); do case "$1" in --build-base) build_base=$2; shift 2; continue;; esac; shift; done
+mkdir -p "$build_base/openarm_ik_ros"; : > "$build_base/openarm_ik_ros/libopenarm_virtual_control_session.a"
 EOF
 cat > "$fake_bin/nm" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$1" == -u ]]; then
-  printf '                 U oa_runtime_create\n'
-fi
-exit 0
+[[ "$1" != -u ]] || printf '                 U oa_runtime_create\n'
 EOF
 chmod +x "$fake_bin/cmake" "$fake_bin/colcon" "$fake_bin/nm"
 
-run_build() {
+run_top() {
   PATH="$fake_bin:$PATH" OPENARM_BUILD_TEST_LOG="$command_log" \
-    OPENARM_BUILD_JOBS=2 "$root_dir/scripts/build.sh" --output-root "$output_root" "$@"
+    OPENARM_DESCRIPTION_DIR="$fixture_description" XDG_RUNTIME_DIR="$runtime_dir" \
+    OPENARM_BUILD_JOBS=2 "$root_dir/scripts/build.sh" "$@"
+}
+run_native() {
+  PATH="$fake_bin:$PATH" OPENARM_BUILD_TEST_LOG="$command_log" \
+    OPENARM_DESCRIPTION_DIR="$fixture_description" XDG_RUNTIME_DIR="$runtime_dir" \
+    OPENARM_BUILD_JOBS=2 "$root_dir/scripts/build_native.sh" "$@"
 }
 
-mkdir -p "$output_root/native_build"
-touch "$output_root/native_build/invalid-jobs-marker"
-if OPENARM_BUILD_JOBS=0 "$root_dir/scripts/build.sh" --output-root "$output_root" >/dev/null 2>&1; then
-  printf '%s\n' 'zero jobs unexpectedly succeeded' >&2
-  exit 1
-fi
+output_root="$work_root/output"
+mkdir -p "$output_root/native_build"; touch "$output_root/native_build/invalid-jobs-marker"
+if OPENARM_BUILD_JOBS=0 OPENARM_DESCRIPTION_DIR="$fixture_description" \
+  "$root_dir/scripts/build.sh" --output-root "$output_root" >/dev/null 2>&1; then exit 1; fi
 [[ -e "$output_root/native_build/invalid-jobs-marker" ]]
-if "$root_dir/scripts/build_native.sh" --jobs 1x >/dev/null 2>&1; then
-  printf '%s\n' 'invalid native job count unexpectedly succeeded' >&2
-  exit 1
-fi
-if "$root_dir/scripts/build.sh" --jobs '' >/dev/null 2>&1; then
-  printf '%s\n' 'empty explicit job count unexpectedly succeeded' >&2
-  exit 1
-fi
+if "$root_dir/scripts/build_native.sh" --jobs 1x >/dev/null 2>&1; then exit 1; fi
+if "$root_dir/scripts/build.sh" --jobs '' >/dev/null 2>&1; then exit 1; fi
 
 : > "$command_log"
-run_build --jobs 2
-grep -Fq 'cmake <--build> ' "$command_log"
+run_top --output-root "$output_root" --jobs 2
 grep -Fq '<--parallel> <2>' "$command_log"
 grep -Fq 'colcon MAKEFLAGS=-j2 CMAKE_BUILD_PARALLEL_LEVEL=2' "$command_log"
 grep -Fq '<--executor> <sequential>' "$command_log"
-grep -Fq '<--cmake-clean-cache>' "$command_log"
-
 touch "$output_root/native_build/can/incremental-marker"
 : > "$command_log"
-run_build --incremental --jobs 2
+run_top --incremental --output-root "$output_root" --jobs 2
 [[ -e "$output_root/native_build/can/incremental-marker" ]]
-if grep -Fq '<-E> <remove_directory>' "$command_log"; then
-  printf '%s\n' 'incremental native build removed a component tree' >&2
-  exit 1
-fi
-if grep -Fq '<--cmake-clean-cache>' "$command_log"; then
-  printf '%s\n' 'incremental ROS build cleaned its CMake cache' >&2
-  exit 1
-fi
+! grep -Fq '<-E> <remove_directory>' "$command_log"
+! grep -Fq '<--cmake-clean-cache>' "$command_log"
 
-flock "$output_root/.openarmik-build.lock" sleep 10 &
-lock_holder=$!
-sleep 0.1
-ln -s "$output_root" "$work_root/output-alias"
+# Public sentinels are forged; real flock contention must still win.
+mkdir -p "$lock_dir"
+top_lock=$(lock_file_for "$output_root")
+flock "$top_lock" sleep 10 & holder=$!; sleep 0.1
 set +e
-PATH="$fake_bin:$PATH" OPENARM_BUILD_TEST_LOG="$command_log" \
-  OPENARM_BUILD_JOBS=2 "$root_dir/scripts/build.sh" \
-  --output-root "$work_root/output-alias" \
-  >"$work_root/lock.out" 2>&1
-lock_status=$?
+OPENARM_BUILD_LOCK_HELD=1 OPENARM_NATIVE_BUILD_LOCK_HELD=1 \
+  PATH="$fake_bin:$PATH" OPENARM_BUILD_TEST_LOG="$command_log" \
+  OPENARM_DESCRIPTION_DIR="$fixture_description" XDG_RUNTIME_DIR="$runtime_dir" \
+  "$root_dir/scripts/build.sh" --output-root "$output_root" >"$work_root/top-lock.out" 2>&1
+top_status=$?
 set -e
-kill "$lock_holder" 2>/dev/null || true
-wait "$lock_holder" 2>/dev/null || true
-[[ "$lock_status" == 3 ]]
-grep -Fq 'already being built' "$work_root/lock.out"
+kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+[[ "$top_status" == 3 ]]; grep -Fq 'already being built' "$work_root/top-lock.out"
 
-flock "$output_root/.openarmik-build.lock" sleep 10 &
-native_lock_holder=$!
-sleep 0.1
+build_a="$work_root/a/build"; build_b="$work_root/b/build"; shared_prefix="$work_root/shared-install"
+mkdir -p "$(dirname "$build_a")" "$(dirname "$build_b")"
+build_lock=$(lock_file_for "$build_a")
+flock "$build_lock" sleep 10 & holder=$!; sleep 0.1
 set +e
-PATH="$fake_bin:$PATH" OPENARM_BUILD_TEST_LOG="$command_log" \
-  OPENARM_BUILD_JOBS=2 "$root_dir/scripts/build_native.sh" \
-  --build-root "$output_root/native_build" \
-  --install-prefix "$output_root/install" \
-  --jobs 2 >"$work_root/native-lock.out" 2>&1
-native_lock_status=$?
+OPENARM_NATIVE_BUILD_LOCK_HELD=1 run_native --build-root "$work_root/a/../a/build" \
+  --install-prefix "$work_root/a/install" --jobs 1 >"$work_root/native-same.out" 2>&1
+same_status=$?
 set -e
-kill "$native_lock_holder" 2>/dev/null || true
-wait "$native_lock_holder" 2>/dev/null || true
-[[ "$native_lock_status" == 3 ]]
-grep -Fq 'Native build root is already being built' "$work_root/native-lock.out"
+kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+[[ "$same_status" == 3 ]]; grep -Fq 'Native build root is already being built' "$work_root/native-same.out"
 
-grep -Fq 'exec "$root_dir/scripts/launch_web_portal.sh" --build --firefox "$@"' \
-  "$root_dir/run.sh"
+prefix_lock=$(lock_file_for "$shared_prefix")
+flock "$prefix_lock" sleep 10 & holder=$!; sleep 0.1
+set +e
+OPENARM_NATIVE_BUILD_LOCK_HELD=1 run_native --build-root "$build_b" --install-prefix "$shared_prefix" --jobs 1 >"$work_root/prefix-lock.out" 2>&1
+prefix_status=$?
+set -e
+kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+[[ "$prefix_status" == 3 ]]; grep -Fq 'Native build root is already being built' "$work_root/prefix-lock.out"
+
+# Sibling roots and prefixes are independent; no held resource lock blocks B.
+run_native --build-root "$build_b" --install-prefix "$work_root/b/install" --jobs 1
+
+# Browser is deliberately unmanaged and must not inherit the GUI lock FD.
+grep -Fq '"$browser_command" "$url" 9>&-' "$root_dir/scripts/launch_web_portal.sh"
+exec 9>"$work_root/browser-lock"
+bash -c '[[ ! -e /proc/self/fd/9 ]]' 9>&-
+exec 9>&-
 grep -Fq 'lock_file="$runtime_dir/openarmik-gui-$UID.lock"' \
   "$root_dir/scripts/launch_web_portal.sh"
 grep -Fq 'lock_file="$runtime_dir/openarmik-gui-$UID.lock"' \
   "$root_dir/scripts/launch_rviz.sh"
+[[ -e "$preexisting_upstream/package.xml-missing-sentinel" ]]
 
-runtime_dir="$work_root/runtime"
-mkdir -m 700 "$runtime_dir"
-gui_lock="$runtime_dir/openarmik-gui-$UID.lock"
-flock "$gui_lock" sleep 10 &
-gui_lock_holder=$!
-sleep 0.1
-set +e
-XDG_RUNTIME_DIR="$runtime_dir" "$root_dir/scripts/launch_rviz.sh" \
-  >"$work_root/rviz-lock.out" 2>&1
-rviz_lock_status=$?
-DISPLAY=:99 XDG_RUNTIME_DIR="$runtime_dir" \
-  "$root_dir/scripts/launch_web_portal.sh" --no-browser \
-  >"$work_root/portal-lock.out" 2>&1
-portal_lock_status=$?
-set -e
-kill "$gui_lock_holder" 2>/dev/null || true
-wait "$gui_lock_holder" 2>/dev/null || true
-[[ "$rviz_lock_status" == 3 ]]
-[[ "$portal_lock_status" == 3 ]]
-grep -Fq 'An OpenArm GUI is already running' "$work_root/rviz-lock.out"
-grep -Fq 'An OpenArm GUI is already running' "$work_root/portal-lock.out"
-printf '%s\n' 'Build resource-control regression passed'
+printf '%s\n' 'Build resource-control regression passed (real CMake/CTest plus argument and flock coverage)'

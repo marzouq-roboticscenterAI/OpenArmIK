@@ -2,13 +2,15 @@
 set -euo pipefail
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$root_dir/scripts/build_lock.sh"
+unset OPENARM_BUILD_LOCK_HELD OPENARM_NATIVE_BUILD_LOCK_HELD
 build_root=
 install_prefix=
 build_type=Release
 run_tests=0
 reuse_build_trees=0
 jobs=${OPENARM_BUILD_JOBS-2}
-original_args=("$@")
+locked_body=0
 
 usage() {
   cat <<'EOF'
@@ -27,7 +29,20 @@ Options:
 EOF
 }
 
-while (($#)); do
+if [[ ${1:-} == --locked-body ]]; then
+  locked_body=1
+  shift
+  (($# == 6)) || { printf '%s\n' 'Malformed locked native build invocation.' >&2; exit 2; }
+  build_root=$1
+  install_prefix=$2
+  build_type=$3
+  run_tests=$4
+  reuse_build_trees=$5
+  jobs=$6
+  shift 6
+fi
+
+while (( ! locked_body && $# )); do
   case "$1" in
     --build-root)
       (($# >= 2)) || { printf '%s requires a path\n' "$1" >&2; exit 2; }
@@ -113,8 +128,16 @@ done
   printf 'Invalid --build-type: %s\n' "$build_type" >&2
   exit 2
 }
+[[ "$run_tests" == 0 || "$run_tests" == 1 ]] || {
+  printf 'Invalid locked native test flag: %s\n' "$run_tests" >&2
+  exit 2
+}
+[[ "$reuse_build_trees" == 0 || "$reuse_build_trees" == 1 ]] || {
+  printf 'Invalid locked native reuse flag: %s\n' "$reuse_build_trees" >&2
+  exit 2
+}
 
-description_dir="$root_dir/upstream/openarm_description"
+description_dir=${OPENARM_DESCRIPTION_DIR:-"$root_dir/upstream/openarm_description"}
 if [[ ! -f "$description_dir/package.xml" ]]; then
   printf 'Missing pinned upstream. Run %s/scripts/fetch_upstreams.sh first.\n' "$root_dir" >&2
   exit 1
@@ -131,13 +154,21 @@ xacro_pythonpath=/opt/ros/lyrical/lib/python3.14/site-packages
   exit 1
 }
 
-lock_root=$(dirname "$build_root")
-lock_file="$lock_root/.openarmik-build.lock"
-mkdir -p "$lock_root"
-if [[ ${OPENARM_NATIVE_BUILD_LOCK_HELD:-0} != 1 ]]; then
+if ((locked_body)); then
   set +e
-  flock -n -E 75 --close "$lock_file" \
-    env OPENARM_NATIVE_BUILD_LOCK_HELD=1 "$0" "${original_args[@]}"
+  openarm_validate_locks "$build_root" "$install_prefix"
+  lock_status=$?
+  set -e
+  if ((lock_status == 75)); then
+    printf 'Native build root is already being built: %s\n' "$build_root" >&2
+    exit 3
+  fi
+  ((lock_status == 0)) || exit "$lock_status"
+else
+  set +e
+  openarm_run_with_locks "$build_root" "$install_prefix" -- \
+    "$0" --locked-body "$build_root" "$install_prefix" "$build_type" \
+    "$run_tests" "$reuse_build_trees" "$jobs"
   lock_status=$?
   set -e
   if ((lock_status == 75)); then

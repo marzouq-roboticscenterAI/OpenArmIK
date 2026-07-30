@@ -2,12 +2,14 @@
 set -euo pipefail
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$root_dir/scripts/build_lock.sh"
+unset OPENARM_BUILD_LOCK_HELD OPENARM_NATIVE_BUILD_LOCK_HELD
 output_root="$root_dir/ros2_ws"
 build_type=Release
 run_tests=0
 clean=1
 jobs=${OPENARM_BUILD_JOBS-2}
-original_args=("$@")
+locked_body=0
 
 usage() {
   cat <<'EOF'
@@ -26,7 +28,19 @@ Options:
 EOF
 }
 
-while (($#)); do
+if [[ ${1:-} == --locked-body ]]; then
+  locked_body=1
+  shift
+  (($# == 5)) || { printf '%s\n' 'Malformed locked build invocation.' >&2; exit 2; }
+  output_root=$1
+  build_type=$2
+  run_tests=$3
+  clean=$4
+  jobs=$5
+  shift 5
+fi
+
+while (( ! locked_body && $# )); do
   case "$1" in
     --tests)
       run_tests=1
@@ -93,7 +107,7 @@ esac
   exit 2
 }
 
-description_dir="$root_dir/upstream/openarm_description"
+description_dir=${OPENARM_DESCRIPTION_DIR:-"$root_dir/upstream/openarm_description"}
 if [[ ! -f "$description_dir/package.xml" ]]; then
   printf 'Missing pinned upstream. Run %s/scripts/fetch_upstreams.sh first.\n' "$root_dir" >&2
   exit 1
@@ -108,12 +122,20 @@ ros_build="$output_root/build"
 install_prefix="$output_root/install"
 ros_log="$output_root/log"
 
-mkdir -p "$output_root"
-lock_file="$output_root/.openarmik-build.lock"
-if [[ ${OPENARM_BUILD_LOCK_HELD:-0} != 1 ]]; then
+if ((locked_body)); then
   set +e
-  flock -n -E 75 --close "$lock_file" \
-    env OPENARM_BUILD_LOCK_HELD=1 "$0" "${original_args[@]}"
+  openarm_validate_locks "$output_root" "$native_build" "$install_prefix"
+  lock_status=$?
+  set -e
+  if ((lock_status == 75)); then
+    printf 'Build output root is already being built: %s\n' "$output_root" >&2
+    exit 3
+  fi
+  ((lock_status == 0)) || exit "$lock_status"
+else
+  set +e
+  openarm_run_with_locks "$output_root" "$native_build" "$install_prefix" -- \
+    "$0" --locked-body "$output_root" "$build_type" "$run_tests" "$clean" "$jobs"
   lock_status=$?
   set -e
   if ((lock_status == 75)); then
@@ -154,14 +176,17 @@ native_args=(
   --build-type "$build_type"
   --jobs "$jobs"
 )
+reuse_build_trees=0
 if ((!clean)); then
   native_args+=(--reuse-build-trees)
+  reuse_build_trees=1
 fi
 if ((run_tests)); then
   native_args+=(--tests)
 fi
-OPENARM_NATIVE_BUILD_LOCK_HELD=1 \
-  "$root_dir/scripts/build_native.sh" "${native_args[@]}"
+"$root_dir/scripts/build_native.sh" --locked-body \
+  "$native_build" "$install_prefix" "$build_type" "$run_tests" \
+  "$reuse_build_trees" "$jobs"
 
 set +u
 source /opt/ros/lyrical/setup.bash

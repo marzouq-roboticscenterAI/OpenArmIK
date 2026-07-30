@@ -56,10 +56,10 @@ reuses compatible native and ROS build trees while reconfiguring them, and is
 what `./run.sh` uses to keep normal source-fresh launches inexpensive. A clean
 build remains the supported reset for removed install artifacts. Top-level
 `scripts/build.sh` invocations sharing the same canonical output root are
-serialized; direct native builds sharing the same canonical native build root
-use that lock too. Distinct output roots are not globally serialized. The portal
-and standalone RViz launchers also share one per-user GUI lock, so they cannot
-start duplicate ROS and RViz stacks together.
+serialized. Direct native builds serialize on both their canonical build root
+and install prefix; distinct roots and prefixes are not globally serialized.
+The portal and standalone RViz launchers also share one per-user GUI lock, so
+they cannot start duplicate ROS and RViz stacks together.
 A disposable build
 can be isolated with `--output-root /tmp/openarmik-build`; its setup file is
 then `/tmp/openarmik-build/install/setup.bash`. Output roots may contain spaces,
@@ -75,9 +75,10 @@ reuse_root=$(mktemp -d /tmp/openarmik-prefix-reuse.XXXXXX)
 ./tests/test_native_prefix_reuse.sh "$reuse_root"
 ```
 
-The fast resource-control regression uses command shims instead of compiling the
-project or running sanitizers. It checks job propagation, sequential colcon,
-incremental tree reuse, and same-root locking:
+The fast resource-control regression uses real `flock`, CMake, and CTest in an
+isolated temporary fixture, plus narrow command shims for top-level argument
+propagation. It checks job propagation, incremental tree reuse, and build-root
+and install-prefix locking without compiling the project or running sanitizers:
 
 ```bash
 ./tests/test_build_resource_controls.sh

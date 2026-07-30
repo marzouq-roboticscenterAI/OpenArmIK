@@ -364,7 +364,7 @@ if ((open_browser)); then
     printf 'Browser executable not found: %s\n' "$browser_command" >&2
     exit 1
   }
-  "$browser_command" "$url" >/dev/null 2>&1 || \
+  "$browser_command" "$url" 9>&- >/dev/null 2>&1 || \
     printf 'Could not open a browser automatically; visit %s\n' "$url" >&2
 fi
 
