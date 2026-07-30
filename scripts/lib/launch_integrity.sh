@@ -11,6 +11,7 @@ openarm_compute_launch_source_fingerprint() {
   local manifest paths path file_mode file_hash description_commit description_tree
   local tool tool_path tool_real tool_hash tool_version variable value root_real
   local link_text link_real link_mode generator backend toolchain toolchain_real
+  local request_digest
   manifest=$(mktemp "${TMPDIR:-/tmp}/openarmik-fingerprint.XXXXXX") || return 1
   paths=$(mktemp "${TMPDIR:-/tmp}/openarmik-fingerprint-paths.XXXXXX") || {
     rm -f -- "$manifest"
@@ -31,6 +32,9 @@ openarm_compute_launch_source_fingerprint() {
   (
     printf 'OPENARM_LAUNCH_INPUT_V2\0build_type\0%s\0tests\0%s\0coverage\0%s\0' \
       "$build_type" "$run_tests" "$coverage"
+    request_digest=$(openarm_build_state_requested_digest launch "$build_type" \
+      "$run_tests" "$coverage" '') || exit 1
+    printf 'build_request\0%s\0' "$request_digest"
     while IFS= read -r -d '' path; do
       case "$path" in
         */__pycache__/*|*.pyc|*/.pytest_cache/*|*/.coverage|*/coverage_html/*) continue ;;
@@ -135,6 +139,12 @@ openarm_compute_launch_source_fingerprint() {
       ROS_PYTHON_VERSION; do
       value=${!variable-}
       printf 'env\0%s\0%s\0' "$variable" "$value"
+    done
+    for variable in CMAKE_C_COMPILER_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER \
+      CMAKE_C_LINKER_LAUNCHER CMAKE_CXX_LINKER_LAUNCHER; do
+      value=${!variable-}
+      openarm_build_state_record_cmake_launcher launch_launcher "$variable" \
+        "$value" || exit 1
     done
     file_hash=$(sha256sum -- /opt/ros/lyrical/setup.bash) || exit 1
     printf 'ros_prefix\0/opt/ros/lyrical\0setup\0%s\0' "${file_hash%% *}"

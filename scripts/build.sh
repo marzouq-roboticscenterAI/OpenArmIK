@@ -85,7 +85,7 @@ done
 if [[ "$output_root" != /* ]]; then
   output_root="$PWD/$output_root"
 fi
-output_root=$(realpath -m -- "$output_root")
+output_root=$(realpath -ms -- "$output_root")
 if [[ "$output_root" == *:* || "$output_root" == *\;* ]]; then
   printf 'Output roots containing : or ; are unsupported: %s\n' "$output_root" >&2
   exit 2
@@ -147,29 +147,10 @@ openarm_build_all_body() {
   local -a native_components=(can model commission transport control runtime)
   ((run_tests == 0)) || native_components+=(installed_native_consumer)
 
-  openarm_build_clean_child() {
-    local requested resolved
-    requested=$1
-    resolved=$(realpath -m -- "$requested")
-    case "$resolved" in
-      "$native_build"|"$ros_build"|"$install_prefix"|"$ros_log") ;;
-      *)
-        printf 'Refusing cleanup of unknown output path: %s\n' "$resolved" >&2
-        return 2
-        ;;
-    esac
-    [[ "$resolved" != "$output_root" ]] || {
-      printf 'Refusing to clean the output root itself: %s\n' "$resolved" >&2
-      return 2
-    }
-    rm -rf --one-file-system -- "$resolved"
-    [[ ! -e "$resolved" && ! -L "$resolved" ]] || {
-      printf 'Output path was not fully recreated from empty: %s\n' \
-        "$resolved" >&2
-      return 1
-    }
+  openarm_build_state_validate_output_root "$root_dir" "$output_root" || {
+    printf 'Refusing unsafe output root: %s\n' "$output_root" >&2
+    return 2
   }
-
   mkdir -p -- "$output_root"
   rm -f -- "$output_root/$OPENARM_LAUNCH_STAMP_NAME" \
     "$output_root/$OPENARM_LEGACY_LAUNCH_STAMP_NAME"
@@ -185,14 +166,21 @@ openarm_build_all_body() {
       >/dev/null 2>&1; then
     reuse_build_trees=1
   else
-    openarm_build_clean_child "$native_build" || return
-    openarm_build_clean_child "$ros_build" || return
-    openarm_build_clean_child "$ros_log" || return
+    openarm_build_state_remove_output_child "$root_dir" "$output_root" \
+      native_build || return
+    openarm_build_state_remove_output_child "$root_dir" "$output_root" \
+      build || return
+    openarm_build_state_remove_output_child "$root_dir" "$output_root" \
+      log || return
   fi
   # Install trees are launch authority, not caches. Recreate the unified native
   # and ROS install prefix under the exclusive output/native/install leases so
   # removed install rules cannot survive an otherwise incremental rebuild.
-  openarm_build_clean_child "$install_prefix"
+  openarm_build_state_remove_output_child "$root_dir" "$output_root" \
+    install || return
+  mkdir -p -- "$install_prefix" || return
+  printf '%s\n' OPENARM_INSTALL_ROOT_V1 > \
+    "$install_prefix/$OPENARM_INSTALL_STATE_FILE" || return
   openarm_build_state_write "$native_build" pending "$native_request" || return 1
   openarm_build_state_write "$ros_build" pending "$ros_request" || return 1
 

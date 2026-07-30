@@ -158,6 +158,45 @@ wrapper_after=$(CC="$compiler_wrapper /usr/bin/cc -DONE=1" \
   openarm_compute_launch_source_fingerprint "$fixture_root" "$description" Release 0)
 [[ "$wrapper_before" != "$wrapper_after" ]]
 
+cmake_compiler_launcher="$work_root/cmake-compiler-launcher"
+printf '#!/usr/bin/env bash\nexec "$@"\n' > "$cmake_compiler_launcher"
+chmod +x "$cmake_compiler_launcher"
+launcher_before=$(CMAKE_C_COMPILER_LAUNCHER="$cmake_compiler_launcher;--one" \
+  CMAKE_CXX_COMPILER_LAUNCHER="$cmake_compiler_launcher;--one" \
+  openarm_compute_launch_source_fingerprint "$fixture_root" "$description" \
+    Release 0)
+launcher_args_after=$( \
+  CMAKE_C_COMPILER_LAUNCHER="$cmake_compiler_launcher;--two" \
+  CMAKE_CXX_COMPILER_LAUNCHER="$cmake_compiler_launcher;--two" \
+  openarm_compute_launch_source_fingerprint "$fixture_root" "$description" \
+    Release 0)
+[[ "$launcher_before" != "$launcher_args_after" ]]
+printf '#!/usr/bin/env bash\n: launcher-bytes-changed\nexec "$@"\n' \
+  > "$cmake_compiler_launcher"
+launcher_bytes_after=$( \
+  CMAKE_C_COMPILER_LAUNCHER="$cmake_compiler_launcher;--one" \
+  CMAKE_CXX_COMPILER_LAUNCHER="$cmake_compiler_launcher;--one" \
+  openarm_compute_launch_source_fingerprint "$fixture_root" "$description" \
+    Release 0)
+[[ "$launcher_before" != "$launcher_bytes_after" ]]
+linker_launcher_before=$( \
+  CMAKE_C_LINKER_LAUNCHER="$cmake_compiler_launcher;--link-one" \
+  CMAKE_CXX_LINKER_LAUNCHER="$cmake_compiler_launcher;--link-one" \
+  openarm_compute_launch_source_fingerprint "$fixture_root" "$description" \
+    Release 0)
+linker_launcher_after=$( \
+  CMAKE_C_LINKER_LAUNCHER="$cmake_compiler_launcher;--link-two" \
+  CMAKE_CXX_LINKER_LAUNCHER="$cmake_compiler_launcher;--link-two" \
+  openarm_compute_launch_source_fingerprint "$fixture_root" "$description" \
+    Release 0)
+[[ "$linker_launcher_before" != "$linker_launcher_after" ]]
+if CMAKE_C_COMPILER_LAUNCHER='ambiguous launcher;--arg' \
+    openarm_compute_launch_source_fingerprint "$fixture_root" "$description" \
+      Release 0 >/dev/null 2>&1; then
+  printf 'Ambiguous launcher executable unexpectedly accepted\n' >&2
+  exit 1
+fi
+
 cxx_wrapper="$work_root/cxx-wrapper"
 printf '#!/usr/bin/env bash\nexec /usr/bin/c++ "$@"\n' > "$cxx_wrapper"
 chmod +x "$cxx_wrapper"

@@ -2,6 +2,7 @@
 # Transactional CMake cache provenance. This file is sourced.
 
 OPENARM_BUILD_STATE_FILE=.openarm-build-state-v1
+OPENARM_INSTALL_STATE_FILE=.openarm-install-root-v1
 
 openarm_build_state_record_command() {
   local label=$1 specification=$2 spec_hash token path real hash count=0
@@ -27,6 +28,33 @@ openarm_build_state_record_command() {
     ((count += 1))
   done
   ((count > 0))
+}
+
+openarm_build_state_record_cmake_launcher() {
+  local record_kind=$1 label=$2 specification=$3 argv0 path real hash
+  printf '%s_spec\0%s\0%s\0' "$record_kind" "$label" "$specification"
+  if [[ -z "$specification" ]]; then
+    printf '%s_file\0%s\0none\0' "$record_kind" "$label"
+    return 0
+  fi
+  # CMake launcher values are semicolon lists. Only the first element is the
+  # executable; the remaining elements are fixed arguments already bound by
+  # the raw specification above. Never interpret the value as shell input.
+  [[ "$specification" != *$'\n'* && "$specification" != *$'\r'* &&
+     "$specification" != *'\\'* && "$specification" != *'$<'* ]] || return 1
+  argv0=${specification%%;*}
+  [[ -n "$argv0" && "$argv0" != -* && "$argv0" != *[[:space:]]* ]] || return 1
+  if [[ "$argv0" == */* ]]; then
+    [[ "$argv0" == /* && -e "$argv0" ]] || return 1
+    path=$argv0
+  else
+    path=$(command -v -- "$argv0" 2>/dev/null) || return 1
+  fi
+  real=$(realpath -e -- "$path") || return 1
+  [[ -f "$real" && -x "$real" ]] || return 1
+  hash=$(sha256sum -- "$real") || return 1
+  printf '%s_file\0%s\0%s\0%s\0' "$record_kind" "$label" "$real" \
+    "${hash%% *}"
 }
 
 openarm_build_state_requested_digest() {
@@ -74,6 +102,12 @@ openarm_build_state_requested_digest() {
       hash=$(printf '%s' "$value" | sha256sum) || exit 1
       printf 'option\0%s\0%s\0' "$key" "${hash%% *}"
     done
+    for key in CMAKE_C_COMPILER_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER \
+      CMAKE_C_LINKER_LAUNCHER CMAKE_CXX_LINKER_LAUNCHER; do
+      value=${!key-}
+      openarm_build_state_record_cmake_launcher request_launcher "$key" \
+        "$value" || exit 1
+    done
   ) > "$manifest" || { rm -f -- "$manifest"; return 1; }
   sha256sum -- "$manifest" | awk '{print $1}'
   rm -f -- "$manifest"
@@ -102,7 +136,8 @@ openarm_build_state_cache_get() {
 }
 
 openarm_build_state_actual_digest() {
-  local build_root=$1 manifest cache component key real hash found cxx_present
+  local build_root=$1 manifest cache component component_dir key real hash found
+  local cxx_present root_real
   shift
   local -a components=("$@")
   local -a required_values=(
@@ -126,18 +161,30 @@ openarm_build_state_actual_digest() {
     CMAKE_C_COMPILER_TARGET CMAKE_CXX_COMPILER_TARGET
     CMAKE_C_COMPILER_EXTERNAL_TOOLCHAIN CMAKE_CXX_COMPILER_EXTERNAL_TOOLCHAIN
     CMAKE_FIND_ROOT_PATH BUILD_TESTING OA_MODEL_BUILD_TESTS
-    OA_CONTROL_BUILD_TESTS Python_EXECUTABLE)
+    OA_CONTROL_BUILD_TESTS Python_EXECUTABLE CMAKE_C_COMPILER_LAUNCHER
+    CMAKE_CXX_COMPILER_LAUNCHER CMAKE_C_LINKER_LAUNCHER
+    CMAKE_CXX_LINKER_LAUNCHER)
   local -a required_tools=(CMAKE_C_COMPILER CMAKE_MAKE_PROGRAM CMAKE_AR
     CMAKE_RANLIB CMAKE_LINKER CMAKE_NM CMAKE_STRIP CMAKE_OBJCOPY)
   local -a optional_tools=(CMAKE_CXX_COMPILER CMAKE_C_COMPILER_AR
     CMAKE_C_COMPILER_RANLIB CMAKE_CXX_COMPILER_AR CMAKE_CXX_COMPILER_RANLIB)
+  local -a optional_launchers=(CMAKE_C_COMPILER_LAUNCHER
+    CMAKE_CXX_COMPILER_LAUNCHER CMAKE_C_LINKER_LAUNCHER
+    CMAKE_CXX_LINKER_LAUNCHER)
   [[ -d "$build_root" && ! -L "$build_root" ]] || return 1
+  root_real=$(realpath -e -- "$build_root") || return 1
+  [[ "$root_real" == "$build_root" ]] || return 1
   manifest=$(mktemp "${TMPDIR:-/tmp}/openarmik-cache-state.XXXXXX") || return 1
   (
     printf 'OPENARM_ACTUAL_CMAKE_V1\0'
     for component in "${components[@]}"; do
-      cache="$build_root/$component/CMakeCache.txt"
+      [[ "$component" =~ ^[A-Za-z0-9_+-]+$ ]] || exit 1
+      component_dir="$root_real/$component"
+      [[ -d "$component_dir" && ! -L "$component_dir" ]] || exit 1
+      [[ $(realpath -e -- "$component_dir") == "$component_dir" ]] || exit 1
+      cache="$component_dir/CMakeCache.txt"
       [[ -f "$cache" && ! -L "$cache" ]] || exit 1
+      [[ $(realpath -e -- "$cache") == "$cache" ]] || exit 1
       printf 'component\0%s\0' "$component"
       for key in "${required_values[@]}"; do
         openarm_build_state_cache_get "$cache" "$key" 1 || exit 1
@@ -175,6 +222,15 @@ openarm_build_state_actual_digest() {
           printf 'tool_missing\0%s\0' "$key"
         fi
       done
+      for key in "${optional_launchers[@]}"; do
+        openarm_build_state_cache_get "$cache" "$key" 0 || exit 1
+        if ((OPENARM_CACHE_PRESENT)); then
+          openarm_build_state_record_cmake_launcher actual_launcher "$key" \
+            "$OPENARM_CACHE_VALUE" || exit 1
+        else
+          printf 'actual_launcher_missing\0%s\0' "$key"
+        fi
+      done
       if [[ "$component" == openarm_control_msgs ||
             "$component" == openarm_description ||
             "$component" == openarm_ik_ros ]]; then
@@ -199,9 +255,9 @@ openarm_build_state_actual_digest() {
       fi
     done
     while IFS= read -r -d '' found; do
-      component=${found#"$build_root"/}; component=${component%/CMakeCache.txt}
+      component=${found#"$root_real"/}; component=${component%/CMakeCache.txt}
       [[ " ${components[*]} " == *" $component "* ]] || exit 1
-    done < <(find "$build_root" -mindepth 2 -maxdepth 2 -name CMakeCache.txt -print0)
+    done < <(find -P "$root_real" -mindepth 2 -maxdepth 2 -name CMakeCache.txt -print0)
   ) > "$manifest" || { rm -f -- "$manifest"; return 1; }
   sha256sum -- "$manifest" | awk '{print $1}'
   rm -f -- "$manifest"
@@ -244,20 +300,62 @@ openarm_build_state_publish_completed() {
   openarm_build_state_write "$build_root" completed "$request" "$actual"
 }
 
-openarm_build_state_remove_tree() {
-  local root_dir=$1 target=$2 resolved root_real protected
-  resolved=$(realpath -m -- "$target") || return 1
+openarm_build_state_validate_output_root() {
+  local root_dir=$1 output_root=$2 root_real parent base parent_real
   root_real=$(realpath -e -- "$root_dir") || return 1
-  case "$resolved" in
-    /|/etc|/home|/opt|/root|/tmp|/usr|/var|"$root_real"|"$(dirname "$root_real")"|"${HOME:-/nonexistent}")
-      printf 'Refusing unsafe cache cleanup: %s\n' "$resolved" >&2; return 2 ;;
+  parent=$(dirname -- "$output_root"); base=$(basename -- "$output_root")
+  parent_real=$(realpath -e -- "$parent") || return 2
+  [[ "$output_root" == /* && -d "$parent_real" && ! -L "$parent" &&
+     "$output_root" == "$parent_real/$base" && "$base" != . &&
+     "$base" != .. && "$base" != .git ]] || return 2
+  case "$output_root" in
+    "$root_real/ros2_ws") ;;
+    "$root_real"|"$root_real"/*|/*/.git|/*/.git/*) return 2 ;;
+    *) case "$root_real" in "$output_root"/*) return 2 ;; esac ;;
   esac
-  for protected in can model commission transport control runtime scripts tests \
-      upstream ros2_ws/src; do
-    protected="$root_real/$protected"
-    case "$resolved" in "$protected"|"$protected"/*)
-      printf 'Refusing source cleanup: %s\n' "$resolved" >&2; return 2 ;; esac
-  done
-  rm -rf --one-file-system -- "$resolved"
-  [[ ! -e "$resolved" && ! -L "$resolved" ]]
+  [[ ! -e "$output_root" && ! -L "$output_root" ]] ||
+    [[ -d "$output_root" && ! -L "$output_root" &&
+       $(realpath -e -- "$output_root") == "$output_root" ]]
+}
+
+openarm_build_state_remove_output_child() {
+  local root_dir=$1 output_root=$2 child=$3 target
+  openarm_build_state_validate_output_root "$root_dir" "$output_root" || return 2
+  case "$child" in native_build|build|log|install) ;;
+    *) return 2 ;;
+  esac
+  target="$output_root/$child"
+  if [[ -e "$target" || -L "$target" ]]; then
+    [[ -d "$target" && ! -L "$target" &&
+       $(realpath -e -- "$target") == "$target" ]] || return 2
+  fi
+  rm -rf --one-file-system -- "$target" || return 1
+  [[ ! -e "$target" && ! -L "$target" ]]
+}
+
+openarm_build_state_remove_owned_tree() {
+  local root_dir=$1 target=$2 marker=$3 root_real parent base parent_real entries
+  root_real=$(realpath -e -- "$root_dir") || return 1
+  parent=$(dirname -- "$target"); base=$(basename -- "$target")
+  parent_real=$(realpath -e -- "$parent") || return 2
+  [[ "$target" == /* && -d "$parent_real" && ! -L "$parent" &&
+     "$target" == "$parent_real/$base" && "$base" != . && "$base" != .. &&
+     "$base" != .git && "$marker" =~ ^\.openarm-[A-Za-z0-9._-]+$ ]] || return 2
+  case "$target" in
+    /|"${HOME:-/nonexistent}"|"$root_real"|"$root_real"/*|/*/.git|/*/.git/*)
+      return 2 ;;
+    *) case "$root_real" in "$target"/*) return 2 ;; esac ;;
+  esac
+  if [[ -e "$target" || -L "$target" ]]; then
+    [[ -d "$target" && ! -L "$target" &&
+       $(realpath -e -- "$target") == "$target" ]] || return 2
+    if [[ -e "$target/$marker" || -L "$target/$marker" ]]; then
+      [[ -f "$target/$marker" && ! -L "$target/$marker" ]] || return 2
+    else
+      entries=$(find -P "$target" -mindepth 1 -maxdepth 1 -print -quit) || return 1
+      [[ -z "$entries" ]] || return 2
+    fi
+  fi
+  rm -rf --one-file-system -- "$target" || return 1
+  [[ ! -e "$target" && ! -L "$target" ]]
 }

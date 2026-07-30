@@ -93,8 +93,8 @@ export CTEST_PARALLEL_LEVEL="$jobs"
   printf '%s\n' '--install-prefix must be absolute' >&2
   exit 2
 }
-build_root=$(realpath -m -- "$build_root")
-install_prefix=$(realpath -m -- "$install_prefix")
+build_root=$(realpath -ms -- "$build_root")
+install_prefix=$(realpath -ms -- "$install_prefix")
 for path in "$build_root" "$install_prefix"; do
   if [[ "$path" == *:* || "$path" == *\;* ]]; then
     printf 'Build/install paths containing : or ; are unsupported: %s\n' "$path" >&2
@@ -153,9 +153,14 @@ openarm_build_native_transaction() {
       "$request" "${components[@]}" >/dev/null 2>&1; then
     effective_reuse=1
   else
-    openarm_build_state_remove_tree "$root_dir" "$build_root" || return
+    openarm_build_state_remove_owned_tree "$root_dir" "$build_root" \
+      "$OPENARM_BUILD_STATE_FILE" || return
   fi
-  openarm_build_state_remove_tree "$root_dir" "$install_prefix" || return
+  openarm_build_state_remove_owned_tree "$root_dir" "$install_prefix" \
+    "$OPENARM_INSTALL_STATE_FILE" || return
+  mkdir -p -- "$install_prefix" || return
+  printf '%s\n' OPENARM_INSTALL_ROOT_V1 > \
+    "$install_prefix/$OPENARM_INSTALL_STATE_FILE" || return
   openarm_build_state_write "$build_root" pending "$request" || return 1
   openarm_build_native_body "$root_dir" "$build_root" "$install_prefix" \
     "$build_type" "$run_tests" "$effective_reuse" "$jobs" || return

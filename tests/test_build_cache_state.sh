@@ -9,7 +9,30 @@ trap cleanup EXIT
 source_dir="$work_root/source"
 build_root="$work_root/build"
 install_root="$work_root/install"
-mkdir -p "$source_dir"
+cleanup_root="$work_root/repository-root"
+mkdir -p "$source_dir" "$cleanup_root"
+
+# Destructive cleanup is unreachable for repository/VCS content, files, the
+# default output ancestor, root, or workspace ancestors.
+remove_calls=0
+rm() { ((remove_calls += 1)); return 99; }
+for rejected in "$root_dir/.git" "$root_dir/README.md" "$root_dir/ros2_ws" \
+    "$root_dir" "$(dirname "$root_dir")" /; do
+  if openarm_build_state_remove_owned_tree "$root_dir" "$rejected" \
+      "$OPENARM_BUILD_STATE_FILE" >/dev/null 2>&1; then
+    printf 'Unsafe cleanup target accepted: %s\n' "$rejected" >&2
+    exit 1
+  fi
+done
+[[ "$remove_calls" == 0 ]]
+unset -f rm
+owned_fixture="$work_root/owned-build"
+mkdir "$owned_fixture"
+printf 'owned\n' > "$owned_fixture/$OPENARM_BUILD_STATE_FILE"
+touch "$owned_fixture/payload"
+openarm_build_state_remove_owned_tree "$cleanup_root" "$owned_fixture" \
+  "$OPENARM_BUILD_STATE_FILE"
+[[ ! -e "$owned_fixture" ]]
 printf 'int main(void) { return 0; }\n' > "$source_dir/main.c"
 printf 'int helper() { return 0; }\n' > "$source_dir/helper.cpp"
 cat > "$source_dir/CMakeLists.txt" <<'EOF'
@@ -17,7 +40,8 @@ cmake_minimum_required(VERSION 3.16)
 project(openarm_cache_probe LANGUAGES C CXX)
 include(CTest)
 add_executable(cache_probe main.c helper.cpp)
-install(TARGETS cache_probe RUNTIME DESTINATION bin)
+add_executable(cache_probe_c main.c)
+install(TARGETS cache_probe cache_probe_c RUNTIME DESTINATION bin)
 EOF
 
 wrapper_a="$work_root/cc-a"
@@ -25,25 +49,44 @@ wrapper_b="$work_root/cc-b"
 printf '#!/usr/bin/env bash\nexec /usr/bin/cc "$@"\n' > "$wrapper_a"
 printf '#!/usr/bin/env bash\nexec /usr/bin/cc "$@"\n' > "$wrapper_b"
 chmod +x "$wrapper_a" "$wrapper_b"
+launcher_a="$work_root/launcher-a"
+launcher_b="$work_root/launcher-b"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'case "${1:-}" in --launcher-a|--launcher-b) shift ;; esac' \
+  'exec "$@"' > "$launcher_a"
+cp "$launcher_a" "$launcher_b"
+chmod +x "$launcher_a" "$launcher_b"
 toolchain_a="$work_root/toolchain-a.cmake"
 toolchain_b="$work_root/toolchain-b.cmake"
 printf 'set(OPENARM_CACHE_PROBE one CACHE STRING "")\n' > "$toolchain_a"
 printf 'set(OPENARM_CACHE_PROBE two CACHE STRING "")\n' > "$toolchain_b"
 
 run_transaction() {
-  local request request_after effective_reuse=0
+  local request request_after launcher_key launcher_value effective_reuse=0
   request=$(openarm_build_state_requested_digest probe Release 1 0 "$install_root")
   if openarm_build_state_read_completed "$build_root" "$request" probe \
       >/dev/null 2>&1; then
     effective_reuse=1
   else
-    openarm_build_state_remove_tree "$root_dir" "$build_root"
+    openarm_build_state_remove_owned_tree "$cleanup_root" "$build_root" \
+      "$OPENARM_BUILD_STATE_FILE"
   fi
-  openarm_build_state_remove_tree "$root_dir" "$install_root"
+  openarm_build_state_remove_owned_tree "$cleanup_root" "$install_root" \
+    "$OPENARM_INSTALL_STATE_FILE"
+  mkdir -p "$install_root"
+  printf '%s\n' OPENARM_INSTALL_ROOT_V1 > \
+    "$install_root/$OPENARM_INSTALL_STATE_FILE"
   openarm_build_state_write "$build_root" pending "$request"
   local -a configure_args=(-S "$source_dir" -B "$build_root/probe"
     -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
     -DCMAKE_INSTALL_PREFIX="$install_root")
+  for launcher_key in CMAKE_C_COMPILER_LAUNCHER \
+      CMAKE_CXX_COMPILER_LAUNCHER CMAKE_C_LINKER_LAUNCHER \
+      CMAKE_CXX_LINKER_LAUNCHER; do
+    launcher_value=${!launcher_key-}
+    [[ -z "$launcher_value" ]] || \
+      configure_args+=("-D${launcher_key}=${launcher_value}")
+  done
   cmake "${configure_args[@]}" >/dev/null
   if [[ ${OPENARM_CACHE_TEST_FAIL:-0} == 1 ]]; then
     return 9
@@ -71,6 +114,64 @@ CC="$wrapper_b" CXX=/usr/bin/c++ CFLAGS=-DREQUEST_ONE=1 \
 [[ "$LAST_REUSED" == 0 && ! -e "$build_root/probe/reuse-marker" ]]
 openarm_build_state_cache_get "$build_root/probe/CMakeCache.txt" CMAKE_C_COMPILER 1
 [[ $(realpath -e "$OPENARM_CACHE_VALUE") == $(realpath -e "$wrapper_b") ]]
+
+# Compiler launcher lists are passed as explicit cache definitions. Identical
+# selections reuse the build tree; changed raw lists or executable bytes do not.
+compiler_launcher_a="$launcher_a;--launcher-a"
+compiler_launcher_b="$launcher_b;--launcher-b"
+CMAKE_C_COMPILER_LAUNCHER="$compiler_launcher_a" \
+  CMAKE_CXX_COMPILER_LAUNCHER="$compiler_launcher_a" \
+  CC="$wrapper_b" CXX=/usr/bin/c++ run_transaction
+[[ "$LAST_REUSED" == 0 ]]
+openarm_build_state_cache_get "$build_root/probe/CMakeCache.txt" \
+  CMAKE_C_COMPILER_LAUNCHER 1
+[[ "$OPENARM_CACHE_VALUE" == "$compiler_launcher_a" ]]
+openarm_build_state_cache_get "$build_root/probe/CMakeCache.txt" \
+  CMAKE_CXX_COMPILER_LAUNCHER 1
+[[ "$OPENARM_CACHE_VALUE" == "$compiler_launcher_a" ]]
+touch "$build_root/probe/compiler-launcher-marker"
+CMAKE_C_COMPILER_LAUNCHER="$compiler_launcher_a" \
+  CMAKE_CXX_COMPILER_LAUNCHER="$compiler_launcher_a" \
+  CC="$wrapper_b" CXX=/usr/bin/c++ run_transaction
+[[ "$LAST_REUSED" == 1 && \
+   -e "$build_root/probe/compiler-launcher-marker" ]]
+CMAKE_C_COMPILER_LAUNCHER="$compiler_launcher_b" \
+  CMAKE_CXX_COMPILER_LAUNCHER="$compiler_launcher_b" \
+  CC="$wrapper_b" CXX=/usr/bin/c++ run_transaction
+[[ "$LAST_REUSED" == 0 && \
+   ! -e "$build_root/probe/compiler-launcher-marker" ]]
+printf '%s\n' '#!/usr/bin/env bash' \
+  'case "${1:-}" in --launcher-b) shift ;; esac' \
+  ': launcher-bytes-changed' 'exec "$@"' > "$launcher_b"
+touch "$build_root/probe/compiler-launcher-byte-marker"
+CMAKE_C_COMPILER_LAUNCHER="$compiler_launcher_b" \
+  CMAKE_CXX_COMPILER_LAUNCHER="$compiler_launcher_b" \
+  CC="$wrapper_b" CXX=/usr/bin/c++ run_transaction
+[[ "$LAST_REUSED" == 0 && \
+   ! -e "$build_root/probe/compiler-launcher-byte-marker" ]]
+
+cmake_version=$(cmake --version | awk 'NR == 1 {sub(/^cmake version /, ""); print}')
+IFS=. read -r cmake_major cmake_minor _ <<< "$cmake_version"
+if ((cmake_major > 3 || (cmake_major == 3 && cmake_minor >= 21))); then
+  linker_launcher_a="$launcher_a;--launcher-a"
+  linker_launcher_b="$launcher_b;--launcher-b"
+  CMAKE_C_LINKER_LAUNCHER="$linker_launcher_a" \
+    CMAKE_CXX_LINKER_LAUNCHER="$linker_launcher_a" \
+    CC="$wrapper_b" CXX=/usr/bin/c++ run_transaction
+  [[ "$LAST_REUSED" == 0 ]]
+  openarm_build_state_cache_get "$build_root/probe/CMakeCache.txt" \
+    CMAKE_C_LINKER_LAUNCHER 1
+  [[ "$OPENARM_CACHE_VALUE" == "$linker_launcher_a" ]]
+  openarm_build_state_cache_get "$build_root/probe/CMakeCache.txt" \
+    CMAKE_CXX_LINKER_LAUNCHER 1
+  [[ "$OPENARM_CACHE_VALUE" == "$linker_launcher_a" ]]
+  touch "$build_root/probe/linker-launcher-marker"
+  CMAKE_C_LINKER_LAUNCHER="$linker_launcher_b" \
+    CMAKE_CXX_LINKER_LAUNCHER="$linker_launcher_b" \
+    CC="$wrapper_b" CXX=/usr/bin/c++ run_transaction
+  [[ "$LAST_REUSED" == 0 && \
+     ! -e "$build_root/probe/linker-launcher-marker" ]]
+fi
 
 # Toolchain path and initialization flags each force a fresh configure.
 touch "$build_root/probe/toolchain-marker"
@@ -123,5 +224,23 @@ set -e
 [[ "$failure_status" == 9 ]]
 grep -Fxq 'phase pending' "$build_root/$OPENARM_BUILD_STATE_FILE"
 ! grep -q '^actual ' "$build_root/$OPENARM_BUILD_STATE_FILE"
+
+# Component and cache symlinks cannot escape either native- or ROS-shaped roots.
+escape_root="$work_root/escape-build"
+external_component="$work_root/external-component"
+mkdir -p "$escape_root" "$external_component"
+cp "$build_root/probe/CMakeCache.txt" "$external_component/CMakeCache.txt"
+ln -s "$external_component" "$escape_root/can"
+! openarm_build_state_actual_digest "$escape_root" can >/dev/null 2>&1
+rm "$escape_root/can"
+mkdir "$escape_root/can"
+ln -s "$external_component/CMakeCache.txt" \
+  "$escape_root/can/CMakeCache.txt"
+! openarm_build_state_actual_digest "$escape_root" can >/dev/null 2>&1
+rm -rf "$escape_root"
+mkdir "$escape_root"
+ln -s "$external_component" "$escape_root/openarm_ik_ros"
+! openarm_build_state_actual_digest "$escape_root" openarm_ik_ros \
+  >/dev/null 2>&1
 
 printf '%s\n' 'Build cache-state transaction regression passed'

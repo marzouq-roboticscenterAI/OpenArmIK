@@ -134,10 +134,23 @@ set -e
 
 insecure_xdg="$security_root/insecure-xdg"
 mkdir -m 777 "$insecure_xdg"
-[[ $(XDG_RUNTIME_DIR="$insecure_xdg" openarm_choose_lock_base) == /tmp ]]
 symlink_xdg="$security_root/symlink-xdg"
 ln -s "$secure_base" "$symlink_xdg"
-[[ $(XDG_RUNTIME_DIR="$symlink_xdg" openarm_choose_lock_base) == /tmp ]]
+if openarm_lock_base_is_secure /tmp 0 1; then
+  [[ $(XDG_RUNTIME_DIR="$insecure_xdg" openarm_choose_lock_base) == /tmp ]]
+  [[ $(XDG_RUNTIME_DIR="$symlink_xdg" openarm_choose_lock_base) == /tmp ]]
+else
+  for rejected_xdg in "$insecure_xdg" "$symlink_xdg"; do
+    set +e
+    XDG_RUNTIME_DIR="$rejected_xdg" openarm_choose_lock_base \
+      > "$work_root/rejected-lock-base.out" 2>&1
+    rejected_status=$?
+    set -e
+    [[ "$rejected_status" == 2 ]]
+    grep -Fxq 'Refusing unsafe /tmp base for build locks.' \
+      "$work_root/rejected-lock-base.out"
+  done
+fi
 [[ $(XDG_RUNTIME_DIR="$secure_base" openarm_choose_lock_base) == "$secure_base" ]]
 
 fd_resource_a=$(realpath -m -- "$work_root/fd-resource-a")
