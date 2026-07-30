@@ -6,6 +6,8 @@ output_root="$root_dir/ros2_ws"
 build_type=Release
 run_tests=0
 clean=1
+jobs=${OPENARM_BUILD_JOBS-2}
+original_args=("$@")
 
 usage() {
   cat <<'EOF'
@@ -19,6 +21,7 @@ Options:
   --incremental       Reuse existing build and install directories
   --output-root PATH  Put native, ROS, log, and install output under PATH
   --build-type TYPE   CMake build type (default: Release)
+  --jobs JOBS         Maximum concurrent build jobs (default: OPENARM_BUILD_JOBS or 2)
   -h, --help          Show this help
 EOF
 }
@@ -43,6 +46,14 @@ while (($#)); do
       build_type=$2
       shift 2
       ;;
+    --jobs)
+      (($# >= 2)) && [[ -n "$2" ]] || {
+        printf '%s requires a positive integer\n' "$1" >&2
+        exit 2
+      }
+      jobs=$2
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -54,6 +65,11 @@ while (($#)); do
       ;;
   esac
 done
+
+[[ "$jobs" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'OPENARM_BUILD_JOBS/--jobs must be a positive integer: %s\n' "$jobs" >&2
+  exit 2
+}
 
 if [[ "$output_root" != /* ]]; then
   output_root="$PWD/$output_root"
@@ -92,6 +108,21 @@ ros_build="$output_root/build"
 install_prefix="$output_root/install"
 ros_log="$output_root/log"
 
+mkdir -p "$output_root"
+lock_file="$output_root/.openarmik-build.lock"
+if [[ ${OPENARM_BUILD_LOCK_HELD:-0} != 1 ]]; then
+  set +e
+  flock -n -E 75 --close "$lock_file" \
+    env OPENARM_BUILD_LOCK_HELD=1 "$0" "${original_args[@]}"
+  lock_status=$?
+  set -e
+  if ((lock_status == 75)); then
+    printf 'Build output root is already being built: %s\n' "$output_root" >&2
+    exit 3
+  fi
+  exit "$lock_status"
+fi
+
 clean_child() {
   local requested=$1
   local resolved
@@ -116,13 +147,16 @@ if ((clean)); then
   clean_child "$install_prefix"
   clean_child "$ros_log"
 fi
-mkdir -p "$output_root"
 
 native_args=(
   --build-root "$native_build"
   --install-prefix "$install_prefix"
   --build-type "$build_type"
+  --jobs "$jobs"
 )
+if ((!clean)); then
+  native_args+=(--reuse-build-trees)
+fi
 if ((run_tests)); then
   native_args+=(--tests)
 fi
@@ -144,19 +178,27 @@ if ((run_tests)); then
   tests_flag=ON
 fi
 
-colcon --log-base "$ros_log" build \
-  --base-paths "$description_dir" "$root_dir/ros2_ws/src" \
-  --packages-select openarm_description openarm_control_msgs openarm_ik_ros \
-  --build-base "$ros_build" \
-  --install-base "$install_prefix" \
-  --event-handlers console_direct+ \
-  --cmake-clean-cache \
-  --cmake-args \
-    -DCMAKE_BUILD_TYPE="$build_type" \
-    -DBUILD_TESTING="$tests_flag" \
-    -DCMAKE_WARN_DEPRECATED=OFF \
-    -DPython3_EXECUTABLE=/usr/bin/python3 \
-    "${coverage_args[@]}"
+colcon_args=(
+  --log-base "$ros_log" build
+  --executor sequential
+  --base-paths "$description_dir" "$root_dir/ros2_ws/src"
+  --packages-select openarm_description openarm_control_msgs openarm_ik_ros
+  --build-base "$ros_build"
+  --install-base "$install_prefix"
+  --event-handlers console_direct+
+)
+if ((clean)); then
+  colcon_args+=(--cmake-clean-cache)
+fi
+colcon_args+=(--cmake-args
+  -DCMAKE_BUILD_TYPE="$build_type"
+  -DBUILD_TESTING="$tests_flag"
+  -DCMAKE_WARN_DEPRECATED=OFF
+  -DPython3_EXECUTABLE=/usr/bin/python3
+  "${coverage_args[@]}")
+
+MAKEFLAGS="-j$jobs" CMAKE_BUILD_PARALLEL_LEVEL="$jobs" \
+  colcon "${colcon_args[@]}"
 
 if ((run_tests)); then
   ros_test_listing=$(ctest --test-dir "$ros_build/openarm_ik_ros" -N)

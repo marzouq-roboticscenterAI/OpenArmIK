@@ -6,6 +6,8 @@ build_root=
 install_prefix=
 build_type=Release
 run_tests=0
+reuse_build_trees=0
+jobs=${OPENARM_BUILD_JOBS-2}
 
 usage() {
   cat <<'EOF'
@@ -17,6 +19,8 @@ root with a different install prefix deterministically refreshes dependencies.
 
 Options:
   --build-type TYPE  CMake build type (default: Release)
+  --jobs JOBS        Maximum concurrent build jobs (default: OPENARM_BUILD_JOBS or 2)
+  --reuse-build-trees  Reconfigure and reuse compatible component build trees
   --tests            Build and run every registered hardware-free native CTest
   -h, --help         Show this help
 EOF
@@ -43,6 +47,18 @@ while (($#)); do
       run_tests=1
       shift
       ;;
+    --jobs)
+      (($# >= 2)) && [[ -n "$2" ]] || {
+        printf '%s requires a positive integer\n' "$1" >&2
+        exit 2
+      }
+      jobs=$2
+      shift 2
+      ;;
+    --reuse-build-trees)
+      reuse_build_trees=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -54,6 +70,14 @@ while (($#)); do
       ;;
   esac
 done
+
+[[ "$jobs" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'OPENARM_BUILD_JOBS/--jobs must be a positive integer: %s\n' "$jobs" >&2
+  exit 2
+}
+export OPENARM_BUILD_JOBS="$jobs"
+export CMAKE_BUILD_PARALLEL_LEVEL="$jobs"
+export CTEST_PARALLEL_LEVEL="$jobs"
 
 [[ -n "$build_root" ]] || { printf 'Missing --build-root\n' >&2; exit 2; }
 [[ -n "$install_prefix" ]] || { printf 'Missing --install-prefix\n' >&2; exit 2; }
@@ -136,7 +160,9 @@ configure_build_test_install() {
   local component=$1
   shift
   local component_build="$build_root/$component"
-  cmake -E remove_directory "$component_build"
+  if ((!reuse_build_trees)); then
+    cmake -E remove_directory "$component_build"
+  fi
   cmake -S "$root_dir/$component" -B "$component_build" \
     -DCMAKE_BUILD_TYPE="$build_type" \
     -DCMAKE_INSTALL_PREFIX="$install_prefix" \
@@ -162,7 +188,7 @@ configure_build_test_install() {
         OpenArmTransport_DIR "$install_prefix/lib/cmake/OpenArmTransport"
       ;;
   esac
-  cmake --build "$component_build" --parallel
+  cmake --build "$component_build" --parallel "$jobs"
   if ((run_tests)); then
     ctest --test-dir "$component_build" --output-on-failure --no-tests=error
   fi
@@ -248,7 +274,9 @@ if ((run_tests)); then
      [[ "$model_header" == *OPENARM_DISABLE_LEGACY_GENERIC_STATUS* ]] &&
      [[ "$control_header" == *OPENARM_DISABLE_LEGACY_GENERIC_STATUS* ]]; then
     consumer_build="$build_root/installed_native_consumer"
-    cmake -E remove_directory "$consumer_build"
+    if ((!reuse_build_trees)); then
+      cmake -E remove_directory "$consumer_build"
+    fi
     cmake -S "$root_dir/tests/installed_native_consumer" -B "$consumer_build" \
       -DCMAKE_BUILD_TYPE="$build_type" \
       -DCMAKE_PREFIX_PATH="$install_prefix" \
@@ -272,7 +300,7 @@ if ((run_tests)); then
       openarm_control_DIR "$install_prefix/lib/cmake/openarm_control"
     assert_cache_value "$consumer_build/CMakeCache.txt" \
       openarm_runtime_DIR "$install_prefix/lib/cmake/openarm_runtime"
-    cmake --build "$consumer_build" --parallel
+    cmake --build "$consumer_build" --parallel "$jobs"
     "$consumer_build/openarm_installed_c11"
     "$consumer_build/openarm_installed_cxx17"
   else

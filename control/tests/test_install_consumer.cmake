@@ -1,5 +1,12 @@
 set(install_prefix "${OA_CONTROL_BUILD_DIR}/public-header-install")
 set(consumer_build "${OA_CONTROL_BUILD_DIR}/public-header-install-consumer")
+set(openarm_build_jobs "$ENV{OPENARM_BUILD_JOBS}")
+if(openarm_build_jobs STREQUAL "")
+    set(openarm_build_jobs "2")
+endif()
+if(NOT openarm_build_jobs MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "OPENARM_BUILD_JOBS must be a positive integer: ${openarm_build_jobs}")
+endif()
 
 execute_process(
     COMMAND "${CMAKE_COMMAND}" --install "${OA_CONTROL_BUILD_DIR}"
@@ -23,7 +30,7 @@ if(NOT configure_result EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${CMAKE_COMMAND}" --build "${consumer_build}" --parallel
+    COMMAND "${CMAKE_COMMAND}" --build "${consumer_build}" --parallel "${openarm_build_jobs}"
     RESULT_VARIABLE build_result)
 if(NOT build_result EQUAL 0)
     message(FATAL_ERROR "installed consumer build failed: ${build_result}")
