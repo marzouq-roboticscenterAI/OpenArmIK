@@ -82,6 +82,19 @@ regression calls `health()` from both a reserve notification and an active
 worker transition, then verifies bounded shutdown. The focused session suite
 contains 15 passing tests after these additions.
 
+### Second-review lifecycle closure
+
+Completion observed only after a successful disable-stop now retains the single
+completed terminal outcome but reports the authoritative disarmed state as
+`stopped_requires_restart`; it cannot claim idle and later fault on disabled
+feedback. The deterministic 60 ms pre-cancel/60 ms captured boundary exercises
+that branch. Test-only barrier support is compiled only with
+`OPENARM_IK_ROS_TESTING`.
+
+A health callback may request `close()` from the worker: close records shutdown
+and skips self-join; a later external close/destructor joins the finished worker.
+The expanded session suite passes 16/16, including this self-close regression.
+
 ### Final installed-overlay verification
 
 After the follow-up commit, the package was rebuilt and installed with one job,

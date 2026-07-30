@@ -198,19 +198,24 @@ public:
 
   void close() noexcept
   {
+    bool request_shutdown = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (closing_) {
+      if (!closing_) {
+        closing_ = true;
+        request_shutdown = true;
+        if (health_.adapter_state != AdapterState::fault) {
+          health_.adapter_state = AdapterState::closing;
+          health_.reason = "shutdown";
+        }
+        cv_.notify_all();
+      }
+    }
+    (void)request_shutdown;
+    if (worker_.joinable()) {
+      if (worker_.get_id() == std::this_thread::get_id()) {
         return;
       }
-      closing_ = true;
-      if (health_.adapter_state != AdapterState::fault) {
-        health_.adapter_state = AdapterState::closing;
-        health_.reason = "shutdown";
-      }
-      cv_.notify_all();
-    }
-    if (worker_.joinable()) {
       worker_.join();
     }
   }
@@ -943,6 +948,7 @@ private:
       }
     }
 
+#ifdef OPENARM_IK_ROS_TESTING
     if (active_command && command->cancel_captured_for_test) {
       try {
         command->cancel_captured_for_test(command_id);
@@ -951,6 +957,7 @@ private:
         return;
       }
     }
+#endif
 
     oa_runtime_status stop_status = OA_RUNTIME_OK;
     if (snapshot_.lifecycle == kLifecycleArmedIdle || snapshot_.lifecycle == kLifecycleExecuting) {
@@ -967,8 +974,21 @@ private:
     // Completion wins if stop/drain consumed this exact command. A copied
     // pre-drain command is never terminal authority.
     if (active_command) {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (!active_ || active_->command_id != command_id) {
+      bool completion_drained = false;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        completion_drained = !active_ || active_->command_id != command_id;
+      }
+      if (completion_drained) {
+        // Runtime accepted the disable stop before the queued completion was
+        // observed. Preserve the completed terminal, but report its resulting
+        // disarmed lifecycle truthfully and require a restart.
+        if (stop_status == OA_RUNTIME_OK && refresh_stopped_snapshot()) {
+          std::lock_guard<std::mutex> reconcile_lock(mutex_);
+          health_.adapter_state = AdapterState::stopped_requires_restart;
+          health_.reason = "completed_disable_stop";
+          notify_health_unlocked();
+        }
         return;
       }
     } else if (command) {

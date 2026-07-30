@@ -82,8 +82,10 @@ struct SessionCommand
   std::array<double, 3> right_tcp_m{};
   std::function<bool(const CommandFeedback &)> feedback;
   std::function<bool(const CommandResult &)> terminal;
-  // Internal deterministic lifecycle-test barrier. Production callers leave it empty.
+#ifdef OPENARM_IK_ROS_TESTING
+  // Internal deterministic lifecycle-test barrier; absent from production builds.
   std::function<void(std::uint64_t)> cancel_captured_for_test;
+#endif
 };
 
 struct SessionHealth

@@ -117,6 +117,7 @@ install(FILES "${openarm_model_GENERATED_URDF}" DESTINATION share/${PROJECT_NAME
 install(FILES "${OPENARM_STAGE_A_VISUALIZATION_URDF}" DESTINATION share/${PROJECT_NAME}/urdf)
 
 if(BUILD_TESTING)
+  target_compile_definitions(openarm_virtual_control_session PUBLIC OPENARM_IK_ROS_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   ament_add_gtest(test_virtual_control_session test/test_virtual_control_session.cpp)

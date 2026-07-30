@@ -574,7 +574,7 @@ TEST(VirtualControlSession, ActiveShutdownStopsAndReportsMeasuredProvenanceOnce)
     recorder.result->terminal_feedback_seq[1], recorder.result->seed_feedback_seq[1]);
 }
 
-TEST(VirtualControlSession, CapturedCancelHasExactlyOneTerminalResult)
+TEST(VirtualControlSession, CompletionBeforeDisableStopHasOneTerminalAndDisarmedHealth)
 {
   Recorder recorder;
   std::mutex barrier_mutex;
@@ -603,12 +603,13 @@ TEST(VirtualControlSession, CapturedCancelHasExactlyOneTerminalResult)
   ASSERT_TRUE(wait_health(session, [](const auto & health) {
       return health.adapter_state == openarm_ik_ros::AdapterState::executing;
     }, 10s));
+  std::this_thread::sleep_for(60ms);
   ASSERT_TRUE(session.cancel("completion-boundary"));
   {
     std::unique_lock<std::mutex> lock(barrier_mutex);
     ASSERT_TRUE(barrier_condition.wait_for(lock, 2s, [&]() {return captured;}));
   }
-  std::this_thread::sleep_for(40ms);
+  std::this_thread::sleep_for(60ms);
   {
     std::lock_guard<std::mutex> lock(barrier_mutex);
     release = true;
@@ -616,11 +617,11 @@ TEST(VirtualControlSession, CapturedCancelHasExactlyOneTerminalResult)
   }
   ASSERT_TRUE(recorder.wait_result(5s));
   EXPECT_EQ(recorder.terminal_count, 1U);
-  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::canceled);
+  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::completed);
   EXPECT_TRUE(wait_health(session, [](const auto & health) {
       return health.adapter_state == openarm_ik_ros::AdapterState::stopped_requires_restart;
     }, 2s));
-  EXPECT_FALSE(session.reserve("after-cancel", reason));
+  EXPECT_FALSE(session.reserve("after-completion", reason));
   EXPECT_EQ(reason, "stopped_requires_restart");
 }
 
@@ -651,6 +652,29 @@ TEST(VirtualControlSession, ReentrantHealthCallbackNeverRunsUnderSessionMutex)
   ASSERT_TRUE(session.submit(std::move(command), reason));
   ASSERT_TRUE(recorder.wait_result(10s));
   EXPECT_GE(callbacks.load(), 2U);
+  const auto begin = std::chrono::steady_clock::now();
+  session.close();
+  EXPECT_LT(std::chrono::steady_clock::now() - begin, 2s);
+}
+
+TEST(VirtualControlSession, HealthCallbackCanRequestCloseWithoutSelfJoin)
+{
+  Recorder recorder;
+  VirtualControlSession * session_ptr = nullptr;
+  std::atomic<bool> requested_close{};
+  VirtualControlSession session(
+    [&recorder](const MeasuredState & value) {return recorder.state(value);},
+    [&]() {
+      if (session_ptr != nullptr && !requested_close.exchange(true)) {
+        session_ptr->close();
+      }
+    });
+  session_ptr = &session;
+  std::string reason;
+  ASSERT_TRUE(session.reserve("close-from-health", reason));
+  ASSERT_TRUE(wait_health(session, [&](const auto & health) {
+      return requested_close.load() && health.adapter_state == openarm_ik_ros::AdapterState::closing;
+    }, 2s));
   const auto begin = std::chrono::steady_clock::now();
   session.close();
   EXPECT_LT(std::chrono::steady_clock::now() - begin, 2s);
