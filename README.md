@@ -44,7 +44,7 @@ use at most two jobs by default; set `OPENARM_BUILD_JOBS` or pass `--jobs` to
 choose a different positive limit. ROS packages build sequentially so this
 limit remains global rather than multiplying across packages. To compile
 and run every registered hardware-free native CTest while verifying that all
-14 ROS tests are freshly registered, use:
+15 ROS tests are freshly registered, use:
 
 ```bash
 ./scripts/build.sh --tests
