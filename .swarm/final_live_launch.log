@@ -1,0 +1,12 @@
+LIVE_START=1785371801.631740664 SHELL=2733669
+OpenArm RViz renderer: Mesa software rasterizer (XWayland/GLX)
+[INFO] [launch]: All log files can be found below /home/signalprocessing-dev/.ros/log/2026-07-29-17-36-42-525726-Legion-Pro-5-16ADR10-2733729
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [robot_state_publisher-1]: process started with pid [2733818]
+[INFO] [openarm_ik_ros_node-2]: process started with pid [2733819]
+[robot_state_publisher-1] [INFO] [1785371802.638175339] [robot_state_publisher]: Robot initialized
+[openarm_ik_ros_node-2] [WARN] [1785371802.646309576] [openarm_ik_ros]: Virtual measured-feedback control active; collision checking is unavailable and physical control is unsupported.
+[INFO] [1785371803.459431741] [rviz2]: Stereo is NOT SUPPORTED
+[INFO] [1785371803.459597964] [rviz2]: OpenGl version: 4.5 (GLSL 4.5)
+[INFO] [1785371803.490551047] [rviz2]: Stereo is NOT SUPPORTED
+LIVE_END=1785372008.517447004 STATUS=130

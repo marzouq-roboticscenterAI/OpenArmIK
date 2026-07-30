@@ -1,0 +1,34 @@
+Test project /var/tmp/openarmik-final-integration.jWHs9v/out/build/openarm_ik_ros
+      Start  1: test_virtual_control_session
+ 1/13 Test  #1: test_virtual_control_session .............   Passed   24.69 sec
+      Start  2: test_portal_core
+ 2/13 Test  #2: test_portal_core .........................   Passed    0.07 sec
+      Start  3: test_cli_server_lifecycle
+ 3/13 Test  #3: test_cli_server_lifecycle ................   Passed   21.66 sec
+      Start  4: test_no_can_linkage
+ 4/13 Test  #4: test_no_can_linkage ......................   Passed    1.20 sec
+      Start  5: test_generated_urdf
+ 5/13 Test  #5: test_generated_urdf ......................   Passed    0.03 sec
+      Start  6: test_visualization_urdf
+ 6/13 Test  #6: test_visualization_urdf ..................   Passed    0.06 sec
+      Start  7: test_visualization_urdf_parser
+ 7/13 Test  #7: test_visualization_urdf_parser ...........   Passed    0.00 sec
+      Start  8: test_invalid_expiry_parameter
+ 8/13 Test  #8: test_invalid_expiry_parameter ............   Passed    1.52 sec
+      Start  9: test_ros_contract
+ 9/13 Test  #9: test_ros_contract ........................   Passed   31.43 sec
+      Start 10: test_active_sigint
+10/13 Test #10: test_active_sigint .......................   Passed   11.16 sec
+      Start 11: test_close_rviz_window_help
+11/13 Test #11: test_close_rviz_window_help ..............   Passed    0.00 sec
+      Start 12: test_close_rviz_window_invalid_pid
+12/13 Test #12: test_close_rviz_window_invalid_pid .......   Passed    0.00 sec
+      Start 13: test_close_rviz_window_invalid_timeout
+13/13 Test #13: test_close_rviz_window_invalid_timeout ...   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 13
+
+Label Time Summary:
+gtest    =  24.76 sec*proc (2 tests)
+
+Total Test time (real) =  91.84 sec

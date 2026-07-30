@@ -1,0 +1,4 @@
+ACTIVE_CLI_START=1785371995.884681852 SHELL=2739864
+action server lost after goal acceptance
+[ros2run]: Process exited with failure 8
+ACTIVE_CLI_END=1785372009.165329338 STATUS=8

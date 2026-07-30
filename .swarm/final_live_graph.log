@@ -1,0 +1,209 @@
+NODES
+/openarm_ik_ros
+/robot_state_publisher
+/rviz2
+/transform_listener_impl_5d7a8d695b00
+JOINT_STATES
+Type: sensor_msgs/msg/JointState
+
+Publisher count: 1
+
+Node name: openarm_ik_ros
+Node namespace: /
+Topic type: sensor_msgs/msg/JointState
+Topic type hash: RIHS01_a13ee3a330e346c9d87b5aa18d24e11690752bd33a0350f11c5882bc9179260e
+Endpoint type: PUBLISHER
+GID: 01.0f.21.a5.fb.b6.3d.b6.00.00.00.00.00.00.13.03
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): KEEP_LAST (10)
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Subscription count: 1
+
+Node name: robot_state_publisher
+Node namespace: /
+Topic type: sensor_msgs/msg/JointState
+Topic type hash: RIHS01_a13ee3a330e346c9d87b5aa18d24e11690752bd33a0350f11c5882bc9179260e
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.21.a5.fa.b6.78.dd.00.00.00.00.00.00.17.04
+QoS profile:
+  Reliability: BEST_EFFORT
+  History (Depth): KEEP_LAST (5)
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+TF
+Type: tf2_msgs/msg/TFMessage
+
+Publisher count: 1
+
+Node name: robot_state_publisher
+Node namespace: /
+Topic type: tf2_msgs/msg/TFMessage
+Topic type hash: RIHS01_e369d0f05a23ae52508854b66f6aa0437f3449d652e8cbf22d5abe85d020f087
+Endpoint type: PUBLISHER
+GID: 01.0f.21.a5.fa.b6.78.dd.00.00.00.00.00.00.15.03
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): KEEP_LAST (100)
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Subscription count: 2
+
+Node name: transform_listener_impl_5d7a8d695b00
+Node namespace: /
+Topic type: tf2_msgs/msg/TFMessage
+Topic type hash: RIHS01_e369d0f05a23ae52508854b66f6aa0437f3449d652e8cbf22d5abe85d020f087
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.21.a5.a2.b6.0d.f9.00.00.00.00.00.00.16.04
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): KEEP_LAST (100)
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Node name: openarm_ik_ros
+Node namespace: /
+Topic type: tf2_msgs/msg/TFMessage
+Topic type hash: RIHS01_e369d0f05a23ae52508854b66f6aa0437f3449d652e8cbf22d5abe85d020f087
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.21.a5.fb.b6.3d.b6.00.00.00.00.00.00.15.04
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): KEEP_LAST (100)
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+TF_STATIC
+Type: tf2_msgs/msg/TFMessage
+
+Publisher count: 1
+
+Node name: robot_state_publisher
+Node namespace: /
+Topic type: tf2_msgs/msg/TFMessage
+Topic type hash: RIHS01_e369d0f05a23ae52508854b66f6aa0437f3449d652e8cbf22d5abe85d020f087
+Endpoint type: PUBLISHER
+GID: 01.0f.21.a5.fa.b6.78.dd.00.00.00.00.00.00.16.03
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): KEEP_LAST (1)
+  Durability: TRANSIENT_LOCAL
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Subscription count: 2
+
+Node name: transform_listener_impl_5d7a8d695b00
+Node namespace: /
+Topic type: tf2_msgs/msg/TFMessage
+Topic type hash: RIHS01_e369d0f05a23ae52508854b66f6aa0437f3449d652e8cbf22d5abe85d020f087
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.21.a5.a2.b6.0d.f9.00.00.00.00.00.00.17.04
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): KEEP_LAST (100)
+  Durability: TRANSIENT_LOCAL
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Node name: openarm_ik_ros
+Node namespace: /
+Topic type: tf2_msgs/msg/TFMessage
+Topic type hash: RIHS01_e369d0f05a23ae52508854b66f6aa0437f3449d652e8cbf22d5abe85d020f087
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.21.a5.fb.b6.3d.b6.00.00.00.00.00.00.16.04
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): KEEP_LAST (100)
+  Durability: TRANSIENT_LOCAL
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+ACTIONS
+/openarm_ik/move_joint [openarm_control_msgs/action/MoveJoint]
+/openarm_ik/move_paired_tcp [openarm_control_msgs/action/MovePairedTcp]
+STATUS
+virtual backend; collision unchecked
+backend=virtual
+capability_bits=7
+virtual_execution_enabled=true
+physical_motion_authorized=false
+collision_policy=virtual_unchecked
+collision_checked=false
+orientation_constrained=false
+state_source=oa_snapshot_encoder_feedback
+adapter_state=idle
+lifecycle=4
+executing=false
+active_owner=
+command_id=0
+left_plan_seed_feedback_seq=0
+right_plan_seed_feedback_seq=0
+plan_duration_ns=0
+left_terminal_feedback_seq=0
+right_terminal_feedback_seq=0
+last_event=2
+last_cause=0
+manifest_revision=41
+model_revision=7
+collision_scene_revision=1
+verify_epoch=1
+left_expected_mask=127
+left_fresh_mask=127
+left_fault_mask=0
+right_expected_mask=127
+right_fresh_mask=127
+right_fault_mask=0
+left_feedback_seq=2252
+right_feedback_seq=2252
+left_feedback_t_ns=11250062335
+right_feedback_t_ns=11250062335
+left_feedback_age_ns=0
+right_feedback_age_ns=0
+pair_skew_ns=0
+last_action=startup
+last_goal_id=
+request_stamp_ns=0
+committed=false
+reason=ready
+outcome=none
+result_control_status=0
+result_command_id=0
+result_left_plan_seed_feedback_seq=0
+result_right_plan_seed_feedback_seq=0
+result_plan_duration_ns=0
+result_left_terminal_feedback_seq=0
+result_right_terminal_feedback_seq=0
+result_lifecycle=0
+result_event=0
+result_cause=0
+result_collision_checked=false
+legacy_topic_deprecated=true
+legacy_mapping=pose[0]=left,pose[1]=right
+URDF_COUNTS
+links=26 joints=29 movable=18 fixed=11

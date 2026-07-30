@@ -1,0 +1,10 @@
+[ 50%] Building CXX object CMakeFiles/openarm_control_cli.dir/src/openarm_control_cli.cpp.o
+[100%] Linking CXX executable openarm_control_cli
+[100%] Built target openarm_control_cli
+Test project /var/tmp/openarmik-final-integration.jWHs9v/ros_asan
+    Start 3: test_cli_server_lifecycle
+1/1 Test #3: test_cli_server_lifecycle ........   Passed   22.41 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =  22.41 sec

@@ -1,0 +1,68 @@
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found ament_cmake: 2.8.7 (/opt/ros/lyrical/share/ament_cmake/cmake)
+-- Found diagnostic_msgs: 5.9.2 (/opt/ros/lyrical/share/diagnostic_msgs/cmake)
+-- Found rosidl_generator_c: 5.2.1 (/opt/ros/lyrical/share/rosidl_generator_c/cmake)
+-- Found rosidl_generator_cpp: 5.2.1 (/opt/ros/lyrical/share/rosidl_generator_cpp/cmake)
+-- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+-- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+-- Found geometry_msgs: 5.9.2 (/opt/ros/lyrical/share/geometry_msgs/cmake)
+-- Found JPEG: /usr/lib/x86_64-linux-gnu/libjpeg.so (found version "80")
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Found openarm_control_msgs: 0.1.0 (/var/tmp/openarmik-final-integration.jWHs9v/out/install/openarm_control_msgs/share/openarm_control_msgs/cmake)
+-- Found openarm_description: 1.0.0 (/var/tmp/openarmik-final-integration.jWHs9v/out/install/openarm_description/share/openarm_description/cmake)
+-- Found rclcpp: 32.0.0 (/opt/ros/lyrical/share/rclcpp/cmake)
+-- Found rmw_implementation_cmake: 7.10.1 (/opt/ros/lyrical/share/rmw_implementation_cmake/cmake)
+-- Found rmw_fastrtps_cpp: 9.4.8 (/opt/ros/lyrical/share/rmw_fastrtps_cpp/cmake)
+-- Using RMW implementation 'rmw_fastrtps_cpp' as default
+-- Found rclcpp_action: 32.0.0 (/opt/ros/lyrical/share/rclcpp_action/cmake)
+-- Found sensor_msgs: 5.9.2 (/opt/ros/lyrical/share/sensor_msgs/cmake)
+-- Found tf2: 0.45.7 (/opt/ros/lyrical/share/tf2/cmake)
+-- Found tf2_geometry_msgs: 0.45.7 (/opt/ros/lyrical/share/tf2_geometry_msgs/cmake)
+-- Found X11: /usr/include
+-- Looking for XOpenDisplay in /usr/lib/x86_64-linux-gnu/libX11.so;/usr/lib/x86_64-linux-gnu/libXext.so
+-- Looking for XOpenDisplay in /usr/lib/x86_64-linux-gnu/libX11.so;/usr/lib/x86_64-linux-gnu/libXext.so - found
+-- Looking for gethostbyname
+-- Looking for gethostbyname - found
+-- Looking for connect
+-- Looking for connect - found
+-- Looking for remove
+-- Looking for remove - found
+-- Looking for shmat
+-- Looking for shmat - found
+-- Looking for IceConnectionNumber in ICE
+-- Looking for IceConnectionNumber in ICE - found
+-- Found ament_cmake_gtest: 2.8.7 (/opt/ros/lyrical/share/ament_cmake_gtest/cmake)
+-- Found Python3: /usr/bin/python3 (found version "3.14.4") found components: Interpreter
+-- Found GTest: /usr/lib/x86_64-linux-gnu/cmake/GTest/GTestConfig.cmake (found version "1.17.0")
+-- Configuring done (1.5s)
+-- Generating done (0.0s)
+-- Build files have been written to: /var/tmp/openarmik-final-integration.jWHs9v/ros_tsan
+[ 25%] Building CXX object CMakeFiles/openarm_virtual_control_session.dir/src/virtual_control_session.cpp.o
+[ 50%] Linking CXX static library libopenarm_virtual_control_session.a
+[ 50%] Built target openarm_virtual_control_session
+[ 75%] Building CXX object CMakeFiles/test_virtual_control_session.dir/test/test_virtual_control_session.cpp.o
+[100%] Linking CXX executable test_virtual_control_session
+[100%] Built target test_virtual_control_session
+Test project /var/tmp/openarmik-final-integration.jWHs9v/ros_tsan
+    Start 1: test_virtual_control_session
+1/1 Test #1: test_virtual_control_session .....   Passed   24.72 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Label Time Summary:
+gtest    =  24.72 sec*proc (1 test)
+
+Total Test time (real) =  24.72 sec

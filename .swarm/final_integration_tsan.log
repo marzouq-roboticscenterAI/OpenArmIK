@@ -1,0 +1,330 @@
+TSAN_CONFIGURE transport
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Configuring done (0.3s)
+-- Generating done (0.0s)
+-- Build files have been written to: /var/tmp/openarmik-final-integration.jWHs9v/tsan/transport
+[ 25%] Building CXX object CMakeFiles/openarm_transport.dir/src/c_api.cpp.o
+[ 25%] Building CXX object CMakeFiles/openarm_transport.dir/src/socketcan_backend.cpp.o
+[ 37%] Building CXX object CMakeFiles/openarm_transport.dir/src/transport.cpp.o
+[ 50%] Linking CXX static library libopenarm_transport.a
+[ 50%] Built target openarm_transport
+[ 75%] Building CXX object CMakeFiles/openarm_transport_tests.dir/tests/test_transport.cpp.o
+[ 75%] Building C object CMakeFiles/openarm_transport_c11_consumer.dir/tests/c11_consumer.c.o
+[ 87%] Linking CXX executable openarm_transport_c11_consumer
+[ 87%] Built target openarm_transport_c11_consumer
+[100%] Linking CXX executable openarm_transport_tests
+[100%] Built target openarm_transport_tests
+Test project /var/tmp/openarmik-final-integration.jWHs9v/tsan/transport
+    Start 1: openarm_transport_tests
+1/2 Test #1: openarm_transport_tests ..........   Passed    0.02 sec
+    Start 2: openarm_transport_c11_consumer
+2/2 Test #2: openarm_transport_c11_consumer ...   Passed    0.02 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   0.04 sec
+-- Install configuration: "Debug"
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/lib/libopenarm_transport.a
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/include/openarm_transport.h
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/lib/cmake/OpenArmTransport/OpenArmTransportTargets.cmake
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/lib/cmake/OpenArmTransport/OpenArmTransportTargets-debug.cmake
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/lib/cmake/OpenArmTransport/OpenArmTransportConfig.cmake
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/lib/cmake/OpenArmTransport/OpenArmTransportConfigVersion.cmake
+TSAN_CONFIGURE control
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Performing Test oa_model_control_legacy_c11_compiles
+-- Performing Test oa_model_control_legacy_c11_compiles - Failed
+-- Performing Test oa_model_control_legacy_cxx17_compiles
+-- Performing Test oa_model_control_legacy_cxx17_compiles - Failed
+-- Performing Test oa_control_model_legacy_c11_compiles
+-- Performing Test oa_control_model_legacy_c11_compiles - Failed
+-- Performing Test oa_control_model_legacy_cxx17_compiles
+-- Performing Test oa_control_model_legacy_cxx17_compiles - Failed
+-- Performing Test oa_model_late_optout_legacy_c11_compiles
+-- Performing Test oa_model_late_optout_legacy_c11_compiles - Failed
+-- Performing Test oa_model_late_optout_legacy_cxx17_compiles
+-- Performing Test oa_model_late_optout_legacy_cxx17_compiles - Failed
+-- Performing Test oa_control_late_optout_legacy_c11_compiles
+-- Performing Test oa_control_late_optout_legacy_c11_compiles - Failed
+-- Performing Test oa_control_late_optout_legacy_cxx17_compiles
+-- Performing Test oa_control_late_optout_legacy_cxx17_compiles - Failed
+-- Configuring done (0.6s)
+-- Generating done (0.1s)
+-- Build files have been written to: /var/tmp/openarmik-final-integration.jWHs9v/tsan/control
+[  1%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_transport_c_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_transport_c_canonical.c.o
+[  2%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_commission_c_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_commission_c_legacy.c.o
+[  4%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_commission_c_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_commission_c_canonical.c.o
+[  4%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_model_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_model_cxx_legacy.cpp.o
+[  9%] Building CXX object CMakeFiles/openarm_control.dir/src/c_api.cpp.o
+[  9%] Building CXX object CMakeFiles/openarm_control.dir/src/control_core.cpp.o
+[  9%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_model_c_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_model_c_legacy.c.o
+[  9%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_model_c_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_model_c_canonical.c.o
+[  9%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_model_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_model_cxx_canonical.cpp.o
+[ 10%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_transport_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_transport_cxx_canonical.cpp.o
+[ 11%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_control_c_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_control_c_legacy.c.o
+[ 13%] Building CXX object CMakeFiles/openarm_control.dir/src/kinematics.cpp.o
+[ 13%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_commission_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_commission_cxx_canonical.cpp.o
+[ 15%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_control_c_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_control_c_canonical.c.o
+[ 15%] Building CXX object CMakeFiles/openarm_control.dir/src/standard_manifest.cpp.o
+[ 16%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_control_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_can_openarm_control_cxx_canonical.cpp.o
+[ 17%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_can_c_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_can_c_legacy.c.o
+[ 18%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_can_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_can_cxx_legacy.cpp.o
+[ 19%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_transport_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_transport_cxx_legacy.cpp.o
+[ 20%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_can_c_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_can_c_canonical.c.o
+[ 22%] Building C object CMakeFiles/oa_headers_openarm_can_openarm_transport_c_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_transport_c_legacy.c.o
+[ 22%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_can_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_can_cxx_canonical.cpp.o
+[ 23%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_commission_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_commission_cxx_legacy.cpp.o
+[ 25%] Building CXX object CMakeFiles/oa_headers_openarm_can_openarm_control_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_can_openarm_control_cxx_legacy.cpp.o
+[ 26%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_transport_c_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_transport_c_legacy.c.o
+[ 29%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_commission_c_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_commission_c_canonical.c.o
+[ 29%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_commission_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_commission_cxx_legacy.cpp.o
+[ 29%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_commission_c_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_commission_c_legacy.c.o
+[ 30%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_transport_c_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_transport_c_canonical.c.o
+[ 31%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_commission_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_commission_cxx_canonical.cpp.o
+[ 32%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_transport_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_transport_cxx_canonical.cpp.o
+[ 33%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_can_c_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_can_c_legacy.c.o
+[ 34%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_can_c_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_can_c_canonical.c.o
+[ 35%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_transport_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_model_openarm_transport_cxx_legacy.cpp.o
+[ 36%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_can_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_can_cxx_canonical.cpp.o
+[ 37%] Building CXX object CMakeFiles/oa_headers_openarm_model_openarm_control_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_control_cxx_canonical.cpp.o
+[ 38%] Building C object CMakeFiles/oa_headers_openarm_model_openarm_control_c_canonical.dir/public_header_matrix/oa_headers_openarm_model_openarm_control_c_canonical.c.o
+[ 39%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_can_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_can_cxx_legacy.cpp.o
+[ 39%] Built target oa_headers_openarm_can_openarm_model_c_canonical
+[ 39%] Built target oa_headers_openarm_can_openarm_commission_c_legacy
+[ 39%] Built target oa_headers_openarm_can_openarm_transport_cxx_canonical
+[ 39%] Built target oa_headers_openarm_can_openarm_control_c_legacy
+[ 39%] Built target oa_headers_openarm_can_openarm_control_cxx_canonical
+[ 39%] Built target oa_headers_openarm_model_openarm_can_cxx_legacy
+[ 39%] Built target oa_headers_openarm_model_openarm_can_c_legacy
+[ 39%] Built target oa_headers_openarm_can_openarm_model_c_legacy
+[ 39%] Built target oa_headers_openarm_can_openarm_control_c_canonical
+[ 39%] Built target oa_headers_openarm_can_openarm_transport_c_canonical
+[ 39%] Built target oa_headers_openarm_can_openarm_transport_c_legacy
+[ 39%] Built target oa_headers_openarm_can_openarm_commission_c_canonical
+[ 39%] Built target oa_headers_openarm_model_openarm_transport_c_legacy
+[ 39%] Built target oa_headers_openarm_can_openarm_model_cxx_canonical
+[ 39%] Built target oa_headers_openarm_model_openarm_can_c_canonical
+[ 39%] Built target oa_headers_openarm_can_openarm_commission_cxx_canonical
+[ 39%] Built target oa_headers_openarm_model_openarm_transport_cxx_canonical
+[ 39%] Built target oa_headers_openarm_model_openarm_commission_c_canonical
+[ 39%] Built target oa_headers_openarm_model_openarm_commission_cxx_legacy
+[ 39%] Built target oa_headers_openarm_can_openarm_transport_cxx_legacy
+[ 39%] Built target oa_headers_openarm_model_openarm_commission_c_legacy
+[ 39%] Built target oa_headers_openarm_can_openarm_control_cxx_legacy
+[ 39%] Built target oa_headers_openarm_transport_openarm_can_c_legacy
+[ 39%] Built target oa_headers_openarm_model_openarm_transport_c_canonical
+[ 39%] Built target oa_headers_openarm_model_openarm_commission_cxx_canonical
+[ 39%] Built target oa_headers_openarm_transport_openarm_can_c_canonical
+[ 40%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_model_c_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_model_c_legacy.c.o
+[ 41%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_model_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_model_cxx_canonical.cpp.o
+[ 43%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_model_c_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_model_c_canonical.c.o
+[ 43%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_model_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_model_cxx_legacy.cpp.o
+[ 43%] Built target oa_headers_openarm_can_openarm_model_cxx_legacy
+[ 44%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_commission_c_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_commission_c_legacy.c.o
+[ 44%] Built target oa_headers_openarm_model_openarm_control_c_canonical
+[ 44%] Built target oa_headers_openarm_model_openarm_can_cxx_canonical
+[ 44%] Built target oa_headers_openarm_model_openarm_transport_cxx_legacy
+[ 44%] Built target oa_headers_openarm_transport_openarm_can_cxx_canonical
+[ 44%] Built target oa_headers_openarm_model_openarm_control_cxx_canonical
+[ 44%] Built target oa_headers_openarm_can_openarm_commission_cxx_legacy
+[ 47%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_control_c_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_control_c_legacy.c.o
+[ 47%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_commission_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_commission_cxx_legacy.cpp.o
+[ 47%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_commission_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_commission_cxx_canonical.cpp.o
+[ 51%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_can_c_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_can_c_canonical.c.o
+[ 51%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_control_c_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_control_c_canonical.c.o
+[ 51%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_control_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_transport_openarm_control_cxx_legacy.cpp.o
+[ 52%] Building C object CMakeFiles/oa_headers_openarm_transport_openarm_commission_c_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_commission_c_canonical.c.o
+[ 53%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_can_c_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_can_c_legacy.c.o
+[ 54%] Building CXX object CMakeFiles/oa_headers_openarm_transport_openarm_control_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_transport_openarm_control_cxx_canonical.cpp.o
+[ 55%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_can_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_can_cxx_legacy.cpp.o
+[ 55%] Built target oa_headers_openarm_transport_openarm_can_cxx_legacy
+[ 55%] Built target oa_headers_openarm_transport_openarm_commission_c_legacy
+[ 56%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_model_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_model_cxx_legacy.cpp.o
+[ 57%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_model_c_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_model_c_canonical.c.o
+[ 57%] Built target oa_headers_openarm_transport_openarm_model_cxx_legacy
+[ 57%] Built target oa_headers_openarm_transport_openarm_model_c_legacy
+[ 57%] Built target oa_headers_openarm_transport_openarm_model_cxx_canonical
+[ 57%] Built target oa_headers_openarm_transport_openarm_control_c_canonical
+[ 57%] Built target oa_headers_openarm_transport_openarm_commission_cxx_canonical
+[ 57%] Built target oa_headers_openarm_transport_openarm_commission_cxx_legacy
+[ 57%] Built target oa_headers_openarm_transport_openarm_model_c_canonical
+[ 57%] Built target oa_headers_openarm_transport_openarm_commission_c_canonical
+[ 57%] Built target oa_headers_openarm_transport_openarm_control_cxx_canonical
+[ 57%] Built target oa_headers_openarm_commission_openarm_can_c_legacy
+[ 57%] Built target oa_headers_openarm_commission_openarm_can_c_canonical
+[ 57%] Built target oa_headers_openarm_transport_openarm_control_c_legacy
+[ 58%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_can_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_can_cxx_canonical.cpp.o
+[ 58%] Built target oa_headers_openarm_transport_openarm_control_cxx_legacy
+[ 58%] Built target oa_headers_openarm_commission_openarm_can_cxx_legacy
+[ 59%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_transport_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_transport_cxx_legacy.cpp.o
+[ 60%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_control_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_control_cxx_canonical.cpp.o
+[ 61%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_control_c_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_control_c_canonical.c.o
+[ 62%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_transport_c_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_transport_c_canonical.c.o
+[ 63%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_transport_c_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_transport_c_legacy.c.o
+[ 64%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_control_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_control_cxx_legacy.cpp.o
+[ 65%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_transport_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_transport_cxx_canonical.cpp.o
+[ 67%] Building CXX object CMakeFiles/oa_headers_openarm_commission_openarm_model_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_commission_openarm_model_cxx_canonical.cpp.o
+[ 68%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_control_c_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_control_c_legacy.c.o
+[ 66%] Building C object CMakeFiles/oa_headers_openarm_commission_openarm_model_c_legacy.dir/public_header_matrix/oa_headers_openarm_commission_openarm_model_c_legacy.c.o
+[ 68%] Built target oa_headers_openarm_commission_openarm_model_cxx_legacy
+[ 70%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_can_c_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_can_c_legacy.c.o
+[ 70%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_can_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_can_cxx_canonical.cpp.o
+[ 71%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_transport_c_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_transport_c_canonical.c.o
+[ 72%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_transport_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_transport_cxx_legacy.cpp.o
+[ 72%] Built target oa_headers_openarm_commission_openarm_model_c_canonical
+[ 73%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_can_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_can_cxx_legacy.cpp.o
+[ 75%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_model_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_model_cxx_canonical.cpp.o
+[ 76%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_transport_c_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_transport_c_legacy.c.o
+[ 77%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_model_c_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_model_c_canonical.c.o
+[ 77%] Built target oa_headers_openarm_commission_openarm_can_cxx_canonical
+[ 78%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_commission_c_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_commission_c_legacy.c.o
+[ 79%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_can_c_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_can_c_canonical.c.o
+[ 80%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_transport_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_transport_cxx_canonical.cpp.o
+[ 81%] Building C object CMakeFiles/oa_headers_openarm_control_openarm_commission_c_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_commission_c_canonical.c.o
+[ 82%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_commission_cxx_legacy.dir/public_header_matrix/oa_headers_openarm_control_openarm_commission_cxx_legacy.cpp.o
+[ 82%] Built target oa_headers_openarm_commission_openarm_transport_cxx_legacy
+[ 82%] Built target oa_headers_openarm_commission_openarm_transport_c_canonical
+[ 82%] Built target oa_headers_openarm_commission_openarm_control_cxx_legacy
+[ 82%] Built target oa_headers_openarm_commission_openarm_model_c_legacy
+[ 82%] Built target oa_headers_openarm_commission_openarm_control_c_canonical
+[ 82%] Built target oa_headers_openarm_commission_openarm_control_c_legacy
+[ 83%] Building CXX object CMakeFiles/oa_headers_openarm_control_openarm_commission_cxx_canonical.dir/public_header_matrix/oa_headers_openarm_control_openarm_commission_cxx_canonical.cpp.o
+[ 83%] Built target oa_headers_openarm_commission_openarm_control_cxx_canonical
+[ 84%] Building CXX object CMakeFiles/openarm_public_headers_cxx17.dir/tests/public_headers_cxx17.cpp.o
+[ 85%] Building C object CMakeFiles/openarm_public_headers_c11.dir/tests/public_headers_c11.c.o
+[ 85%] Built target oa_headers_openarm_commission_openarm_model_cxx_canonical
+[ 85%] Built target oa_headers_openarm_commission_openarm_transport_c_legacy
+[ 85%] Built target oa_headers_openarm_commission_openarm_transport_cxx_canonical
+[ 85%] Built target oa_headers_openarm_control_openarm_transport_c_canonical
+[ 85%] Built target oa_headers_openarm_control_openarm_transport_cxx_legacy
+[ 85%] Built target oa_headers_openarm_control_openarm_can_cxx_canonical
+[ 85%] Built target oa_headers_openarm_control_openarm_model_cxx_canonical
+[ 85%] Built target oa_headers_openarm_control_openarm_can_c_legacy
+[ 85%] Built target oa_headers_openarm_control_openarm_transport_c_legacy
+[ 85%] Built target oa_headers_openarm_control_openarm_can_cxx_legacy
+[ 86%] Building C object CMakeFiles/openarm_legacy_control_status.dir/tests/legacy_control_status.c.o
+[ 87%] Building C object CMakeFiles/openarm_legacy_model_status.dir/tests/legacy_model_status.c.o
+[ 88%] Building CXX object CMakeFiles/openarm_control_test.dir/src/c_api.cpp.o
+[ 89%] Building CXX object CMakeFiles/openarm_control_test.dir/src/control_core.cpp.o
+[ 89%] Built target oa_headers_openarm_control_openarm_model_c_canonical
+[ 89%] Built target oa_headers_openarm_control_openarm_commission_c_legacy
+[ 90%] Building CXX object CMakeFiles/openarm_control_test.dir/src/standard_manifest.cpp.o
+[ 90%] Built target oa_headers_openarm_control_openarm_transport_cxx_canonical
+[ 90%] Built target oa_headers_openarm_control_openarm_can_c_canonical
+[ 90%] Built target oa_headers_openarm_control_openarm_commission_cxx_legacy
+[ 91%] Building CXX object CMakeFiles/openarm_control_test.dir/src/kinematics.cpp.o
+[ 91%] Built target oa_headers_openarm_control_openarm_commission_c_canonical
+[ 91%] Built target oa_headers_openarm_control_openarm_commission_cxx_canonical
+[ 91%] Built target openarm_public_headers_c11
+[ 91%] Built target openarm_legacy_model_status
+[ 91%] Built target openarm_legacy_control_status
+[ 91%] Built target openarm_public_headers_cxx17
+[ 92%] Linking CXX static library libopenarm_control.a
+[ 92%] Built target openarm_control
+[ 93%] Building C object CMakeFiles/openarm_control_v1_original_abi.dir/tests/v1_original_abi_consumer.c.o
+[ 94%] Building C object CMakeFiles/openarm_control_c11_abi.dir/tests/c11_abi_consumer.c.o
+[ 95%] Linking CXX executable openarm_control_c11_abi
+[ 96%] Linking CXX executable openarm_control_v1_original_abi
+[ 97%] Linking CXX static library libopenarm_control_test.a
+[ 97%] Built target openarm_control_c11_abi
+[ 97%] Built target openarm_control_test
+[ 97%] Built target openarm_control_v1_original_abi
+[ 98%] Building CXX object CMakeFiles/openarm_control_tests.dir/tests/test_control.cpp.o
+[100%] Linking CXX executable openarm_control_tests
+[100%] Built target openarm_control_tests
+Test project /var/tmp/openarmik-final-integration.jWHs9v/tsan/control
+    Start 1: openarm_control_tests
+1/3 Test #1: openarm_control_tests .............   Passed    0.62 sec
+    Start 2: openarm_control_c11_abi
+2/3 Test #2: openarm_control_c11_abi ...........   Passed    0.02 sec
+    Start 3: openarm_control_v1_original_abi
+3/3 Test #3: openarm_control_v1_original_abi ...   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   0.65 sec
+-- Install configuration: "Debug"
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/lib/libopenarm_control.a
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/include/openarm_control.h
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/lib/cmake/openarm_control/openarm_controlTargets.cmake
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/lib/cmake/openarm_control/openarm_controlTargets-debug.cmake
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/lib/cmake/openarm_control/openarm_controlConfig.cmake
+-- Installing: /var/tmp/openarmik-final-integration.jWHs9v/tsan/install/lib/cmake/openarm_control/openarm_controlConfigVersion.cmake
+TSAN_CONFIGURE runtime
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Configuring done (0.3s)
+-- Generating done (0.0s)
+-- Build files have been written to: /var/tmp/openarmik-final-integration.jWHs9v/tsan/runtime
+[ 11%] Building CXX object CMakeFiles/openarm_runtime.dir/src/manifest.cpp.o
+[ 11%] Building CXX object CMakeFiles/openarm_runtime.dir/src/calibration.cpp.o
+[ 33%] Building CXX object CMakeFiles/openarm_runtime.dir/src/persistence.cpp.o
+[ 33%] Building CXX object CMakeFiles/openarm_runtime.dir/src/runtime.cpp.o
+[ 33%] Building CXX object CMakeFiles/openarm_runtime.dir/src/inventory.cpp.o
+[ 33%] Building CXX object CMakeFiles/openarm_runtime.dir/src/sha256.cpp.o
+[ 44%] Building CXX object CMakeFiles/openarm_runtime_test.dir/src/calibration.cpp.o
+[ 44%] Building CXX object CMakeFiles/openarm_runtime_test.dir/src/inventory.cpp.o
+[ 50%] Building CXX object CMakeFiles/openarm_runtime_test.dir/src/persistence.cpp.o
+[ 55%] Building CXX object CMakeFiles/openarm_runtime_test.dir/src/sha256.cpp.o
+[ 61%] Building CXX object CMakeFiles/openarm_runtime_test.dir/src/runtime.cpp.o
+[ 66%] Building CXX object CMakeFiles/openarm_runtime_test.dir/src/manifest.cpp.o
+[ 72%] Linking CXX static library libopenarm_runtime_test.a
+[ 77%] Linking CXX static library libopenarm_runtime.a
+[ 77%] Built target openarm_runtime_test
+[ 83%] Building CXX object CMakeFiles/openarm_runtime_tests.dir/tests/test_runtime.cpp.o
+[ 83%] Built target openarm_runtime
+[ 88%] Building C object CMakeFiles/openarm_runtime_c11.dir/tests/c11_consumer.c.o
+[ 94%] Linking CXX executable openarm_runtime_c11
+[ 94%] Built target openarm_runtime_c11
+[100%] Linking CXX executable openarm_runtime_tests
+[100%] Built target openarm_runtime_tests
+Test project /var/tmp/openarmik-final-integration.jWHs9v/tsan/runtime
+    Start 1: openarm_runtime_tests
+1/2 Test #1: openarm_runtime_tests ............   Passed   19.29 sec
+    Start 2: openarm_runtime_c11
+2/2 Test #2: openarm_runtime_c11 ..............   Passed    0.02 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =  19.31 sec

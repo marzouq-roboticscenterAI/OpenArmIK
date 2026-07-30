@@ -1,0 +1,2 @@
+[image2 @ 0x5ca8ec6cc480] The specified filename '.swarm/final_integration_rviz.png' does not contain an image sequence pattern or a pattern is invalid.
+[image2 @ 0x5ca8ec6cc480] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.

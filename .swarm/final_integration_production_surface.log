@@ -1,0 +1,15 @@
+can production_defines=none
+model production_defines=none
+commission production_defines=none
+transport production_defines=none
+control production_defines=none
+runtime production_defines=none
+installed_test_archives=
+libopenarm_can.a suspicious_test_symbol_matches=0
+libopenarm_commission.a suspicious_test_symbol_matches=0
+libopenarm_control.a suspicious_test_symbol_matches=0
+libopenarm_model.a suspicious_test_symbol_matches=0
+libopenarm_runtime.a suspicious_test_symbol_matches=0
+libopenarm_transport.a suspicious_test_symbol_matches=0
+runtime_can_builders=oa_can_make_register_query_typed
+

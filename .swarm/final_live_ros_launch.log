@@ -1,0 +1,6 @@
+1785371802.5263894 [INFO] [launch]: All log files can be found below /home/signalprocessing-dev/.ros/log/2026-07-29-17-36-42-525726-Legion-Pro-5-16ADR10-2733729
+1785371802.5264735 [INFO] [launch]: Default logging verbosity is set to INFO
+1785371802.6073091 [INFO] [robot_state_publisher-1]: process started with pid [2733818]
+1785371802.6074252 [INFO] [openarm_ik_ros_node-2]: process started with pid [2733819]
+1785372008.3845944 [INFO] [robot_state_publisher-1]: process has finished cleanly [pid 2733818]
+1785372008.3864408 [INFO] [openarm_ik_ros_node-2]: process has finished cleanly [pid 2733819]
