@@ -26,6 +26,13 @@ constexpr double kPoleRadius = 0.04242640687119285;
 constexpr double kPoleBottom = 0.008;
 constexpr double kPoleTop = 0.758;
 constexpr std::size_t kSamples = 17;
+constexpr std::size_t kProjectionSearchSteps = 64;
+constexpr std::size_t kProjectionRefinementRounds = 3;
+constexpr std::size_t kProjectionRefinementSamples = 16;
+constexpr double kMinimumProjectedMotionM = 0.001;
+// Twice the pinned 0.748 m centreline reach bounds TCP travel between any two
+// reachable poses.  Two metres adds margin while bounding huge finite inputs.
+constexpr double kProjectionMaximumRayM = 2.0;
 // DaMiao position feedback has a 25/65535 = 3.8148e-4 rad code step.  Keep
 // handoff equivalence far below one encoder code while covering floating-point
 // publication/serialization noise; an actual adjacent-code change still fails.
@@ -366,6 +373,45 @@ bool SafeRequestPolicy::validate_mutation(
   return true;
 }
 
+bool CommandReservationGate::begin(std::uint64_t & token)
+{
+  if (active_token_ != 0U || generation_ == std::numeric_limits<std::uint64_t>::max()) {
+    return false;
+  }
+  active_token_ = ++generation_;
+  token = active_token_;
+  return true;
+}
+
+bool CommandReservationGate::valid(std::uint64_t token) const
+{
+  return token != 0U && token == active_token_;
+}
+
+bool CommandReservationGate::consume(std::uint64_t token)
+{
+  if (!valid(token)) {return false;}
+  active_token_ = 0U;
+  return true;
+}
+
+bool CommandReservationGate::release(std::uint64_t token)
+{
+  return consume(token);
+}
+
+bool CommandReservationGate::cancel()
+{
+  const bool was_active = active_token_ != 0U;
+  active_token_ = 0U;
+  return was_active;
+}
+
+bool CommandReservationGate::active() const
+{
+  return active_token_ != 0U;
+}
+
 bool NominalPathGuard::forward(std::size_t side, const JointVector & q, oa_fk_result & result)
 {
   const oa_model * model = side == 0 ? oa_model_left_v10_bimanual() :
@@ -472,6 +518,7 @@ bool NominalPathGuard::scene_clear(
 GuardResult NominalPathGuard::validate(const GuardInput & input) const
 {
   GuardResult result;
+  result.requested_tcp = input.request.target;
   result.minimum_nominal_clearance_m = std::numeric_limits<double>::infinity();
   std::array<oa_fk_result, 2> measured_fk{};
   for (std::size_t side = 0; side < 2; ++side) {
@@ -506,11 +553,13 @@ GuardResult NominalPathGuard::validate(const GuardInput & input) const
         const Point side_waypoint = side == selected ? waypoint : result.measured_tcp[side];
         JointVector next{};
         if (!inverse(side, side_waypoint, q[side], next, result.reason)) {
+          result.failure_path_fraction = u;
           return result;
         }
         for (std::size_t joint = 0; joint < OA_DOF; ++joint) {
           if (std::abs(next[joint] - q[side][joint]) > 0.35) {
             result.reason = "nominal IK branch continuity is not proven";
+            result.failure_path_fraction = u;
             return result;
           }
         }
@@ -520,17 +569,210 @@ GuardResult NominalPathGuard::validate(const GuardInput & input) const
     std::array<oa_fk_result, 2> fk{};
     if (!forward(0, q[0], fk[0]) || !forward(1, q[1], fk[1])) {
       result.reason = "public FK rejected a nominal path sample";
+      result.failure_path_fraction = u;
       return result;
     }
     double clearance = 0.0;
     if (!scene_clear(fk, clearance, result.reason)) {
+      result.sampled_keepout_violation = true;
+      result.failure_path_fraction = u;
       return result;
     }
     result.minimum_nominal_clearance_m = std::min(result.minimum_nominal_clearance_m, clearance);
   }
   result.accepted = true;
+  result.achieved_fraction = 1.0;
   result.reason = "accepted by sampled nominal virtual guard; not physical certification";
   return result;
+}
+
+GuardResult NominalPathGuard::validate_or_project(const GuardInput & input) const
+{
+  GuardResult requested = validate(input);
+  if (requested.accepted) {
+    return requested;
+  }
+  if (!std::all_of(
+      input.request.target.begin(), input.request.target.end(),
+      [](double value) {return std::isfinite(value);}))
+  {
+    return requested;
+  }
+
+  const std::size_t selected = input.request.side == MoveRequest::Side::left ? 0U : 1U;
+  GuardInput stationary = input;
+  stationary.request.target = requested.measured_tcp[selected];
+  GuardResult best = validate(stationary);
+  if (!best.accepted) {
+    requested.reason = "current measured scene is not safe enough for best-effort motion: " +
+      best.reason;
+    return requested;
+  }
+
+  const Point start = best.measured_tcp[selected];
+  const Point target = input.request.target;
+  const std::string requested_failure = requested.reason;
+  Point delta{};
+  double delta_scale = 0.0;
+  for (std::size_t axis = 0; axis < delta.size(); ++axis) {
+    delta[axis] = target[axis] - start[axis];
+    delta_scale = std::max(delta_scale, std::abs(delta[axis]));
+  }
+  if (!(delta_scale > 0.0) || !std::isfinite(delta_scale)) {
+    requested.reason = "finite target ray could not be normalized for best-effort motion";
+    return requested;
+  }
+  Point ray_unit{};
+  double scaled_norm_squared = 0.0;
+  for (std::size_t axis = 0; axis < ray_unit.size(); ++axis) {
+    ray_unit[axis] = delta[axis] / delta_scale;
+    scaled_norm_squared += ray_unit[axis] * ray_unit[axis];
+  }
+  const double scaled_norm = std::sqrt(scaled_norm_squared);
+  if (!(scaled_norm > 0.0) || !std::isfinite(scaled_norm)) {
+    requested.reason = "finite target ray had no usable direction";
+    return requested;
+  }
+  for (double & value : ray_unit) {value /= scaled_norm;}
+  const double total_distance = delta_scale >
+    std::numeric_limits<double>::max() / scaled_norm ?
+    std::numeric_limits<double>::infinity() : delta_scale * scaled_norm;
+  const double search_distance = std::isfinite(total_distance) ?
+    std::min(total_distance, kProjectionMaximumRayM) : kProjectionMaximumRayM;
+  std::string limiting_reason = requested_failure;
+  bool observed_keepout = false;
+  double keepout_barrier = search_distance;
+
+  struct AcceptedCandidate
+  {
+    double distance;
+    GuardResult result;
+  };
+  std::vector<AcceptedCandidate> accepted_candidates;
+  accepted_candidates.push_back({0.0, best});
+  double accepted_distance = 0.0;
+
+  auto candidate_at = [&](double distance) {
+      Point candidate{};
+      for (std::size_t axis = 0; axis < candidate.size(); ++axis) {
+        candidate[axis] = start[axis] + ray_unit[axis] * distance;
+      }
+      return candidate;
+    };
+  auto evaluate = [&](double distance) {
+      GuardInput candidate = input;
+      candidate.request.target = candidate_at(distance);
+      return validate(candidate);
+    };
+
+  auto observe_keepout = [&](double candidate_distance, const GuardResult & candidate) {
+      if (!candidate.sampled_keepout_violation ||
+        !std::isfinite(candidate.failure_path_fraction) ||
+        candidate.failure_path_fraction < 0.0 || candidate.failure_path_fraction > 1.0)
+      {
+        return false;
+      }
+      const double collision_distance = candidate_distance * candidate.failure_path_fraction;
+      if (!std::isfinite(collision_distance)) {return false;}
+      if (!observed_keepout || collision_distance < keepout_barrier) {
+        keepout_barrier = collision_distance;
+        limiting_reason = candidate.reason;
+      }
+      observed_keepout = true;
+      return true;
+    };
+
+  // The exact request is itself a sampled path.  Preserve any observed
+  // collision waypoint that lies inside the bounded physical search ray.
+  if (requested.sampled_keepout_violation && std::isfinite(total_distance)) {
+    const double requested_collision = total_distance * requested.failure_path_fraction;
+    if (std::isfinite(requested_collision) && requested_collision <= search_distance) {
+      keepout_barrier = requested_collision;
+      observed_keepout = true;
+      limiting_reason = requested.reason;
+    }
+  }
+
+  auto select_farthest_allowed = [&]() {
+      accepted_distance = 0.0;
+      best = accepted_candidates.front().result;
+      for (const AcceptedCandidate & candidate : accepted_candidates) {
+        const bool before_barrier = !observed_keepout || candidate.distance < keepout_barrier;
+        if (before_barrier && candidate.distance > accepted_distance) {
+          accepted_distance = candidate.distance;
+          best = candidate.result;
+        }
+      }
+    };
+
+  // A numerical IK failure at one endpoint spacing is not monotonic evidence,
+  // so keep looking for farther endpoints.  A keepout is different: retain the
+  // actual failing waypoint distance (candidate endpoint times path fraction)
+  // as a hard boundary.  Previously accepted endpoints beyond a newly observed
+  // boundary are discarded.  Every retained candidate independently validates
+  // all 17 waypoints from the same measured state.
+  for (std::size_t step = 1; step <= kProjectionSearchSteps; ++step) {
+    const double initial_limit = observed_keepout ? keepout_barrier : search_distance;
+    const double distance = initial_limit * static_cast<double>(step) /
+      static_cast<double>(kProjectionSearchSteps);
+    if (observed_keepout && !(distance < keepout_barrier)) {break;}
+    GuardResult candidate = evaluate(distance);
+    if (candidate.accepted) {
+      accepted_candidates.push_back({distance, std::move(candidate)});
+      continue;
+    }
+    if (observe_keepout(distance, candidate)) {break;}
+    if (!observed_keepout) {limiting_reason = candidate.reason;}
+  }
+  select_farthest_allowed();
+
+  // Refine by scanning each interval, not by binary-searching IK failures.
+  // This permits a farther numerical IK success after a nearer failure while
+  // still honoring every observed keepout as an irreversible upper boundary.
+  for (std::size_t round = 0; round < kProjectionRefinementRounds; ++round) {
+    const double upper = observed_keepout ? keepout_barrier : search_distance;
+    const double span = upper - accepted_distance;
+    if (!(span > kMinimumProjectedMotionM / 16.0)) {break;}
+    const double lower = accepted_distance;
+    const std::size_t sample_count = kProjectionRefinementSamples * (round + 1U);
+    for (std::size_t sample = 1; sample <= sample_count; ++sample) {
+      const double distance = lower + span * static_cast<double>(sample) /
+        static_cast<double>(sample_count);
+      if (observed_keepout && !(distance < keepout_barrier)) {break;}
+      GuardResult candidate = evaluate(distance);
+      if (candidate.accepted) {
+        accepted_candidates.push_back({distance, std::move(candidate)});
+        continue;
+      }
+      if (observe_keepout(distance, candidate)) {break;}
+      if (!observed_keepout) {limiting_reason = candidate.reason;}
+    }
+    select_farthest_allowed();
+  }
+
+  if (!(accepted_distance >= kMinimumProjectedMotionM)) {
+    requested.reason = "requested target was unreachable or unsafe, and no sampled safe "
+      "straight-line progress of at least 0.001 m could be proven; no motion submitted; "
+      "limiter: " + limiting_reason;
+    requested.limiting_reason = limiting_reason;
+    requested.limited_by_keepout = observed_keepout;
+    requested.keepout_barrier_distance_m = observed_keepout ? keepout_barrier : 0.0;
+    return requested;
+  }
+
+  const double accepted_fraction = std::clamp(
+    std::isfinite(total_distance) ? accepted_distance / total_distance :
+    (accepted_distance / delta_scale) / scaled_norm, 0.0, 1.0);
+  best.target_projected = true;
+  best.limited_by_keepout = observed_keepout;
+  best.requested_tcp = target;
+  best.achieved_fraction = accepted_fraction;
+  best.limiting_reason = limiting_reason;
+  best.keepout_barrier_distance_m = observed_keepout ? keepout_barrier : 0.0;
+  best.reason = "requested target was unreachable or unsafe; using farthest sampled validated "
+    "straight-line prefix (" + json_number(accepted_fraction * 100.0) +
+    "%); limiter: " + limiting_reason;
+  return best;
 }
 
 bool fresh_at_use(
@@ -660,26 +902,26 @@ bool map_canonical_joint_state(
 const NominalTargetTable & nominal_targets(MoveRequest::Side side)
 {
   static constexpr NominalTargetTable left{{
-    {"small", "Small forward/up", {0.019973, 0.143469, 0.096000}},
-    {"medium", "Medium forward/up", {0.029973, 0.143469, 0.106000}},
-    {"large", "Large forward/up", {0.039973, 0.143469, 0.116000}},
-    {"forward_low", "Low reach", {0.039973, 0.153469, 0.086000}},
-    {"forward_mid", "Mid reach", {0.049973, 0.153469, 0.096000}},
-    {"forward_high", "Far reach", {0.059973, 0.153469, 0.106000}},
-    {"high", "High", {0.029973, 0.153469, 0.136000}},
-    {"mid_high", "High near", {0.019973, 0.153469, 0.126000}},
-    {"far_high", "High far", {0.049973, 0.153469, 0.136000}},
+    {"near_low", "Near low", {0.150000, 0.220000, 0.150000}},
+    {"outer_low", "Outer low", {0.150000, 0.400000, 0.150000}},
+    {"near_mid", "Near mid", {0.150000, 0.220000, 0.300000}},
+    {"outer_mid", "Outer mid", {0.150000, 0.400000, 0.300000}},
+    {"forward_mid", "Forward mid", {0.300000, 0.220000, 0.300000}},
+    {"forward_outer", "Forward outer", {0.300000, 0.500000, 0.300000}},
+    {"near_max_forward", "Near-max forward", {0.480000, 0.170000, 0.350000}},
+    {"outer_high", "Outer high", {0.250000, 0.580000, 0.450000}},
+    {"high_far", "High far", {0.280000, 0.670000, 0.520000}},
   }};
   static constexpr NominalTargetTable right{{
-    {"small", "Small forward/up", {0.020081, -0.143527, 0.096000}},
-    {"medium", "Medium forward/up", {0.030081, -0.143527, 0.106000}},
-    {"large", "Large forward/up", {0.040081, -0.143527, 0.116000}},
-    {"forward_low", "Low reach", {0.040081, -0.153527, 0.086000}},
-    {"forward_mid", "Mid reach", {0.050081, -0.153527, 0.096000}},
-    {"forward_high", "Far reach", {0.060081, -0.153527, 0.106000}},
-    {"high", "High", {0.030081, -0.153527, 0.136000}},
-    {"mid_high", "High near", {0.020081, -0.153527, 0.126000}},
-    {"far_high", "High far", {0.050081, -0.153527, 0.136000}},
+    {"near_low", "Near low", {0.150000, -0.220000, 0.150000}},
+    {"outer_low", "Outer low", {0.150000, -0.400000, 0.150000}},
+    {"near_mid", "Near mid", {0.150000, -0.220000, 0.300000}},
+    {"outer_mid", "Outer mid", {0.150000, -0.400000, 0.300000}},
+    {"forward_mid", "Forward mid", {0.300000, -0.220000, 0.300000}},
+    {"forward_outer", "Forward outer", {0.300000, -0.500000, 0.300000}},
+    {"near_max_forward", "Near-max forward", {0.480000, -0.170000, 0.350000}},
+    {"outer_high", "Outer high", {0.250000, -0.580000, 0.450000}},
+    {"high_far", "High far", {0.280000, -0.670000, 0.520000}},
   }};
   return side == MoveRequest::Side::left ? left : right;
 }

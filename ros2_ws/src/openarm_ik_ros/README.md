@@ -76,19 +76,66 @@ license at `share/openarm_ik_ros/viewer/openarm_description-LICENSE.txt`.
 
 Portal controls remain virtual-only. Left/right requests use the freshest
 encoder-derived state as the opposite TCP target in a paired action. A sampled
-public-IK/FK capsule and central-keepout guard rejects unproven nominal paths,
-but the controller still reports `collision_checked=false`; the guard is not
-physical collision certification. “Auto Calibrate” performs only a nonmoving
-simulation verification, and the software stop button is not a hardwired or
-safety-rated E-stop.
+public-IK/FK capsule and central-keepout guard checks each command. If the exact
+finite target is unreachable or unsafe, the portal searches the requested
+straight-line ray in 64 fixed subdivisions followed by progressively denser
+16-, 32-, and 48-sample
+non-monotonic refinement scans, then submits only the farthest sampled complete
+17-waypoint prefix that passed. An isolated numerical IK failure does not end a
+scan. A pole or arm-arm failure does: its actual failing waypoint, rather than
+the candidate endpoint, becomes a permanent upper ray boundary for every later
+grid. A projection shorter than 1 mm is rejected as no motion. Search never
+routes around an obstacle. Invalid feedback or an already-unsafe measured scene
+fails closed. The controller still reports `collision_checked=false`; this
+mitigation is not physical collision certification. “Auto Calibrate” performs
+only a nonmoving simulation verification. The software stop uses a separately
+admitted request lane and invalidates an in-progress guard before it can submit,
+but it is not a hardwired or safety-rated E-stop.
 
 Motion eligibility rechecks producer timestamps, local receipt ages, and
 unchanged joint/diagnostic generations immediately before action submission.
 
-The portal offers Current plus nine audited field-fill presets per arm: Small
-forward/up, Medium forward/up, Large forward/up, Low reach, Mid reach, Far
-reach, High, High near, and High far. They only fill target fields. XYZ values default to centimetres and
-can be displayed and entered in inches; the page keeps canonical metre values,
+The portal offers Current plus nine audited field-fill presets per arm: Near
+low, Outer low, Near mid, Outer mid, Forward mid, Forward outer, Near-max
+forward, Outer high, and High far. They only fill target fields. The virtual
+targets deliberately span 15–48 cm forward, 17–67 cm outward, and 15–52 cm
+high, instead of the former roughly one-centimetre increments. High far is the
+farthest symmetric target found by the audited 1 cm high/far search while
+retaining at least 2.6 cm sampled neutral-path clearance; it moves either TCP
+about 73.6 cm from neutral. The pinned upstream URDF measurements sum to a
+74.7–74.8 cm shoulder-to-TCP centreline reach (including the 10.25 cm hand and
+8.35 cm TCP offsets); High far places the TCP over 89% of that geometric upper
+bound from the shoulder. Across both arms, all 1,800 quantized
+endpoint/cross-state transitions retain at least 2.65 cm sampled
+nominal clearance against the 2.5 cm gate.
+
+| Preset | X (cm) | Left Y (cm) | Right Y (cm) | Z (cm) |
+| --- | ---: | ---: | ---: | ---: |
+| Near low | 15 | 22 | -22 | 15 |
+| Outer low | 15 | 40 | -40 | 15 |
+| Near mid | 15 | 22 | -22 | 30 |
+| Outer mid | 15 | 40 | -40 | 30 |
+| Forward mid | 30 | 22 | -22 | 30 |
+| Forward outer | 30 | 50 | -50 | 30 |
+| Near-max forward | 48 | 17 | -17 | 35 |
+| Outer high | 25 | 58 | -58 | 45 |
+| High far | 28 | 67 | -67 | 52 |
+
+Additional manual virtual regression inputs, in the default centimetres:
+
+| Purpose | Left XYZ (cm) | Right XYZ (cm) | Expected virtual result from neutral |
+| --- | --- | --- | --- |
+| Impossible reach | `[5000, 5000, 5000]` | `[5000, -5000, 5000]` | Large visible move to the farthest sampled guarded reachable prefix |
+| Pole keepout | `[40, 5, 40]` | `[40, -5, 40]` | Shortened at the 2.5 cm sampled nominal pole gate |
+
+For an inter-arm mitigation test, first move each arm to its own Near-max
+forward preset (`[48, 17, 35]` left and `[48, -17, 35]` right). Then request
+the left arm at `[48, -17, 35]`. The audited virtual path is shortened before
+the sampled left/right capsule clearance falls below 2.5 cm. These deliberate
+guard tests are not physical-arm test instructions.
+
+XYZ values default to centimetres and can be displayed and entered in metres,
+centimetres, or inches; the page keeps canonical metre values,
 and the versioned portal endpoint normalizes explicit `m`, `cm`, or `in` input
 to metres before the unchanged guard and ROS action path. `/api/move` remains
 the compatibility metre-only endpoint, while `/api/state` explicitly reports

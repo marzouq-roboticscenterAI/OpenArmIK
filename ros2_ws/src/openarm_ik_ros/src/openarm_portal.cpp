@@ -402,7 +402,7 @@ public:
     const bool fresh = state(input, tcp, reason);
     std::lock_guard<std::mutex> lock(mutex_);
     return portal_state_json(
-      fresh, goal_active_, tcp,
+      fresh, goal_active_ || command_gate_.active(), tcp,
       fresh ? "Fresh encoder-derived virtual state; controller collision_checked=false" : reason,
       command_);
   }
@@ -427,9 +427,36 @@ public:
     return snapshot;
   }
 
+  bool begin_guard(std::uint64_t & token, std::string & reason)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_ || stop_requested != 0) {
+      reason = "portal shutdown is in progress";
+      return false;
+    }
+    if (goal_active_ || command_gate_.active()) {
+      reason = "another portal command or guard evaluation is active";
+      return false;
+    }
+    if (!command_gate_.begin(token)) {
+      reason = "portal command reservation generation is exhausted";
+      return false;
+    }
+    command_ = "Evaluating sampled nominal guard; a software stop invalidates this request.";
+    return true;
+  }
+
+  void release_guard(std::uint64_t token)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (command_gate_.release(token)) {
+      command_ = "Guard evaluation ended without submitting motion.";
+    }
+  }
+
   bool move(
     const MoveRequest & request, const GuardInput & input,
-    const GuardResult & guard, std::string & reason)
+    const GuardResult & guard, std::uint64_t guard_token, std::string & reason)
   {
     if (!action_->wait_for_action_server(std::chrono::milliseconds(0))) {
       reason = "MovePairedTcp action server is unavailable";
@@ -439,6 +466,10 @@ public:
     {
       const std::int64_t time_now = now().nanoseconds();
       const std::int64_t steady_now = steady_now_ns();
+      if (!command_gate_.valid(guard_token)) {
+        reason = "guard evaluation was canceled before action submission";
+        return false;
+      }
       if (stopping_ || stop_requested != 0 || !guard_handoff_valid(
           input, handoff_evidence_locked(), time_now, steady_now,
           std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count(),
@@ -451,10 +482,21 @@ public:
         reason = "another portal goal is active";
         return false;
       }
+      if (!command_gate_.consume(guard_token)) {
+        reason = "guard reservation changed before action submission";
+        return false;
+      }
       goal_active_ = true;
       cancel_pending_ = false;
-      command_ = "Guard accepted; waiting for controller goal acceptance. Nominal minimum clearance " +
-        number(guard.minimum_nominal_clearance_m) + " m. Controller collision_checked remains false.";
+      command_ = guard.target_projected ?
+        "Best-effort guard projected the request to " +
+        number(guard.achieved_fraction * 100.0) +
+        "% of its straight-line ray; waiting for controller goal acceptance. Nominal minimum "
+        "clearance " + number(guard.minimum_nominal_clearance_m) +
+        " m. Controller collision_checked remains false." :
+        "Guard accepted the exact request; waiting for controller goal acceptance. Nominal "
+        "minimum clearance " + number(guard.minimum_nominal_clearance_m) +
+        " m. Controller collision_checked remains false.";
     }
     Action::Goal goal;
     goal.header.stamp = now();
@@ -535,22 +577,35 @@ public:
       return false;
     }
     state_lock.unlock();
-    reason = request.side == MoveRequest::Side::left ?
-      "Left target submitted with Right target set to the guarded measured TCP" :
-      "Right target submitted with Left target set to the guarded measured TCP";
+    const std::size_t selected = request.side == MoveRequest::Side::left ? 0U : 1U;
+    const std::string side_name = selected == 0U ? "Left" : "Right";
+    reason = side_name + (guard.target_projected ?
+      " target was outside the guarded straight-line workspace and was projected to [" +
+      number(guard.commanded_tcp[selected][0]) + ", " +
+      number(guard.commanded_tcp[selected][1]) + ", " +
+      number(guard.commanded_tcp[selected][2]) + "] m (" +
+      number(guard.achieved_fraction * 100.0) + "% of the request); " +
+      guard.limiting_reason :
+      " exact target submitted") +
+      (selected == 0U ? "; Right target is the guarded measured TCP" :
+      "; Left target is the guarded measured TCP");
     return true;
   }
 
   std::string cancel()
   {
     GoalHandle::SharedPtr goal;
+    bool guard_canceled = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       goal = active_goal_;
+      guard_canceled = command_gate_.cancel();
       cancel_pending_ = goal_active_;
       command_ = goal ? "Urgent software cancellation requested; not a hardwired E-stop." :
         (goal_active_ ? "Software cancellation queued until the pending goal response; not a hardwired E-stop." :
-        "No portal goal to cancel. This software button is not a hardwired E-stop.");
+        (guard_canceled ?
+        "In-flight guard evaluation canceled before motion; not a hardwired E-stop." :
+        "No portal goal or guard evaluation to cancel. This software button is not a hardwired E-stop."));
     }
     if (goal) {
       try {
@@ -583,7 +638,7 @@ public:
   bool goal_active() const
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    return goal_active_;
+    return goal_active_ || command_gate_.active();
   }
 
   void begin_shutdown()
@@ -669,11 +724,29 @@ private:
   bool goal_active_{false};
   bool stopping_{false};
   bool cancel_pending_{false};
+  CommandReservationGate command_gate_;
   std::string command_{"No portal command."};
   GoalHandle::SharedPtr active_goal_;
   rclcpp_action::Client<Action>::SharedPtr action_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr state_subscription_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostic_subscription_;
+};
+
+class GuardReservation
+{
+public:
+  GuardReservation(std::shared_ptr<PortalNode> node, std::uint64_t token)
+  : node_(std::move(node)), token_(token)
+  {
+  }
+
+  GuardReservation(const GuardReservation &) = delete;
+  GuardReservation & operator=(const GuardReservation &) = delete;
+  ~GuardReservation() {node_->release_guard(token_);}
+
+private:
+  std::shared_ptr<PortalNode> node_;
+  std::uint64_t token_;
 };
 
 class PortalServer
@@ -685,6 +758,7 @@ private:
   static constexpr unsigned kStaticWorkers = 2U;
   static constexpr unsigned kStaticPending = 1U;
   static constexpr unsigned kMaximumApi = 8U;
+  static constexpr unsigned kMaximumUrgent = 4U;
 
   class IntakeSession : public std::enable_shared_from_this<IntakeSession>
   {
@@ -770,6 +844,7 @@ public:
     cancel_intakes();
     node_->begin_shutdown();
     static_pool_.join();
+    urgent_pool_.join();
     api_pool_.join();
   }
 
@@ -850,6 +925,31 @@ private:
     }
   }
 
+  void dispatch_urgent(beast::tcp_stream stream, Request request)
+  {
+    if (urgent_admitted_.fetch_add(1) >= kMaximumUrgent) {
+      urgent_admitted_.fetch_sub(1);
+      reject_stream(stream);
+      return;
+    }
+    try {
+      asio::post(urgent_pool_,
+        [this, stream = std::move(stream), request = std::move(request)]() mutable {
+          try {
+            stream.expires_after(std::chrono::milliseconds(500));
+            serve_api(stream, request);
+            close_stream(stream);
+          } catch (const std::exception & exception) {
+            std::fprintf(stderr, "openarm_portal urgent request: %s\n", exception.what());
+          }
+          urgent_admitted_.fetch_sub(1);
+        });
+    } catch (...) {
+      urgent_admitted_.fetch_sub(1);
+      throw;
+    }
+  }
+
   void start_intake(tcp::socket socket)
   {
     if (active_intakes_.size() >= kMaximumIntake) {
@@ -892,6 +992,10 @@ private:
       (target == "/" || (assets_.ready() && assets_.find(target) != nullptr));
     if (static_route) {
       dispatch_static(std::move(stream), std::move(request));
+    } else if (request.method() == http::verb::post && target == "/api/stop") {
+      // Keep authenticated software-stop handling independent of expensive IK
+      // work and ordinary API admission.  Validation remains in serve_api.
+      dispatch_urgent(std::move(stream), std::move(request));
     } else {
       dispatch_api(std::move(stream), std::move(request));
     }
@@ -1007,6 +1111,13 @@ private:
         return;
       }
     }
+    std::uint64_t guard_token = 0U;
+    if (!node_->begin_guard(guard_token, reason)) {
+      write_json(stream, http::status::conflict,
+        "{\"error\":\"" + json_escape(reason) + "\"}");
+      return;
+    }
+    GuardReservation reservation(node_, guard_token);
     GuardInput input;
     std::array<Point, 2> tcp{};
     if (!node_->state(input, tcp, reason)) {
@@ -1015,28 +1126,38 @@ private:
       return;
     }
     input.request = move;
-    const GuardResult guarded = guard_.validate(input);
+    const GuardResult guarded = guard_.validate_or_project(input);
     if (!guarded.accepted) {
       write_json(stream, http::status::unprocessable_entity,
         "{\"error\":\"virtual nominal guard rejected: " + json_escape(guarded.reason) + "\"}");
       return;
     }
-    if (!node_->move(move, input, guarded, reason)) {
+    if (!node_->move(move, input, guarded, guard_token, reason)) {
       write_json(stream, http::status::conflict,
         "{\"error\":\"" + json_escape(reason) + "\"}");
       return;
     }
+    const std::size_t selected = move.side == MoveRequest::Side::left ? 0U : 1U;
     write_json(stream, http::status::accepted,
       "{\"message\":\"" + json_escape(reason +
-      "; sampled nominal virtual protection only; controller collision_checked=false") + "\"}");
+      "; sampled nominal virtual protection only; controller collision_checked=false") +
+      "\",\"projected\":" + (guarded.target_projected ? "true" : "false") +
+      ",\"achieved_fraction\":" + json_number(guarded.achieved_fraction) +
+      ",\"requested_m\":[" + json_number(guarded.requested_tcp[0]) + "," +
+      json_number(guarded.requested_tcp[1]) + "," + json_number(guarded.requested_tcp[2]) +
+      "],\"commanded_m\":[" + json_number(guarded.commanded_tcp[selected][0]) + "," +
+      json_number(guarded.commanded_tcp[selected][1]) + "," +
+      json_number(guarded.commanded_tcp[selected][2]) + "]}");
   }
 
   asio::io_context context_;
   tcp::acceptor acceptor_;
   asio::thread_pool static_pool_{kStaticWorkers};
   asio::thread_pool api_pool_{4};
+  asio::thread_pool urgent_pool_{1};
   std::atomic_uint static_admitted_{0};
   std::atomic_uint api_admitted_{0};
+  std::atomic_uint urgent_admitted_{0};
   std::deque<std::shared_ptr<IntakeSession>> active_intakes_;
   std::shared_ptr<PortalNode> node_;
   std::string csrf_;

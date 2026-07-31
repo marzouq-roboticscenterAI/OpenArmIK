@@ -2,7 +2,11 @@
 
 `openarm_ik_ros` is a hardware-free ROS 2 Lyrical measured-feedback adapter for the OpenArm v1.0 virtual controller.
 
-**It is position-only IK: orientation is free. It performs no self, body, inter-arm, or environment collision checking. It is not motion authorization and has no CAN, ros2_control, MoveIt, or hardware backend.**
+**It is position-only IK: orientation is free. The controller/model perform no
+certified self, body, inter-arm, or environment collision checking. The virtual
+portal adds only the sampled nominal mitigation documented below, while results
+remain `collision_checked=false`. This is not motion authorization and has no
+CAN, ros2_control, MoveIt, or hardware backend.**
 
 The repository also contains:
 
@@ -69,11 +73,21 @@ different description.
 The portal and standalone RViz launchers also share one per-user GUI lock, so
 they cannot start duplicate ROS stacks together.
 Portal XYZ fields and their field-only test presets default to centimetres and
-offer an inches display/input toggle. This is a browser presentation boundary:
+offer explicit centimetre, inch, and metre display/input modes. This is a
+browser presentation boundary:
 the portal normalizes explicit units once, while the model, guard, ROS action,
 controller, and runtime remain binary64 metres. The portal's browser-native
 measured-pose visual proxy has no coordinate grid controlled by this toggle;
 stock RViz remains a separate engineering launcher.
+Finite portal targets that are unreachable or cross a sampled nominal pole or
+inter-arm keepout are shortened to the farthest sampled, validated prefix on
+the exact requested ray. The actual failing waypoint becomes a hard ray
+boundary, even when later IK sample grids differ; refinement continues past
+isolated IK failures but never past an observed keepout and never routes around
+it. A projection under 1 mm is rejected as no motion. Software stop has a
+reserved request lane and invalidates an in-progress guard before submission.
+This is virtual mitigation only: the controller continues to report
+`collision_checked=false` and no portal coordinate is physically certified.
 Each direct launcher runs one bounded incremental build by default. Its
 `--no-build` mode fails closed unless an atomic current-source stamp, pinned
 description identity, artifact hashes, and live Runtime/session authority

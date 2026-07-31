@@ -29,6 +29,32 @@ try {
       }
     });
   }
+  const selectUnit = value => {
+    const radio = document.querySelector('input[name="coordinate-unit"][value="' + value + '"]');
+    if (!radio) throw new Error('missing coordinate unit ' + value);
+    radio.checked = true;
+    radio.dispatchEvent(new Event('change', {bubbles:true}));
+  };
+  const lastLeft = targets.left[targets.left.length - 1].point;
+  const lastRight = targets.right[targets.right.length - 1].point;
+  const assertFields = (side, point, scale, digits) => {
+    const prefix = side === 'left' ? 'l' : 'r';
+    ['x','y','z'].forEach((axis, index) => {
+      const expected = (point[index] * scale).toFixed(digits);
+      if (document.getElementById(prefix + axis).value !== expected) {
+        throw new Error('coordinate unit rendering mismatch ' + side + ':' + axis);
+      }
+    });
+  };
+  selectUnit('m');
+  assertFields('left', lastLeft, 1, 6);
+  assertFields('right', lastRight, 1, 6);
+  selectUnit('in');
+  assertFields('left', lastLeft, 1 / 0.0254, 6);
+  assertFields('right', lastRight, 1 / 0.0254, 6);
+  selectUnit('cm');
+  assertFields('left', lastLeft, 100, 4);
+  assertFields('right', lastRight, 100, 4);
 
   const observed = [];
   const originalFetch = window.fetch;
@@ -77,10 +103,17 @@ try {
   const state = (sequence, position, age = 1, fresh = true) => ({schema:1, have_state:true,
     fresh, sequence:String(sequence), producer_time_ns:'1', receipt_age_ms:age,
     joint_order:order, position_rad:position});
-  if (!test.applyViewState(state(100, asymmetric))) throw new Error('fresh pose was not applied');
-  if (test.applyViewState(state(99, new Array(14).fill(1)))) throw new Error('rollback was applied');
+  // Stay ahead of the live 30 Hz poll sequence instead of assuming it is below
+  // a fixed test value by the time Firefox executes this asynchronous oracle.
+  const oracleSequence = BigInt(test.state().sequence) + 100n;
+  if (!test.applyViewState(state(oracleSequence, asymmetric))) throw new Error('fresh pose was not applied');
+  if (test.applyViewState(state(oracleSequence - 1n, new Array(14).fill(1)))) {
+    throw new Error('rollback was applied');
+  }
   const afterRollback = test.state();
-  if (afterRollback.sequence !== '100' || afterRollback.rollbacks < 1) throw new Error('rollback accounting failed');
+  if (afterRollback.sequence !== oracleSequence.toString() || afterRollback.rollbacks < 1) {
+    throw new Error('rollback accounting failed');
+  }
   if (test.updateOverlay(700) !== 'VIEW STALE') throw new Error('stale overlay failed');
   test.setVisibility('hidden');
   if (test.overlay() !== 'VIEW THROTTLED' || !test.metrics().includes('FPS paused')) {

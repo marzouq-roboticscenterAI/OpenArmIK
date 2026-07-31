@@ -62,10 +62,18 @@ struct GuardHandoffEvidence
 struct GuardResult
 {
   bool accepted{false};
+  bool target_projected{false};
+  bool sampled_keepout_violation{false};
+  bool limited_by_keepout{false};
   std::string reason;
+  std::string limiting_reason;
   std::array<Point, 2> measured_tcp{};
   std::array<Point, 2> commanded_tcp{};
+  Point requested_tcp{};
+  double achieved_fraction{0.0};
   double minimum_nominal_clearance_m{0.0};
+  double failure_path_fraction{1.0};
+  double keepout_barrier_distance_m{0.0};
 };
 
 struct MutationHeaders
@@ -108,8 +116,8 @@ using NominalTargetTable = std::array<NominalTarget, 9>;
 
 struct NominalTestSamples
 {
-  Point small_forward_up{};
-  Point medium_forward_up{};
+  Point near_low{};
+  Point outer_low{};
 };
 
 class StrictJson
@@ -144,10 +152,26 @@ private:
   std::string origin_;
 };
 
+class CommandReservationGate
+{
+public:
+  bool begin(std::uint64_t & token);
+  bool valid(std::uint64_t token) const;
+  bool consume(std::uint64_t token);
+  bool release(std::uint64_t token);
+  bool cancel();
+  bool active() const;
+
+private:
+  std::uint64_t generation_{0};
+  std::uint64_t active_token_{0};
+};
+
 class NominalPathGuard
 {
 public:
   GuardResult validate(const GuardInput & input) const;
+  GuardResult validate_or_project(const GuardInput & input) const;
 
 private:
   static bool forward(std::size_t side, const JointVector & q, oa_fk_result & result);

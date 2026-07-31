@@ -54,6 +54,10 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
 - [x] Browser-native measured-pose WebGL visual proxy, audited per-arm presets,
   pinned viewer assets, bounded request lanes, and 15-test closure completed
   through `bd06a30`; standalone RViz remains available separately.
+- [x] URDF-measured wide m/cm/in presets, guarded best-reachable straight-ray
+  projection, pole/inter-arm stop mitigation, and portal feedback completed and
+  exercised through the measured virtual controller; final independent review
+  round is in progress.
 - [ ] Physical hardware acceptance remains intentionally unperformed and physical
   motion remains unavailable.
 
@@ -191,6 +195,26 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   stop available in 12 ms, deadline cleanup restored baseline FD/thread counts, and
   SIGTERM completed in 121 ms. Full ROS CTest passed 15/15. These remain virtual,
   hardware-free results; every physical-control limitation below is unchanged.
+- 2026-07-30: The former centimeter-scale portal examples were replaced by nine
+  URDF-derived wide targets per arm. High far is `[0.28, +/-0.67, 0.52]` m,
+  over 89% of the pinned 0.747--0.748 m shoulder-to-TCP centreline reach and
+  about 0.736 m from neutral. All 1,800 endpoint/cross-state transitions retained
+  at least 0.0265 m sampled nominal clearance.
+- 2026-07-30: Finite impossible/unsafe portal requests now submit only the
+  farthest sampled, validated prefix on their original straight ray. The actual
+  first failing pole/inter-arm waypoint is a hard search boundary across every
+  later grid; three fixed refinement scans continue across isolated IK failures,
+  and sub-1-mm projections fail without submission. An in-progress guard now
+  holds a cancelable command reservation, while stop has a separate admission
+  lane. Invalid/currently unsafe scenes fail closed. The genuine pole regression
+  is `[0.40, +/-0.05, 0.40]` m; the legacy `[0.28, 0.80, 0.60]` m left ray now
+  proves less than 1 mm before its retained keepout and is explicitly rejected.
+  Focused reach/pole commands completed from measured virtual feedback in
+  28.706 s. On the final source-built tree, the 273.50 s virtual suite and
+  34-case portal core suite passed; the other 13 registered tests also passed
+  (the six ROS-dependent cases were rerun with the installed ROS environment
+  sourced). Two independent final safety/code sweeps reported CLEAN. Controller
+  collision reporting remains false and no physical safety claim is made.
 
 ## Open items
 

@@ -85,3 +85,17 @@
   shutdown, FD, and thread cleanup. The completed ROS inventory is 15/15; physical
   CAN, calibration, motion, collision safety, and emergency-stop acceptance remain
   unsupported and untested.
+- OpenArm v1.0's pinned kinematic offsets give a 0.747--0.748 m
+  shoulder-to-TCP centreline upper bound. The audited symmetric High far portal
+  preset `[0.28, +/-0.67, 0.52]` m displaces the TCP about 0.736 m from neutral
+  while retaining at least 0.0265 m in the 1,800-transition sampled cross-state
+  matrix. Portal presentation supports explicit m/cm/in while all canonical
+  coordinate storage and arithmetic remain IEEE-754 binary64 metres.
+- Portal best effort is a virtual-only straight-ray projection: validate the
+  exact request, scan 64 fixed subdivisions, then use progressively denser
+  16-, 32-, and 48-sample non-monotonic refinement scans. Preserve the actual failing path waypoint as
+  an irreversible keepout boundary, discard any prior endpoint beyond it, and
+  continue across isolated IK failures. Reject projected motion below 1 mm.
+  Never search beyond a sampled collision or route around an obstacle. Invalid
+  feedback or an already-unsafe scene fails closed; Runtime remains
+  `collision_checked=false` and physical motion remains unsupported.

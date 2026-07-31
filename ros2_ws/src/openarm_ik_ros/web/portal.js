@@ -6,10 +6,10 @@
   const targets = JSON.parse($('portal-targets').textContent);
   const axes = ['x', 'y', 'z'];
   const sides = ['left', 'right'];
-  const metresPerUnit = {cm: 0.01, in: 0.0254};
-  const unitsPerMetre = {cm: 100.0, in: 1.0 / 0.0254};
-  const unitDigits = {cm: 4, in: 6};
-  const unitNames = {cm: 'centimetres (cm)', in: 'inches (in)'};
+  const metresPerUnit = {m: 1.0, cm: 0.01, in: 0.0254};
+  const unitsPerMetre = {m: 1.0, cm: 100.0, in: 1.0 / 0.0254};
+  const unitDigits = {m: 6, cm: 4, in: 6};
+  const unitNames = {m: 'metres (m)', cm: 'centimetres (cm)', in: 'inches (in)'};
   const decimalPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
   const targetsM = {left: [null, null, null], right: [null, null, null]};
   const fieldState = {};
@@ -38,7 +38,8 @@
     for (const side of sides) for (let index = 0; index < 3; ++index) {
       const id = fieldId(side, index);
       $(id + '-label').textContent = axes[index].toUpperCase() + ' (' + unit + ')';
-      $(id).placeholder = unit === 'cm' ? 'e.g. 2.0000' : 'e.g. 0.787402';
+      $(id).placeholder = unit === 'cm' ? 'e.g. 45.0000' :
+        (unit === 'in' ? 'e.g. 17.716535' : 'e.g. 0.450000');
     }
   }
   const syncUnitRadios = () => document.querySelectorAll('input[name="coordinate-unit"]').forEach(radio => {radio.checked = radio.value === unit;});
@@ -114,6 +115,7 @@
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || 'request rejected');
     $('status').textContent = value.message;
+    return value;
   }
   function move(side) {
     for (let index = 0; index < 3; ++index) {
@@ -121,8 +123,10 @@
       if (!fieldState[id].valid || targetsM[side][index] === null) {setError('Correct every XYZ field before submitting. Use a period (.) as the decimal separator.'); return;}
     }
     const values = targetsM[side].map(value => value * unitsPerMetre[unit]);
-    post('/api/v2/move', {side, unit, x: values[0], y: values[1], z: values[2]}).then(() => {
-      $('form-notice').textContent = 'Submitted ' + side + ' target in ' + unitNames[unit] + ' from its preserved canonical metre values; the server normalized it once to metres.';
+    post('/api/v2/move', {side, unit, x: values[0], y: values[1], z: values[2]}).then(result => {
+      $('form-notice').textContent = result.projected ?
+        'The requested ' + side + ' target was impossible or unsafe. The sampled virtual guard queued only its farthest validated straight-line prefix (' + (result.achieved_fraction * 100).toFixed(2) + '%).' :
+        'Submitted exact ' + side + ' target in ' + unitNames[unit] + ' from its preserved canonical metre values; the server normalized it once to metres.';
     }).catch(error => setError(error.message));
   }
   for (const side of sides) for (let index = 0; index < 3; ++index) $(fieldId(side, index)).addEventListener('input', () => validateField(side, index));

@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -193,6 +194,59 @@ TEST(VirtualControlSession, PairedNamedTargetsReachMeasuredCompletion)
   EXPECT_FALSE(recorder.result->collision_checked);
   EXPECT_GT(recorder.result->terminal_feedback_seq[0], recorder.result->seed_feedback_seq[0]);
   EXPECT_GT(recorder.result->terminal_feedback_seq[1], recorder.result->seed_feedback_seq[1]);
+}
+
+TEST(VirtualControlSession, BestEffortReachAndPoleMitigationCommandsCompleteFromFeedback)
+{
+  namespace portal = openarm_ik_ros::portal;
+  struct Example
+  {
+    const char * owner;
+    portal::Point requested;
+    bool limited_by_keepout;
+  };
+  const std::array<Example, 2> examples{{
+    {"best-effort-reach", {50.0, 50.0, 50.0}, false},
+    {"best-effort-pole", {0.40, 0.05, 0.40}, true},
+  }};
+  for (const Example & example : examples) {
+    Recorder recorder;
+    VirtualControlSession session(
+      [&recorder](const MeasuredState & value) {return recorder.state(value);}, []() {});
+    ASSERT_TRUE(recorder.wait_state(2s));
+    const MeasuredState measured = recorder.latest_state_and_clear_result();
+    portal::GuardInput input;
+    for (std::size_t arm = 0; arm < 2U; ++arm) {
+      std::copy_n(
+        measured.snapshot.arm[arm].q_model_rad, OA_RUNTIME_DOF,
+        input.measured_q[arm].begin());
+    }
+    input.request.side = portal::MoveRequest::Side::left;
+    input.request.target = example.requested;
+    const portal::GuardResult guard = portal::NominalPathGuard().validate_or_project(input);
+    ASSERT_TRUE(guard.accepted) << example.owner << ": " << guard.reason;
+    ASSERT_TRUE(guard.target_projected);
+    EXPECT_EQ(guard.limited_by_keepout, example.limited_by_keepout);
+    EXPECT_GE(guard.minimum_nominal_clearance_m, 0.025);
+
+    std::string reason;
+    ASSERT_TRUE(session.reserve(example.owner, reason)) << reason;
+    SessionCommand command;
+    command.kind = SessionCommand::Kind::paired_tcp;
+    command.owner = example.owner;
+    command.left_tcp_m = guard.commanded_tcp[0];
+    command.right_tcp_m = guard.commanded_tcp[1];
+    command.terminal = [&recorder](const CommandResult & value) {
+        return recorder.terminal(value);
+      };
+    ASSERT_TRUE(session.submit(std::move(command), reason)) << reason;
+    ASSERT_TRUE(recorder.wait_result(40s)) << example.owner;
+    ASSERT_TRUE(recorder.result.has_value());
+    EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::completed) <<
+      recorder.result->reason << " status=" << recorder.result->control_status;
+    EXPECT_FALSE(recorder.result->collision_checked);
+    EXPECT_GT(recorder.result->terminal_feedback_seq[0], recorder.result->seed_feedback_seq[0]);
+  }
 }
 
 TEST(VirtualControlSession, AllPortalTargetsCompleteFromFreshMeasuredFeedback)

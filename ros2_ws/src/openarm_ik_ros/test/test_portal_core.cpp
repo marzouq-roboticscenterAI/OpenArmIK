@@ -211,7 +211,7 @@ TEST(CoordinateUnits, V2NormalizesMetresCentimetresAndInchesOnce)
     const char * token;
     double units_per_metre;
   };
-  const DisplayUnit units[] = {{"cm", 100.0}, {"in", 1.0 / 0.0254}};
+  const DisplayUnit units[] = {{"m", 1.0}, {"cm", 100.0}, {"in", 1.0 / 0.0254}};
   for (const DisplayUnit & unit : units) {
     const double displayed = canonical * unit.units_per_metre;
     const std::string body = std::string{"{\"side\":\"left\",\"unit\":\""} + unit.token +
@@ -267,18 +267,19 @@ TEST(CoordinateUnits, StateJsonDeclaresMetresAndRoundTripsBinary64)
 TEST(PortalPage, UsesSameOriginExternalAssetsAndSerializedCanonicalTargets)
 {
   const std::string page = portal::portal_page("test-token");
-  EXPECT_NE(page.find("Coordinate display units"), std::string::npos);
+  EXPECT_NE(page.find("Coordinate display/input units"), std::string::npos);
   EXPECT_NE(page.find("value=\"cm\" checked"), std::string::npos);
   EXPECT_NE(page.find("value=\"in\""), std::string::npos);
+  EXPECT_NE(page.find("value=\"m\""), std::string::npos);
   EXPECT_NE(page.find("/web/portal.css"), std::string::npos);
   EXPECT_NE(page.find("/web/portal.js"), std::string::npos);
   EXPECT_NE(page.find("/web/viewer.js"), std::string::npos);
   EXPECT_EQ(page.find("<style>"), std::string::npos);
   EXPECT_NE(page.find("id=\"portal-targets\""), std::string::npos);
-  EXPECT_NE(page.find("\"forward_high\""), std::string::npos);
+  EXPECT_NE(page.find("\"near_max_forward\""), std::string::npos);
   EXPECT_NE(page.find("\"High far\""), std::string::npos);
-  EXPECT_NE(page.find(portal::json_number(0.059973)), std::string::npos);
-  EXPECT_NE(page.find(portal::json_number(0.060081)), std::string::npos);
+  EXPECT_NE(page.find(portal::json_number(0.48)), std::string::npos);
+  EXPECT_NE(page.find(portal::json_number(-0.67)), std::string::npos);
   EXPECT_EQ(page.find("__CSRF__"), std::string::npos);
   EXPECT_NE(page.find("name=\"portal-csrf\" content=\"test-token\""), std::string::npos);
 }
@@ -287,12 +288,19 @@ TEST(PortalPage, CarriesStrictInputAndSafetyContracts)
 {
   const std::string page = portal::portal_page("token");
   EXPECT_NE(page.find("Virtual simulation only."), std::string::npos);
-  EXPECT_NE(page.find("not physically safe coordinates"), std::string::npos);
+  EXPECT_NE(page.find("not physically certified coordinates"), std::string::npos);
   EXPECT_NE(page.find("Controller collision checked: <strong>NO</strong>"), std::string::npos);
   EXPECT_NE(page.find("not a hardwired E-stop"), std::string::npos);
   EXPECT_NE(page.find("visual proxy — not collision checking"), std::string::npos);
   EXPECT_NE(page.find("OpenArm measured-pose viewer"), std::string::npos);
   EXPECT_NE(page.find("no portal-switchable coordinate grid"), std::string::npos);
+  EXPECT_NE(page.find("Virtual guard test inputs (cm)"), std::string::npos);
+  EXPECT_NE(page.find("[5000, 5000, 5000]"), std::string::npos);
+  EXPECT_NE(page.find("[40, 5, 40]"), std::string::npos);
+  EXPECT_NE(page.find("[48, -17, 35]"), std::string::npos);
+  EXPECT_NE(page.find("farthest validated straight-line prefix"), std::string::npos);
+  EXPECT_NE(page.find("Near-full audited reach"), std::string::npos);
+  EXPECT_EQ(page.find("Full reach:"), std::string::npos);
 }
 
 TEST(MutationPolicy, RequiresExactLocalOriginAuthorityTokenAndType)
@@ -351,6 +359,34 @@ TEST(SafeRequestPolicy, GatesEveryReadAndRequiresExactMutationOrigin)
   invalid = valid;
   invalid.sec_fetch_site_count = 0;
   EXPECT_TRUE(policy.validate_read(invalid, reason));
+}
+
+TEST(CommandReservationGate, StopInvalidatesInFlightGuardBeforeSubmission)
+{
+  portal::CommandReservationGate gate;
+  std::uint64_t first = 0U;
+  EXPECT_TRUE(gate.begin(first));
+  EXPECT_NE(first, 0U);
+  EXPECT_TRUE(gate.active());
+  EXPECT_FALSE(gate.begin(first));
+  EXPECT_TRUE(gate.cancel());
+  EXPECT_FALSE(gate.active());
+  EXPECT_FALSE(gate.valid(first));
+  EXPECT_FALSE(gate.consume(first));
+
+  std::uint64_t second = 0U;
+  EXPECT_TRUE(gate.begin(second));
+  EXPECT_GT(second, first);
+  EXPECT_FALSE(gate.valid(first));
+  EXPECT_TRUE(gate.valid(second));
+  EXPECT_TRUE(gate.consume(second));
+  EXPECT_FALSE(gate.active());
+  EXPECT_FALSE(gate.cancel());
+
+  std::uint64_t third = 0U;
+  EXPECT_TRUE(gate.begin(third));
+  EXPECT_TRUE(gate.release(third));
+  EXPECT_FALSE(gate.active());
 }
 
 TEST(ViewerSnapshot, SerializesStrictJointOrderAndBinary64Positions)
@@ -506,9 +542,13 @@ TEST(ViewerScript, UsesSequentialThirtyHertzPollingAndLocalOnlyCameraEvents)
   EXPECT_EQ(viewer.find("http://"), std::string::npos);
   EXPECT_EQ(viewer.find("https://"), std::string::npos);
   EXPECT_EQ(viewer.find("setInterval"), std::string::npos);
-  EXPECT_NE(page.find("const metresPerUnit = {cm: 0.01, in: 0.0254}"), std::string::npos);
+  EXPECT_NE(page.find("const metresPerUnit = {m: 1.0, cm: 0.01, in: 0.0254}"), std::string::npos);
   EXPECT_NE(page.find("post('/api/v2/move'"), std::string::npos);
   EXPECT_NE(page.find("renderPresets('left'); renderPresets('right')"), std::string::npos);
+  EXPECT_NE(page.find("result.projected"), std::string::npos);
+  EXPECT_NE(page.find("result.achieved_fraction"), std::string::npos);
+  EXPECT_NE(page.find("guard queued only"), std::string::npos);
+  EXPECT_EQ(page.find("guard moved only"), std::string::npos);
 }
 
 TEST(NominalPathGuard, RejectsNonfiniteAndUnprovenStates)
@@ -525,6 +565,193 @@ TEST(NominalPathGuard, RejectsNonfiniteAndUnprovenStates)
   input.request.target = {50.0, 50.0, 50.0};
   const portal::GuardResult unreachable = portal::NominalPathGuard().validate(input);
   EXPECT_FALSE(unreachable.accepted);
+}
+
+TEST(NominalPathGuard, BestEffortProjectsImpossibleTargetsForBothArms)
+{
+  constexpr double measured_neutral = 6.67582207984907e-05;
+  portal::GuardInput input;
+  for (auto & side : input.measured_q) {side.fill(measured_neutral);}
+  for (std::size_t selected = 0U; selected < 2U; ++selected) {
+    input.request.side = selected == 0U ?
+      portal::MoveRequest::Side::left : portal::MoveRequest::Side::right;
+    input.request.target = {50.0, selected == 0U ? 50.0 : -50.0, 50.0};
+    const portal::GuardResult exact = portal::NominalPathGuard().validate(input);
+    ASSERT_FALSE(exact.accepted);
+
+    const portal::GuardResult projected =
+      portal::NominalPathGuard().validate_or_project(input);
+    ASSERT_TRUE(projected.accepted) << "side=" << selected << ": " << projected.reason <<
+      "; exact_keepout=" << exact.sampled_keepout_violation <<
+      "; exact_failure_fraction=" << exact.failure_path_fraction <<
+      "; exact_reason=" << exact.reason;
+    EXPECT_TRUE(projected.target_projected);
+    EXPECT_FALSE(projected.limited_by_keepout);
+    EXPECT_EQ(projected.requested_tcp, input.request.target);
+    EXPECT_GT(projected.achieved_fraction, 0.007);
+    EXPECT_LT(projected.achieved_fraction, 0.009);
+    EXPECT_GE(projected.minimum_nominal_clearance_m, 0.025);
+    const portal::Point measured = tcp(selected, input.measured_q[selected]);
+    double displacement_squared = 0.0;
+    for (std::size_t axis = 0; axis < 3U; ++axis) {
+      const double delta = projected.commanded_tcp[selected][axis] - measured[axis];
+      displacement_squared += delta * delta;
+    }
+    EXPECT_GT(std::sqrt(displacement_squared), 0.60);
+
+    portal::GuardInput replay = input;
+    replay.request.target = projected.commanded_tcp[selected];
+    const portal::GuardResult revalidated = portal::NominalPathGuard().validate(replay);
+    EXPECT_TRUE(revalidated.accepted) << revalidated.reason;
+  }
+}
+
+TEST(NominalPathGuard, BestEffortNormalizesExtremeFiniteRayWithoutCollapsingToNoOp)
+{
+  constexpr double measured_neutral = 6.67582207984907e-05;
+  portal::GuardInput input;
+  for (auto & side : input.measured_q) {side.fill(measured_neutral);}
+  input.request.side = portal::MoveRequest::Side::left;
+  input.request.target = {1.0e300, 1.0e300, 1.0e300};
+  const portal::GuardResult projected =
+    portal::NominalPathGuard().validate_or_project(input);
+  ASSERT_TRUE(projected.accepted) << projected.reason;
+  EXPECT_TRUE(projected.target_projected);
+  EXPECT_GT(projected.achieved_fraction, 0.0);
+  EXPECT_LT(projected.achieved_fraction, 1.0e-299);
+  EXPECT_GE(projected.minimum_nominal_clearance_m, 0.025);
+  const portal::Point measured = tcp(0U, input.measured_q[0]);
+  double displacement_squared = 0.0;
+  for (std::size_t axis = 0; axis < 3U; ++axis) {
+    const double delta = projected.commanded_tcp[0][axis] - measured[axis];
+    displacement_squared += delta * delta;
+  }
+  EXPECT_GT(std::sqrt(displacement_squared), 0.60);
+
+  portal::GuardInput replay = input;
+  replay.request.target = projected.commanded_tcp[0];
+  const portal::GuardResult revalidated = portal::NominalPathGuard().validate(replay);
+  EXPECT_TRUE(revalidated.accepted) << revalidated.reason;
+}
+
+TEST(NominalPathGuard, BestEffortStopsAtSampledPoleKeepoutForBothArms)
+{
+  constexpr double measured_neutral = 6.67582207984907e-05;
+  portal::GuardInput input;
+  for (auto & side : input.measured_q) {side.fill(measured_neutral);}
+  for (std::size_t selected = 0U; selected < 2U; ++selected) {
+    input.request.side = selected == 0U ?
+      portal::MoveRequest::Side::left : portal::MoveRequest::Side::right;
+    input.request.target = {0.40, selected == 0U ? 0.05 : -0.05, 0.40};
+    const portal::GuardResult exact = portal::NominalPathGuard().validate(input);
+    ASSERT_FALSE(exact.accepted);
+
+    const portal::GuardResult projected =
+      portal::NominalPathGuard().validate_or_project(input);
+    ASSERT_TRUE(projected.accepted) << "side=" << selected << ": " << projected.reason <<
+      "; exact_keepout=" << exact.sampled_keepout_violation <<
+      "; exact_failure_fraction=" << exact.failure_path_fraction <<
+      "; exact_reason=" << exact.reason;
+    EXPECT_TRUE(projected.target_projected);
+    EXPECT_TRUE(projected.limited_by_keepout);
+    EXPECT_GT(projected.achieved_fraction, 0.10);
+    EXPECT_LT(projected.achieved_fraction, 0.20);
+    EXPECT_GE(projected.minimum_nominal_clearance_m, 0.025);
+    EXPECT_NE(projected.limiting_reason.find("central pole keepout"), std::string::npos);
+    EXPECT_GT(projected.keepout_barrier_distance_m, 0.0);
+    const portal::Point measured = tcp(selected, input.measured_q[selected]);
+    double projected_distance_squared = 0.0;
+    for (std::size_t axis = 0; axis < 3U; ++axis) {
+      const double delta = projected.commanded_tcp[selected][axis] - measured[axis];
+      projected_distance_squared += delta * delta;
+    }
+    EXPECT_LT(std::sqrt(projected_distance_squared), projected.keepout_barrier_distance_m);
+
+    portal::GuardInput replay = input;
+    replay.request.target = projected.commanded_tcp[selected];
+    const portal::GuardResult revalidated = portal::NominalPathGuard().validate(replay);
+    EXPECT_TRUE(revalidated.accepted) << revalidated.reason;
+  }
+}
+
+TEST(NominalPathGuard, BestEffortStopsAtSampledInterArmKeepoutFromCrossPresetState)
+{
+  constexpr double measured_neutral = 6.67582207984907e-05;
+  std::array<portal::JointVector, 2> neutral{};
+  for (auto & side : neutral) {side.fill(measured_neutral);}
+  const portal::Point left_start =
+    portal::nominal_targets(portal::MoveRequest::Side::left)[6].point;
+  const portal::Point right_start =
+    portal::nominal_targets(portal::MoveRequest::Side::right)[6].point;
+  portal::GuardInput input;
+  ASSERT_TRUE(guarded_path_endpoint(0U, neutral[0], left_start, input.measured_q[0]));
+  ASSERT_TRUE(guarded_path_endpoint(1U, neutral[1], right_start, input.measured_q[1]));
+  input.request.side = portal::MoveRequest::Side::left;
+  input.request.target = right_start;
+
+  const portal::GuardResult exact = portal::NominalPathGuard().validate(input);
+  ASSERT_FALSE(exact.accepted);
+  ASSERT_TRUE(exact.sampled_keepout_violation) << exact.reason;
+  EXPECT_NE(exact.reason.find("arm-arm capsule"), std::string::npos);
+
+  const portal::GuardResult projected =
+    portal::NominalPathGuard().validate_or_project(input);
+  ASSERT_TRUE(projected.accepted) << projected.reason;
+  EXPECT_TRUE(projected.target_projected);
+  EXPECT_TRUE(projected.limited_by_keepout);
+  EXPECT_GT(projected.achieved_fraction, 0.45);
+  EXPECT_LT(projected.achieved_fraction, 0.52);
+  EXPECT_GE(projected.minimum_nominal_clearance_m, 0.025);
+  EXPECT_NE(projected.limiting_reason.find("arm-arm capsule"), std::string::npos);
+  EXPECT_GT(projected.keepout_barrier_distance_m, 0.0);
+  const portal::Point measured = tcp(0U, input.measured_q[0]);
+  double projected_distance_squared = 0.0;
+  for (std::size_t axis = 0; axis < 3U; ++axis) {
+    const double delta = projected.commanded_tcp[0][axis] - measured[axis];
+    projected_distance_squared += delta * delta;
+  }
+  EXPECT_LT(std::sqrt(projected_distance_squared), projected.keepout_barrier_distance_m);
+
+  portal::GuardInput replay = input;
+  replay.request.target = projected.commanded_tcp[0];
+  const portal::GuardResult revalidated = portal::NominalPathGuard().validate(replay);
+  EXPECT_TRUE(revalidated.accepted) << revalidated.reason;
+}
+
+TEST(NominalPathGuard, BestEffortRejectsSubMillimetrePrefixAsNoMotion)
+{
+  constexpr double measured_neutral = 6.67582207984907e-05;
+  portal::GuardInput input;
+  for (auto & side : input.measured_q) {side.fill(measured_neutral);}
+  input.request.side = portal::MoveRequest::Side::left;
+  // This legacy demo ray encounters a sampled keepout before a meaningful
+  // validated prefix.  It must not be reported as a successful stationary move.
+  input.request.target = {0.28, 0.80, 0.60};
+  const portal::GuardResult projected =
+    portal::NominalPathGuard().validate_or_project(input);
+  EXPECT_FALSE(projected.accepted);
+  EXPECT_FALSE(projected.target_projected);
+  EXPECT_TRUE(projected.limited_by_keepout);
+  EXPECT_GT(projected.keepout_barrier_distance_m, 0.0);
+  EXPECT_NE(projected.reason.find("no motion submitted"), std::string::npos);
+  EXPECT_NE(projected.limiting_reason.find("central pole keepout"), std::string::npos);
+}
+
+TEST(NominalPathGuard, BestEffortFailsClosedForInvalidMeasuredStateAndNonfiniteTarget)
+{
+  portal::GuardInput input;
+  input.request.side = portal::MoveRequest::Side::left;
+  input.request.target = {50.0, 50.0, 50.0};
+  input.measured_q[0][0] = std::numeric_limits<double>::quiet_NaN();
+  portal::GuardResult result = portal::NominalPathGuard().validate_or_project(input);
+  EXPECT_FALSE(result.accepted);
+  EXPECT_FALSE(result.target_projected);
+
+  input.measured_q = {};
+  input.request.target = {0.2, std::numeric_limits<double>::infinity(), 0.3};
+  result = portal::NominalPathGuard().validate_or_project(input);
+  EXPECT_FALSE(result.accepted);
+  EXPECT_FALSE(result.target_projected);
 }
 
 TEST(NominalPathGuard, ValidatesAStationaryRegressionPoseThroughPublicFkIk)
@@ -571,23 +798,23 @@ TEST(NominalPathGuard, AllNinePresetsPerArmParseAndPassButNearbyPoleApproachFail
   ASSERT_EQ(left_targets.size(), 9U);
   ASSERT_EQ(right_targets.size(), 9U);
   static constexpr std::array<std::string_view, 9> ids{{
-    "small", "medium", "large", "forward_low", "forward_mid", "forward_high",
-    "high", "mid_high", "far_high"}};
+    "near_low", "outer_low", "near_mid", "outer_mid", "forward_mid",
+    "forward_outer", "near_max_forward", "outer_high", "high_far"}};
   static constexpr std::array<std::string_view, 9> labels{{
-    "Small forward/up", "Medium forward/up", "Large forward/up", "Low reach",
-    "Mid reach", "Far reach", "High", "High near", "High far"}};
+    "Near low", "Outer low", "Near mid", "Outer mid", "Forward mid",
+    "Forward outer", "Near-max forward", "Outer high", "High far"}};
   static constexpr std::array<portal::Point, 9> expected_left{{
-    {0.019973, 0.143469, 0.096000}, {0.029973, 0.143469, 0.106000},
-    {0.039973, 0.143469, 0.116000}, {0.039973, 0.153469, 0.086000},
-    {0.049973, 0.153469, 0.096000}, {0.059973, 0.153469, 0.106000},
-    {0.029973, 0.153469, 0.136000}, {0.019973, 0.153469, 0.126000},
-    {0.049973, 0.153469, 0.136000}}};
+    {0.150000, 0.220000, 0.150000}, {0.150000, 0.400000, 0.150000},
+    {0.150000, 0.220000, 0.300000}, {0.150000, 0.400000, 0.300000},
+    {0.300000, 0.220000, 0.300000}, {0.300000, 0.500000, 0.300000},
+    {0.480000, 0.170000, 0.350000}, {0.250000, 0.580000, 0.450000},
+    {0.280000, 0.670000, 0.520000}}};
   static constexpr std::array<portal::Point, 9> expected_right{{
-    {0.020081, -0.143527, 0.096000}, {0.030081, -0.143527, 0.106000},
-    {0.040081, -0.143527, 0.116000}, {0.040081, -0.153527, 0.086000},
-    {0.050081, -0.153527, 0.096000}, {0.060081, -0.153527, 0.106000},
-    {0.030081, -0.153527, 0.136000}, {0.020081, -0.153527, 0.126000},
-    {0.050081, -0.153527, 0.136000}}};
+    {0.150000, -0.220000, 0.150000}, {0.150000, -0.400000, 0.150000},
+    {0.150000, -0.220000, 0.300000}, {0.150000, -0.400000, 0.300000},
+    {0.300000, -0.220000, 0.300000}, {0.300000, -0.500000, 0.300000},
+    {0.480000, -0.170000, 0.350000}, {0.250000, -0.580000, 0.450000},
+    {0.280000, -0.670000, 0.520000}}};
   std::set<std::string_view> unique_ids;
   for (std::size_t index = 0; index < ids.size(); ++index) {
     EXPECT_EQ(left_targets[index].id, ids[index]);
@@ -616,9 +843,15 @@ TEST(NominalPathGuard, AllNinePresetsPerArmParseAndPassButNearbyPoleApproachFail
       const std::size_t opposite = 1U - selected;
       EXPECT_EQ(result.commanded_tcp[selected], target.point);
       EXPECT_EQ(result.commanded_tcp[opposite], tcp(opposite, input.measured_q[opposite]));
+      const portal::GuardResult best_effort =
+        portal::NominalPathGuard().validate_or_project(input);
+      ASSERT_TRUE(best_effort.accepted) << best_effort.reason;
+      EXPECT_FALSE(best_effort.target_projected);
+      EXPECT_DOUBLE_EQ(best_effort.achieved_fraction, 1.0);
+      EXPECT_EQ(best_effort.commanded_tcp[selected], target.point);
 
-      for (const auto & unit : std::array<std::pair<std::string_view, double>, 2>{{
-          {"cm", 100.0}, {"in", 1.0 / 0.0254}}})
+      for (const auto & unit : std::array<std::pair<std::string_view, double>, 3>{{
+          {"m", 1.0}, {"cm", 100.0}, {"in", 1.0 / 0.0254}}})
       {
         std::ostringstream v2;
         v2 << "{\"side\":\"" <<
@@ -633,7 +866,10 @@ TEST(NominalPathGuard, AllNinePresetsPerArmParseAndPassButNearbyPoleApproachFail
         ASSERT_TRUE(portal::normalise_move_to_metres(encoded, normalized, reason)) << reason;
         EXPECT_EQ(normalized.side, side);
         for (std::size_t axis = 0; axis < 3U; ++axis) {
-          EXPECT_NEAR(normalized.target[axis], target.point[axis], 3.0e-17);
+          const double magnitude = std::abs(target.point[axis]);
+          const double one_ulp =
+            std::nextafter(magnitude, std::numeric_limits<double>::infinity()) - magnitude;
+          EXPECT_LE(std::abs(normalized.target[axis] - target.point[axis]), one_ulp);
         }
       }
     }
@@ -644,6 +880,62 @@ TEST(NominalPathGuard, AllNinePresetsPerArmParseAndPassButNearbyPoleApproachFail
   const portal::GuardResult rejected = portal::NominalPathGuard().validate(input);
   EXPECT_FALSE(rejected.accepted);
   EXPECT_NE(rejected.reason.find("central pole keepout"), std::string::npos) << rejected.reason;
+}
+
+TEST(NominalTargets, HighFarUsesPinnedOpenSourceUrdfMeasurements)
+{
+  const oa_model * model = oa_model_left_v10_bimanual();
+  ASSERT_NE(model, nullptr);
+  ASSERT_NE(oa_model_provenance(model), nullptr);
+  EXPECT_NE(
+    std::string(oa_model_provenance(model)).find(
+      "enactic/openarm_description@6c7b720f1ba48e8bafa3a3dc752c45f397b42221"),
+    std::string::npos);
+
+  portal::JointVector zero{};
+  oa_fk_result fk{};
+  ASSERT_EQ(oa_fk(model, zero.data(), &fk), OA_MODEL_OK);
+  auto distance = [](const oa_transform & from, const oa_transform & to) {
+      const double x = to.m[3] - from.m[3];
+      const double y = to.m[7] - from.m[7];
+      const double z = to.m[11] - from.m[11];
+      return std::sqrt(x * x + y * y + z * z);
+    };
+  double measured_centreline_reach_m = 0.0;
+  for (std::size_t joint = 0; joint + 1U < OA_DOF; ++joint) {
+    measured_centreline_reach_m += distance(fk.joint_pre[joint], fk.joint_pre[joint + 1U]);
+  }
+  measured_centreline_reach_m += distance(fk.joint_pre[OA_DOF - 1U], fk.hand_tcp);
+  const double source_measurement_sum_m =
+    std::hypot(0.0301, 0.0600) + std::hypot(0.0301, 0.06625) +
+    std::hypot(0.0315, 0.15375) + std::hypot(0.0315, 0.0955) +
+    std::hypot(0.0375, 0.1205) + 0.0375 + 0.1025 + 0.0835;
+  EXPECT_NEAR(measured_centreline_reach_m, source_measurement_sum_m, 1.0e-12);
+  EXPECT_GT(measured_centreline_reach_m, 0.747);
+  EXPECT_LT(measured_centreline_reach_m, 0.748);
+
+  const portal::NominalTarget & high_far =
+    portal::nominal_targets(portal::MoveRequest::Side::left).back();
+  ASSERT_EQ(high_far.id, "high_far");
+  ASSERT_EQ(high_far.point, (portal::Point{0.28, 0.67, 0.52}));
+  const portal::Point shoulder{{
+    fk.joint_pre[0].m[3], fk.joint_pre[0].m[7], fk.joint_pre[0].m[11]}};
+  const double high_far_shoulder_distance_m = std::sqrt(
+    std::pow(high_far.point[0] - shoulder[0], 2) +
+    std::pow(high_far.point[1] - shoulder[1], 2) +
+    std::pow(high_far.point[2] - shoulder[2], 2));
+  EXPECT_GT(high_far_shoulder_distance_m / measured_centreline_reach_m, 0.89);
+
+  constexpr double measured_neutral = 6.67582207984907e-05;
+  portal::JointVector neutral{};
+  neutral.fill(measured_neutral);
+  const portal::Point neutral_tcp = tcp(0, neutral);
+  const double tcp_displacement_m = std::sqrt(
+    std::pow(high_far.point[0] - neutral_tcp[0], 2) +
+    std::pow(high_far.point[1] - neutral_tcp[1], 2) +
+    std::pow(high_far.point[2] - neutral_tcp[2], 2));
+  EXPECT_GT(tcp_displacement_m, 0.736);
+  EXPECT_LT(tcp_displacement_m, 0.737);
 }
 
 TEST(NominalPathGuard, EndpointQuantizedCrossStateMatrixRetainsAuditedClearance)
@@ -683,7 +975,7 @@ TEST(NominalPathGuard, EndpointQuantizedCrossStateMatrixRetainsAuditedClearance)
     }
   }
   EXPECT_EQ(checked, 1800U);
-  EXPECT_GE(minimum, 0.0265278);
+  EXPECT_GE(minimum, 0.0265);
 }
 
 TEST(NominalPathGuard, RetainsClearanceForDocumentedNearbyJointThreePosture)
