@@ -55,11 +55,29 @@ try {
   selectUnit('cm');
   assertFields('left', lastLeft, 100, 4);
   assertFields('right', lastRight, 100, 4);
+  const motionSlider = document.getElementById('motion-limit-scale');
+  if (motionSlider.value !== '80' || document.getElementById('motion-limit-value').textContent !== '80%') {
+    throw new Error('movement limit default mismatch');
+  }
+  motionSlider.value = '100';
+  motionSlider.dispatchEvent(new Event('input', {bubbles:true}));
+  if (document.getElementById('motion-limit-value').textContent !== '100%') {
+    throw new Error('movement limit label did not update');
+  }
+  motionSlider.value = '80';
+  motionSlider.dispatchEvent(new Event('input', {bubbles:true}));
 
   const observed = [];
+  let capturedMove = null;
   const originalFetch = window.fetch;
   window.fetch = function(resource, options) {
-    observed.push({url: String(resource), method: String(options && options.method || 'GET').toUpperCase()});
+    const request = {url: String(resource), method: String(options && options.method || 'GET').toUpperCase()};
+    observed.push(request);
+    if (request.url === '/api/v3/move' && request.method === 'POST') {
+      capturedMove = JSON.parse(options.body);
+      return Promise.resolve({ok:true, json:() => Promise.resolve({message:'oracle move', projected:false,
+        achieved_fraction:1, motion_limit_scale:capturedMove.motion_limit_scale})});
+    }
     return originalFetch.apply(this, arguments);
   };
   const canvas = document.getElementById('viewer-canvas');
@@ -69,6 +87,24 @@ try {
 
   document.getElementById('reset-view').click();
   const reset = test.camera();
+  const paletteButton = document.getElementById('viewer-neutral-palette');
+  const initialPalette = test.palette(), initialCaps = test.caps();
+  if (initialPalette.name !== 'blue' || paletteButton.getAttribute('aria-pressed') !== 'false') {
+    throw new Error('blue palette was not the accessible default');
+  }
+  paletteButton.click();
+  const neutralPalette = test.palette(), neutralCaps = test.caps();
+  if (neutralPalette.name !== 'neutral' || paletteButton.getAttribute('aria-pressed') !== 'true' ||
+      neutralPalette.background.every((value, index) => value === initialPalette.background[index])) {
+    throw new Error('neutral palette toggle failed');
+  }
+  if (JSON.stringify(neutralCaps) !== JSON.stringify(initialCaps)) {
+    throw new Error('palette toggle changed viewer resource caps');
+  }
+  paletteButton.click();
+  if (test.palette().name !== 'blue' || paletteButton.getAttribute('aria-pressed') !== 'false') {
+    throw new Error('blue palette restore failed');
+  }
   pointer('pointerdown', 1, 100, 100, 'mouse');
   pointer('pointermove', 1, 130, 118, 'mouse');
   pointer('pointerup', 1, 130, 118, 'mouse');
@@ -96,6 +132,15 @@ try {
       afterReset.distance !== reset.distance) throw new Error('camera reset failed');
   if (observed.some(request => request.method === 'POST')) {
     throw new Error('camera/preset event emitted a POST: ' + JSON.stringify(observed));
+  }
+  document.getElementById('left').disabled = false;
+  document.getElementById('left').click();
+  if (!capturedMove || capturedMove.side !== 'left' || capturedMove.unit !== 'cm' ||
+      capturedMove.motion_limit_scale !== 0.8 ||
+      Math.abs(capturedMove.x - lastLeft[0] * 100) > 1e-9 ||
+      Math.abs(capturedMove.y - lastLeft[1] * 100) > 1e-9 ||
+      Math.abs(capturedMove.z - lastLeft[2] * 100) > 1e-9) {
+    throw new Error('v3 movement payload mismatch: ' + JSON.stringify(capturedMove));
   }
 
   const order = ['openarm_left_joint1','openarm_left_joint2','openarm_left_joint3','openarm_left_joint4','openarm_left_joint5','openarm_left_joint6','openarm_left_joint7','openarm_right_joint1','openarm_right_joint2','openarm_right_joint3','openarm_right_joint4','openarm_right_joint5','openarm_right_joint6','openarm_right_joint7'];

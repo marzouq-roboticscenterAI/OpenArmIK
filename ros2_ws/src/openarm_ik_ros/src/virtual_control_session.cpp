@@ -153,6 +153,12 @@ public:
       reason = closing_ ? "closing" : "reservation_mismatch";
       return false;
     }
+    if (command.kind == SessionCommand::Kind::paired_tcp &&
+      !valid_motion_limit_scale(command.motion_limit_scale))
+    {
+      reason = "invalid_motion_limit_scale";
+      return false;
+    }
     pending_ = std::move(command);
     cv_.notify_all();
     return true;
@@ -598,9 +604,9 @@ private:
         move.side = pending->side;
         move.joint = pending->joint;
         move.target_model_rad = pending->target_rad;
-        move.velocity_scale = 0.5;
-        move.acceleration_scale = 0.5;
-        move.jerk_scale = 0.5;
+        move.velocity_scale = kLegacyMotionLimitScale;
+        move.acceleration_scale = kLegacyMotionLimitScale;
+        move.jerk_scale = kLegacyMotionLimitScale;
         move.position_tolerance_rad = 5.0e-4;
         move.velocity_tolerance_rad_s = 2.0e-2;
         move.required_model_revision = health_.capabilities.model_revision;
@@ -623,9 +629,9 @@ private:
         move.required_feedback_seq[1] = snapshot_.arm[1].feedback_seq;
         std::copy(pending->left_tcp_m.begin(), pending->left_tcp_m.end(), move.left_tcp_m);
         std::copy(pending->right_tcp_m.begin(), pending->right_tcp_m.end(), move.right_tcp_m);
-        move.velocity_scale = 0.5;
-        move.acceleration_scale = 0.5;
-        move.jerk_scale = 0.5;
+        move.velocity_scale = pending->motion_limit_scale;
+        move.acceleration_scale = pending->motion_limit_scale;
+        move.jerk_scale = pending->motion_limit_scale;
         move.tcp_tolerance_m = 1.0e-3;
         move.collision_scene_revision = kCollisionSceneRevision;
         move.required_model_revision = health_.capabilities.model_revision;

@@ -24,6 +24,15 @@
   const setError = message => {$('form-error').textContent = message;};
   const clearError = () => setError('');
   const allFieldsValid = () => sides.every(side => axes.every((axis, index) => fieldState[fieldId(side, index)].valid));
+  function motionLimitScale() {
+    const percent = Number($('motion-limit-scale').value);
+    return Number.isFinite(percent) && percent >= 50 && percent <= 100 ? percent / 100 : null;
+  }
+  function updateMotionLimit() {
+    const scale = motionLimitScale();
+    if (scale === null) {setError('Movement limits must remain between 50% and 100%.'); return;}
+    $('motion-limit-value').textContent = (scale * 100).toFixed(0) + '%';
+  }
   function renderField(side, index) {
     const id = fieldId(side, index);
     const value = targetsM[side][index];
@@ -123,16 +132,19 @@
       if (!fieldState[id].valid || targetsM[side][index] === null) {setError('Correct every XYZ field before submitting. Use a period (.) as the decimal separator.'); return;}
     }
     const values = targetsM[side].map(value => value * unitsPerMetre[unit]);
-    post('/api/v2/move', {side, unit, x: values[0], y: values[1], z: values[2]}).then(result => {
+    const motion_limit_scale = motionLimitScale();
+    if (motion_limit_scale === null) {setError('Movement limits must remain between 50% and 100%.'); return;}
+    post('/api/v3/move', {side, unit, x: values[0], y: values[1], z: values[2], motion_limit_scale}).then(result => {
       $('form-notice').textContent = result.projected ?
-        'The requested ' + side + ' target was impossible or unsafe. The sampled virtual guard queued only its farthest validated straight-line prefix (' + (result.achieved_fraction * 100).toFixed(2) + '%).' :
-        'Submitted exact ' + side + ' target in ' + unitNames[unit] + ' from its preserved canonical metre values; the server normalized it once to metres.';
+        'The requested ' + side + ' target was impossible or unsafe. The sampled virtual guard queued only its farthest validated straight-line prefix (' + (result.achieved_fraction * 100).toFixed(2) + '%) at ' + (result.motion_limit_scale * 100).toFixed(0) + '% movement limits.' :
+        'Submitted exact ' + side + ' target in ' + unitNames[unit] + ' at ' + (result.motion_limit_scale * 100).toFixed(0) + '% movement limits; the server normalized it once to metres.';
     }).catch(error => setError(error.message));
   }
   for (const side of sides) for (let index = 0; index < 3; ++index) $(fieldId(side, index)).addEventListener('input', () => validateField(side, index));
   document.querySelectorAll('input[name="coordinate-unit"]').forEach(radio => radio.addEventListener('change', () => {if (radio.checked) selectUnit(radio.value);}));
+  $('motion-limit-scale').addEventListener('input', updateMotionLimit);
   $('left').addEventListener('click', () => move('left')); $('right').addEventListener('click', () => move('right'));
   $('stop').addEventListener('click', () => post('/api/stop').catch(error => {$('status').textContent = error.message;}));
   $('verify').addEventListener('click', () => post('/api/verify').catch(error => {$('status').textContent = error.message;}));
-  renderPresets('left'); renderPresets('right'); updateUnitText(); syncUnitRadios(); state(); window.setInterval(state, 250);
+  renderPresets('left'); renderPresets('right'); updateUnitText(); updateMotionLimit(); syncUnitRadios(); state(); window.setInterval(state, 250);
 })();

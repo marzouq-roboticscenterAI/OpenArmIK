@@ -25,12 +25,14 @@ and publish only the two measured source joints; `robot_state_publisher` should
 continue deriving the mimic transforms.
 
 The production command interfaces are the reliable actions
-`/openarm_ik/move_joint` and `/openarm_ik/move_paired_tcp` from
-`openarm_control_msgs`. Paired goals name `left_tcp_m` and `right_tcp_m` and are
-transformed transactionally from their stamped source frame into
-`openarm_body_link0`. One reject-new arbiter spans both actions and the
-deprecated `/openarm_ik/paired_xyz` compatibility topic. Cancel uses a disable
-stop and requires a process restart before another command.
+`/openarm_ik/move_joint`, `/openarm_ik/move_paired_tcp`, and the additive
+`/openarm_ik/move_paired_tcp_scaled` from `openarm_control_msgs`. Paired goals
+name `left_tcp_m` and `right_tcp_m` and are transformed transactionally from
+their stamped source frame into `openarm_body_link0`. The scaled variant also
+requires a binary64 movement-limit scale in `[0.5, 1.0]`; the original paired
+action remains fixed at `0.5`. One reject-new arbiter spans all three actions
+and the deprecated `/openarm_ik/paired_xyz` compatibility topic. Cancel uses a
+disable stop and requires a process restart before another command.
 
 The lower session consumes installed `OpenArm::Runtime` as its sole state,
 motion, model/TCP identity, clock, event, and plan authority. Runtime owns the
@@ -71,6 +73,9 @@ the pinned Stage-A URDF and allowlisted collision STL geometry. It is a
 feedback channel. Camera drag, wheel zoom, touch pinch, reset, resize, and
 stale overlays are browser-local and cannot issue a control request. Use
 `scripts/launch_rviz.sh` separately for stock RViz engineering views.
+The viewer starts with its blue/light-blue palette. Its local color button can
+toggle an RViz-like neutral palette without sending a control request; the
+neutral proxy is not stock RViz rendering.
 The redistributed collision meshes carry the exact pinned upstream Apache-2.0
 license at `share/openarm_ik_ros/viewer/openarm_description-LICENSE.txt`.
 
@@ -91,6 +96,16 @@ mitigation is not physical collision certification. “Auto Calibrate” perform
 only a nonmoving simulation verification. The software stop uses a separately
 admitted request lane and invalidates an in-progress guard before it can submit,
 but it is not a hardwired or safety-rated E-stop.
+
+The portal's movement-limits slider spans 50–100% and defaults to 80%; the
+former fixed behavior was 50%. The strict `/api/v3/move` request carries an
+explicit binary64 `motion_limit_scale` together with the explicit coordinate
+unit. That value equally scales the configured virtual velocity, acceleration,
+and jerk limits, so the percentage is not a linear travel-time promise. The
+existing `/openarm_ik/move_paired_tcp` ROS action remains unchanged at 50% for
+compatibility; the portal uses the additive
+`/openarm_ik/move_paired_tcp_scaled` action. Both retain the synchronized
+seventh-order smooth trajectory.
 
 Motion eligibility rechecks producer timestamps, local receipt ages, and
 unchanged joint/diagnostic generations immediately before action submission.

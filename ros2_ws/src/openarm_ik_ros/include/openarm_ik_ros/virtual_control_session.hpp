@@ -2,6 +2,8 @@
 #ifndef OPENARM_IK_ROS__VIRTUAL_CONTROL_SESSION_HPP_
 #define OPENARM_IK_ROS__VIRTUAL_CONTROL_SESSION_HPP_
 
+#include "openarm_ik_ros/motion_profile.hpp"
+
 #include "openarm_runtime.h"
 
 #include <array>
@@ -80,6 +82,7 @@ struct SessionCommand
   double target_rad{};
   std::array<double, 3> left_tcp_m{};
   std::array<double, 3> right_tcp_m{};
+  double motion_limit_scale{kLegacyMotionLimitScale};
   std::function<bool(const CommandFeedback &)> feedback;
   std::function<bool(const CommandResult &)> terminal;
 #ifdef OPENARM_IK_ROS_TESTING

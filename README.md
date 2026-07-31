@@ -79,6 +79,13 @@ the portal normalizes explicit units once, while the model, guard, ROS action,
 controller, and runtime remain binary64 metres. The portal's browser-native
 measured-pose visual proxy has no coordinate grid controlled by this toggle;
 stock RViz remains a separate engineering launcher.
+The portal defaults movement limits to 80%, adjustable from 50% (the previous
+fixed behavior) through 100%. One binary64 scale is applied equally to the
+configured virtual velocity, acceleration, and jerk limits, while the bounded
+seventh-order trajectory remains unchanged. The strict v3 portal request uses
+an additive scaled ROS action, leaving the existing paired-TCP action fixed at
+50% and wire-compatible. The viewer's blue/light-blue and RViz-like neutral
+palettes are also a browser-local toggle and never issue a robot command.
 Finite portal targets that are unreachable or cross a sampled nominal pole or
 inter-arm keepout are shortened to the farthest sampled, validated prefix on
 the exact requested ray. The actual failing waypoint becomes a hard ray
@@ -155,10 +162,13 @@ ros2 run openarm_ik_ros openarm_control_cli move-paired-tcp \
   openarm_body_link0 0.20 0.30 0.85 0.20 -0.30 0.85
 ```
 
-The production inputs are `/openarm_ik/move_joint` and
-`/openarm_ik/move_paired_tcp`. Both use action goal/result correlation and finish
-only from measured controller feedback. The paired action has explicit named
-left and right points in a common stamped source frame. The old
+The production inputs are `/openarm_ik/move_joint`,
+`/openarm_ik/move_paired_tcp`, and the additive
+`/openarm_ik/move_paired_tcp_scaled`. All three share one reject-new arbiter,
+use action goal/result correlation, and finish only from measured controller
+feedback. The paired actions have explicit named left and right points in a
+common stamped source frame; the scaled variant adds a binary64 movement-limit
+scale in `[0.5, 1.0]` while the original action remains fixed at `0.5`. The old
 `/openarm_ik/paired_xyz` PoseArray topic remains for one compatibility cycle as
 a deprecated validated shim through the same reject-new arbiter.
 

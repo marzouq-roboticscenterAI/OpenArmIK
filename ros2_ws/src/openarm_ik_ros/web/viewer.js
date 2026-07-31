@@ -15,6 +15,10 @@
   const MAX_CONTEXT_LOSSES = 2;
   const STALE_MS = 500;
   const PERIOD_MS = 1000 / 30;
+  const PALETTES = Object.freeze({
+    blue: Object.freeze({background: [.025,.04,.065], left: [.2,.42,.82], right: [.3,.62,.82]}),
+    neutral: Object.freeze({background: [48/255,48/255,48/255], left: [.56,.58,.61], right: [.74,.76,.79]})
+  });
   const canvas = document.getElementById('viewer-canvas');
   const overlay = document.getElementById('viewer-overlay');
   const metrics = document.getElementById('viewer-metrics');
@@ -27,6 +31,7 @@
   let contextLost = false, contextTerminal = false, visibilityOverride = null;
   let gpuBytes = 0, ready = false;
   let camera = {yaw: 0.72, pitch: -0.32, distance: 1.36};
+  let paletteName = 'blue';
 
   const identity = () => new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
   function multiply(a, b) {
@@ -131,7 +136,9 @@
     positionLocation = gl.getAttribLocation(program, 'aPosition');
     matrixLocation = gl.getUniformLocation(program, 'uMatrix');
     colorLocation = gl.getUniformLocation(program, 'uColor');
-    gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.clearColor(.025,.04,.065,1);
+    const palette = PALETTES[paletteName];
+    gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
+    gl.clearColor(palette.background[0], palette.background[1], palette.background[2], 1);
     resize();
   }
 
@@ -354,8 +361,8 @@
         gl.bindBuffer(gl.ARRAY_BUFFER, gpu.buffer); gl.enableVertexAttribArray(positionLocation);
         gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
         gl.uniformMatrix4fv(matrixLocation, false, multiply(vp, multiply(link.transform, mesh.transform)));
-        const right = link.name.includes('_right_');
-        gl.uniform4f(colorLocation, right ? .3 : .2, right ? .62 : .42, .82, stale ? .28 : .92);
+        const right = link.name.includes('_right_'), color = PALETTES[paletteName][right ? 'right' : 'left'];
+        gl.uniform4f(colorLocation, color[0], color[1], color[2], stale ? .28 : .92);
         gl.drawArrays(gl.TRIANGLES, 0, gpu.vertices);
       }
     }
@@ -426,6 +433,13 @@
     }
   }
   function resetCamera() {camera = {yaw: .72, pitch: -.32, distance: 1.36};}
+  function setNeutralPalette(enabled) {
+    paletteName = enabled ? 'neutral' : 'blue';
+    const button = document.getElementById('viewer-neutral-palette');
+    button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    const background = PALETTES[paletteName].background;
+    if (gl) gl.clearColor(background[0], background[1], background[2], 1);
+  }
   function installCamera() {
     const active = new Map();
     let pinchDistance = null;
@@ -466,6 +480,9 @@
       camera.distance = Math.max(.3,Math.min(3.0,camera.distance*Math.exp(event.deltaY*.001)));
     }, {passive:false});
     document.getElementById('reset-view').addEventListener('click', resetCamera);
+    document.getElementById('viewer-neutral-palette').addEventListener('click', event => {
+      setNeutralPalette(event.currentTarget.getAttribute('aria-pressed') !== 'true');
+    });
   }
   function contextLossCount() {
     try {return Number(sessionStorage.getItem('openarm-viewer-context-losses') || '0') || 0;}
@@ -498,6 +515,8 @@
       meshMatrices: name => links.get(name).meshes.map(mesh => ({source: mesh.source,
         local: Array.from(mesh.transform), world: Array.from(multiply(links.get(name).transform, mesh.transform))})),
       camera: () => ({...camera}),
+      palette: () => ({name: paletteName, background: PALETTES[paletteName].background.slice(),
+        left: PALETTES[paletteName].left.slice(), right: PALETTES[paletteName].right.slice()}),
       state: () => ({sequence: acceptedSequence.toString(), rollbacks: rollbackResponses,
         fresh: stateFresh, age: viewAge(performance.now())}),
       applyViewState,

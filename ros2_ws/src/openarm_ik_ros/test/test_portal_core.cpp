@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 #include <openarm_control_msgs/action/move_paired_tcp.hpp>
+#include <openarm_control_msgs/action/move_paired_tcp_scaled.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -19,10 +20,12 @@
 
 namespace portal = openarm_ik_ros::portal;
 using PairedAction = openarm_control_msgs::action::MovePairedTcp;
+using ScaledPairedAction = openarm_control_msgs::action::MovePairedTcpScaled;
 
 static_assert(std::is_same_v<portal::Point::value_type, double>);
 static_assert(std::is_same_v<decltype(PairedAction::Goal{}.left_tcp_m.x), double>);
 static_assert(std::is_same_v<decltype(PairedAction::Goal{}.right_tcp_m.z), double>);
+static_assert(std::is_same_v<decltype(ScaledPairedAction::Goal{}.motion_limit_scale), double>);
 
 namespace
 {
@@ -140,11 +143,13 @@ std::string read_file(const char * path)
 TEST(StrictJson, AcceptsOnlyExactMoveSchema)
 {
   portal::MoveRequest request;
+  request.motion_limit_scale = 1.0;
   std::string reason;
   EXPECT_TRUE(portal::StrictJson::parse_move(
     R"({"side":"left","x":0.2,"y":0.3,"z":8.5e-1})", request, reason));
   EXPECT_EQ(request.side, portal::MoveRequest::Side::left);
   EXPECT_DOUBLE_EQ(request.target[0], 0.2);
+  EXPECT_DOUBLE_EQ(request.motion_limit_scale, openarm_ik_ros::kLegacyMotionLimitScale);
   EXPECT_FALSE(portal::StrictJson::parse_move(
     R"({"side":"left","x":0.2,"y":0.3,"z":"0.8"})", request, reason));
   EXPECT_FALSE(portal::StrictJson::parse_move(
@@ -179,6 +184,39 @@ TEST(StrictJson, V2RequiresExactExplicitCoordinateUnitSchema)
     R"({"side":"left","unit":"m","x":0x10,"y":3,"z":4})", request, reason));
 }
 
+TEST(StrictJson, V3RequiresExactExplicitMotionLimitSchema)
+{
+  portal::UnitMoveRequest request;
+  std::string reason;
+  EXPECT_TRUE(portal::StrictJson::parse_move_v3(
+    R"({"side":"right","unit":"cm","x":2.54,"y":-14.25,"z":9.6,"motion_limit_scale":0.8})",
+    request, reason)) << reason;
+  EXPECT_EQ(request.side, portal::MoveRequest::Side::right);
+  EXPECT_EQ(request.coordinate_unit, OA_LENGTH_UNIT_CENTIMETRES);
+  EXPECT_DOUBLE_EQ(request.motion_limit_scale, 0.8);
+  portal::MoveRequest normalized;
+  ASSERT_TRUE(portal::normalise_move_to_metres(request, normalized, reason)) << reason;
+  EXPECT_DOUBLE_EQ(normalized.motion_limit_scale, 0.8);
+  for (const char * body : {
+      R"({"side":"left","unit":"m","x":0.2,"y":0.3,"z":0.8})",
+      R"({"side":"left","unit":"m","x":0.2,"y":0.3,"z":0.8,"motion_limit_scale":0.49})",
+      R"({"side":"left","unit":"m","x":0.2,"y":0.3,"z":0.8,"motion_limit_scale":1.01})",
+      R"({"side":"left","unit":"m","x":0.2,"y":0.3,"z":0.8,"motion_limit_scale":"0.8"})",
+      R"({"side":"left","unit":"m","x":0.2,"y":0.3,"z":0.8,"motion_limit_scale":0.8,"motion_limit_scale":0.9})",
+      R"({"side":"left","unit":"m","x":0.2,"y":0.3,"z":0.8,"motion_limit_scale":0.8,"extra":1})"})
+  {
+    EXPECT_FALSE(portal::StrictJson::parse_move_v3(body, request, reason)) << body;
+  }
+  EXPECT_TRUE(portal::StrictJson::parse_move_v3(
+    R"({"motion_limit_scale":0.5,"z":0.8,"x":0.2,"unit":"m","side":"left","y":0.3})",
+    request, reason)) << reason;
+  EXPECT_DOUBLE_EQ(request.motion_limit_scale, 0.5);
+  EXPECT_TRUE(portal::StrictJson::parse_move_v3(
+    R"({"side":"left","unit":"m","x":0.2,"y":0.3,"z":0.8,"motion_limit_scale":1.0})",
+    request, reason)) << reason;
+  EXPECT_DOUBLE_EQ(request.motion_limit_scale, 1.0);
+}
+
 TEST(CoordinateUnits, V2NormalizesMetresCentimetresAndInchesOnce)
 {
   struct Example
@@ -203,6 +241,7 @@ TEST(CoordinateUnits, V2NormalizesMetresCentimetresAndInchesOnce)
     EXPECT_NEAR(normalized.target[0], 0.0254, 2.0e-17);
     EXPECT_NEAR(normalized.target[1], -0.0508, 2.0e-17);
     EXPECT_NEAR(normalized.target[2], 0.0762, 2.0e-17);
+    EXPECT_DOUBLE_EQ(normalized.motion_limit_scale, openarm_ik_ros::kLegacyMotionLimitScale);
   }
 
   constexpr double canonical = 0.020081;
@@ -271,6 +310,8 @@ TEST(PortalPage, UsesSameOriginExternalAssetsAndSerializedCanonicalTargets)
   EXPECT_NE(page.find("value=\"cm\" checked"), std::string::npos);
   EXPECT_NE(page.find("value=\"in\""), std::string::npos);
   EXPECT_NE(page.find("value=\"m\""), std::string::npos);
+  EXPECT_NE(page.find("id=\"motion-limit-scale\" type=\"range\" min=\"50\" max=\"100\" step=\"5\" value=\"80\""), std::string::npos);
+  EXPECT_NE(page.find("id=\"viewer-neutral-palette\" type=\"button\" aria-pressed=\"false\""), std::string::npos);
   EXPECT_NE(page.find("/web/portal.css"), std::string::npos);
   EXPECT_NE(page.find("/web/portal.js"), std::string::npos);
   EXPECT_NE(page.find("/web/viewer.js"), std::string::npos);
@@ -293,6 +334,8 @@ TEST(PortalPage, CarriesStrictInputAndSafetyContracts)
   EXPECT_NE(page.find("not a hardwired E-stop"), std::string::npos);
   EXPECT_NE(page.find("visual proxy — not collision checking"), std::string::npos);
   EXPECT_NE(page.find("OpenArm measured-pose viewer"), std::string::npos);
+  EXPECT_NE(page.find("only changes this local WebGL proxy and never sends a robot command"), std::string::npos);
+  EXPECT_NE(page.find("neutral is RViz-like, not stock RViz rendering"), std::string::npos);
   EXPECT_NE(page.find("no portal-switchable coordinate grid"), std::string::npos);
   EXPECT_NE(page.find("Virtual guard test inputs (cm)"), std::string::npos);
   EXPECT_NE(page.find("[5000, 5000, 5000]"), std::string::npos);
@@ -532,6 +575,8 @@ TEST(ViewerScript, UsesSequentialThirtyHertzPollingAndLocalOnlyCameraEvents)
   EXPECT_NE(viewer.find("if (active.size >= 2)"), std::string::npos);
   EXPECT_EQ(viewer.find("addEventListener('touchmove'"), std::string::npos);
   EXPECT_NE(viewer.find("reset-view"), std::string::npos);
+  EXPECT_NE(viewer.find("viewer-neutral-palette"), std::string::npos);
+  EXPECT_NE(viewer.find("paletteName = 'blue'"), std::string::npos);
   EXPECT_NE(viewer.find("nonfinite STL vertex"), std::string::npos);
   EXPECT_NE(viewer.find("MAX_ENCODED_BYTES = 2498724"), std::string::npos);
   EXPECT_NE(viewer.find("MAX_GPU_BYTES = MAX_TRIANGLES * 9 * 4"), std::string::npos);
@@ -543,7 +588,8 @@ TEST(ViewerScript, UsesSequentialThirtyHertzPollingAndLocalOnlyCameraEvents)
   EXPECT_EQ(viewer.find("https://"), std::string::npos);
   EXPECT_EQ(viewer.find("setInterval"), std::string::npos);
   EXPECT_NE(page.find("const metresPerUnit = {m: 1.0, cm: 0.01, in: 0.0254}"), std::string::npos);
-  EXPECT_NE(page.find("post('/api/v2/move'"), std::string::npos);
+  EXPECT_NE(page.find("post('/api/v3/move'"), std::string::npos);
+  EXPECT_NE(page.find("motion_limit_scale"), std::string::npos);
   EXPECT_NE(page.find("renderPresets('left'); renderPresets('right')"), std::string::npos);
   EXPECT_NE(page.find("result.projected"), std::string::npos);
   EXPECT_NE(page.find("result.achieved_fraction"), std::string::npos);

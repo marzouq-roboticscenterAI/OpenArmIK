@@ -6,7 +6,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
-#include <openarm_control_msgs/action/move_paired_tcp.hpp>
+#include <openarm_control_msgs/action/move_paired_tcp_scaled.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -47,11 +47,12 @@ namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
 using tcp = asio::ip::tcp;
-using Action = openarm_control_msgs::action::MovePairedTcp;
+using Action = openarm_control_msgs::action::MovePairedTcpScaled;
 using GoalHandle = rclcpp_action::ClientGoalHandle<Action>;
 static_assert(std::is_same_v<Point::value_type, double>);
 static_assert(std::is_same_v<decltype(Action::Goal{}.left_tcp_m.x), double>);
 static_assert(std::is_same_v<decltype(Action::Goal{}.right_tcp_m.z), double>);
+static_assert(std::is_same_v<decltype(Action::Goal{}.motion_limit_scale), double>);
 constexpr auto kStateFreshness = std::chrono::milliseconds(500);
 constexpr auto kDiagnosticFreshness = std::chrono::milliseconds(1500);
 volatile std::sig_atomic_t stop_requested = 0;
@@ -349,7 +350,7 @@ public:
   PortalNode()
   : Node("openarm_portal")
   {
-    action_ = rclcpp_action::create_client<Action>(this, "/openarm_ik/move_paired_tcp");
+    action_ = rclcpp_action::create_client<Action>(this, "/openarm_ik/move_paired_tcp_scaled");
     state_subscription_ = create_subscription<sensor_msgs::msg::JointState>(
       "/joint_states", rclcpp::QoS(10).reliable(),
       [this](const sensor_msgs::msg::JointState::SharedPtr message) {update_state(*message);});
@@ -459,7 +460,7 @@ public:
     const GuardResult & guard, std::uint64_t guard_token, std::string & reason)
   {
     if (!action_->wait_for_action_server(std::chrono::milliseconds(0))) {
-      reason = "MovePairedTcp action server is unavailable";
+      reason = "MovePairedTcpScaled action server is unavailable";
       return false;
     }
     std::unique_lock<std::mutex> state_lock(mutex_);
@@ -507,6 +508,7 @@ public:
     goal.right_tcp_m.x = guard.commanded_tcp[1][0];
     goal.right_tcp_m.y = guard.commanded_tcp[1][1];
     goal.right_tcp_m.z = guard.commanded_tcp[1][2];
+    goal.motion_limit_scale = request.motion_limit_scale;
     rclcpp_action::Client<Action>::SendGoalOptions options;
     options.goal_response_callback = [this](GoalHandle::SharedPtr handle) {
         bool cancel = false;
@@ -1052,7 +1054,7 @@ private:
       return;
     }
     if (request.method() != http::verb::post ||
-      (target != "/api/move" && target != "/api/v2/move" &&
+      (target != "/api/move" && target != "/api/v2/move" && target != "/api/v3/move" &&
       target != "/api/stop" && target != "/api/verify"))
     {
       write_json(stream, http::status::not_found, "{\"error\":\"route not found\"}");
@@ -1095,9 +1097,12 @@ private:
       return;
     }
     MoveRequest move;
-    if (target == "/api/v2/move") {
+    if (target == "/api/v2/move" || target == "/api/v3/move") {
       UnitMoveRequest unit_move;
-      if (!StrictJson::parse_move_v2(request.body(), unit_move, reason) ||
+      const bool parsed = target == "/api/v3/move" ?
+        StrictJson::parse_move_v3(request.body(), unit_move, reason) :
+        StrictJson::parse_move_v2(request.body(), unit_move, reason);
+      if (!parsed ||
         !normalise_move_to_metres(unit_move, move, reason))
       {
         write_json(stream, http::status::bad_request,
@@ -1143,6 +1148,7 @@ private:
       "; sampled nominal virtual protection only; controller collision_checked=false") +
       "\",\"projected\":" + (guarded.target_projected ? "true" : "false") +
       ",\"achieved_fraction\":" + json_number(guarded.achieved_fraction) +
+      ",\"motion_limit_scale\":" + json_number(move.motion_limit_scale) +
       ",\"requested_m\":[" + json_number(guarded.requested_tcp[0]) + "," +
       json_number(guarded.requested_tcp[1]) + "," + json_number(guarded.requested_tcp[2]) +
       "],\"commanded_m\":[" + json_number(guarded.commanded_tcp[selected][0]) + "," +

@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>openarm_control_msgs</name>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <description>Named Stage-A virtual control actions for OpenArm.</description>
   <maintainer email="maintainers@example.invalid">OpenArmIK maintainers</maintainer>
   <license>Apache-2.0</license>

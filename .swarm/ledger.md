@@ -215,6 +215,19 @@ Research and assemble the OpenArm 1.0 open-source stack, render and control a du
   (the six ROS-dependent cases were rerun with the installed ROS environment
   sourced). Two independent final safety/code sweeps reported CLEAN. Controller
   collision reporting remains false and no physical safety claim is made.
+- 2026-07-30: Portal movement limits became adjustable from the legacy 0.5
+  through 1.0, defaulting to 0.8. The strict v3 JSON boundary, additive
+  `MovePairedTcpScaled` action, and session boundary all preserve and validate
+  the binary64 scale; the original action and other legacy paths remain at 0.5.
+  The same scale bounds velocity, acceleration, and jerk, while the existing
+  synchronized seventh-order profile remains unchanged. The WebGL proxy now
+  has a command-free blue/neutral palette toggle. Focused portal 35/35,
+  scale-duration, Firefox, direct scaled-action, and live v3 portal gates passed;
+  the final full ROS suite passed 15/15 in 363.47 s. Its 44.94 s ROS contract
+  exercised live HTTP v3 through the scaled action to measured completion,
+  rejected 0.49/1.01/NaN/+Inf/-Inf at the action boundary, and verified scaled
+  cancellation plus race-tolerant process cleanup. Two independent final
+  reviews reported CLEAN. These are virtual, hardware-free results.
 
 ## Open items
 

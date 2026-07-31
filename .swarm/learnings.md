@@ -51,6 +51,11 @@
   `59590d1` is the independently CLEAN cache-hardening baseline after the
   `669ab88` integration and C1/I1/I2 cross-confirmation. Physical limitations
   above remain unchanged.
+- Portal movement-rate changes should preserve the original
+  `MovePairedTcp.action` contract. Use the additive scaled action, validate the
+  binary64 limit scale at JSON, ROS, and session boundaries, and keep legacy
+  paths explicitly at 0.5. A single equal velocity/acceleration/jerk scale is a
+  movement-limit percentage, not a linear travel-time percentage.
 - Native Cartesian inputs use the Model-owned strict-C `oa_vec3d` contract:
   three contiguous IEEE binary64 `double` values and explicit metre,
   centimetre, or inch units. Convert once at the highest ingress and never

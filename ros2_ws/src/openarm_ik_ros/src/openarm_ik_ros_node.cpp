@@ -9,6 +9,7 @@
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <openarm_control_msgs/action/move_joint.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp.hpp>
+#include <openarm_control_msgs/action/move_paired_tcp_scaled.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -39,13 +40,17 @@ namespace
 {
 using MoveJoint = openarm_control_msgs::action::MoveJoint;
 using MovePairedTcp = openarm_control_msgs::action::MovePairedTcp;
+using MovePairedTcpScaled = openarm_control_msgs::action::MovePairedTcpScaled;
 using JointGoalHandle = rclcpp_action::ServerGoalHandle<MoveJoint>;
 using PairedGoalHandle = rclcpp_action::ServerGoalHandle<MovePairedTcp>;
+using ScaledPairedGoalHandle = rclcpp_action::ServerGoalHandle<MovePairedTcpScaled>;
 using openarm_ik_ros::CommandFeedback;
 using openarm_ik_ros::CommandResult;
 using openarm_ik_ros::MeasuredState;
 using openarm_ik_ros::SessionCommand;
 using openarm_ik_ros::VirtualControlSession;
+using openarm_ik_ros::kLegacyMotionLimitScale;
+using openarm_ik_ros::valid_motion_limit_scale;
 
 class AuthorityLock final
 {
@@ -191,6 +196,18 @@ public:
       },
       [this](const std::shared_ptr<PairedGoalHandle> goal) {return on_paired_cancel(goal);},
       [this](const std::shared_ptr<PairedGoalHandle> goal) {accept_paired(goal);});
+    scaled_paired_server_ = rclcpp_action::create_server<MovePairedTcpScaled>(
+      this, "/openarm_ik/move_paired_tcp_scaled",
+      [this](
+        const rclcpp_action::GoalUUID & uuid,
+        std::shared_ptr<const MovePairedTcpScaled::Goal> goal)
+      {
+        return on_scaled_paired_goal(uuid, std::move(goal));
+      },
+      [this](const std::shared_ptr<ScaledPairedGoalHandle> goal) {
+        return on_scaled_paired_cancel(goal);
+      },
+      [this](const std::shared_ptr<ScaledPairedGoalHandle> goal) {accept_scaled_paired(goal);});
 
     legacy_subscription_ = create_subscription<geometry_msgs::msg::PoseArray>(
       "/openarm_ik/paired_xyz", qos,
@@ -340,6 +357,35 @@ private:
       rclcpp_action::CancelResponse::ACCEPT : rclcpp_action::CancelResponse::REJECT;
   }
 
+  rclcpp_action::GoalResponse on_scaled_paired_goal(
+    const rclcpp_action::GoalUUID & uuid,
+    const std::shared_ptr<const MovePairedTcpScaled::Goal> goal)
+  {
+    std::string reason;
+    if (!valid_stamp(goal->header.stamp, reason) || goal->header.frame_id.empty() ||
+      !finite_point(goal->left_tcp_m) || !finite_point(goal->right_tcp_m) ||
+      !valid_motion_limit_scale(goal->motion_limit_scale))
+    {
+      record_rejection("move_paired_tcp_scaled", uuid_string(uuid),
+        reason.empty() ? "invalid_scaled_paired_goal" : reason);
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+    if (!session_->reserve(uuid_string(uuid), reason)) {
+      record_rejection("move_paired_tcp_scaled", uuid_string(uuid), reason);
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+    record_request(
+      "move_paired_tcp_scaled", uuid_string(uuid), rclcpp::Time(goal->header.stamp).nanoseconds());
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+  }
+
+  rclcpp_action::CancelResponse on_scaled_paired_cancel(
+    const std::shared_ptr<ScaledPairedGoalHandle> goal)
+  {
+    return session_->cancel(uuid_string(goal->get_goal_id())) ?
+      rclcpp_action::CancelResponse::ACCEPT : rclcpp_action::CancelResponse::REJECT;
+  }
+
   bool transform_pair(
     const std_msgs::msg::Header & header, const geometry_msgs::msg::Point & left,
     const geometry_msgs::msg::Point & right, std::array<double, 3> & left_body,
@@ -366,7 +412,10 @@ private:
     }
   }
 
-  void accept_paired(const std::shared_ptr<PairedGoalHandle> goal_handle)
+  template<typename PairedAction>
+  void accept_paired_goal(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<PairedAction>> goal_handle,
+    const double motion_limit_scale, const std::string & diagnostic_action)
   {
     const auto goal = goal_handle->get_goal();
     const std::string owner = uuid_string(goal_handle->get_goal_id());
@@ -374,7 +423,9 @@ private:
     std::array<double, 3> right{};
     std::string reason;
     if (!transform_pair(goal->header, goal->left_tcp_m, goal->right_tcp_m, left, right, reason)) {
-      abort_paired_before_submit(goal_handle, owner, reason.empty() ? "invalid_transformed_target" : reason);
+      abort_paired_before_submit(
+        goal_handle, owner, diagnostic_action,
+        reason.empty() ? "invalid_transformed_target" : reason);
       return;
     }
     SessionCommand command;
@@ -382,12 +433,13 @@ private:
     command.owner = owner;
     command.left_tcp_m = left;
     command.right_tcp_m = right;
+    command.motion_limit_scale = motion_limit_scale;
     command.feedback = [this, goal_handle](const CommandFeedback & value) {
         if (!goal_publishable(goal_handle)) {
           return false;
         }
         try {
-          auto feedback = std::make_shared<MovePairedTcp::Feedback>();
+          auto feedback = std::make_shared<typename PairedAction::Feedback>();
           feedback->lifecycle = value.lifecycle;
           feedback->event = value.event;
           feedback->command_id = value.command_id;
@@ -402,21 +454,32 @@ private:
       };
     const auto goal_id = goal_handle->get_goal_id();
     const auto request_stamp = rclcpp::Time(goal->header.stamp).nanoseconds();
-    command.terminal = [this, goal_handle, goal_id, owner, request_stamp](
+    command.terminal = [this, goal_handle, goal_id, owner, request_stamp, diagnostic_action](
       const CommandResult & value) {
-        auto result = std::make_shared<MovePairedTcp::Result>();
+        auto result = std::make_shared<typename PairedAction::Result>();
         fill_common_result(*result, value, goal_id);
         result->left_seed_feedback_seq = value.seed_feedback_seq[0];
         result->right_seed_feedback_seq = value.seed_feedback_seq[1];
         result->plan_duration_ns = value.plan_duration_ns;
         result->left_terminal_feedback_seq = value.terminal_feedback_seq[0];
         result->right_terminal_feedback_seq = value.terminal_feedback_seq[1];
-        record_terminal("move_paired_tcp", owner, request_stamp, value);
+        record_terminal(diagnostic_action, owner, request_stamp, value);
         return finish_goal(goal_handle, result, value.outcome);
       };
     if (!session_->submit(std::move(command), reason)) {
-      abort_paired_before_submit(goal_handle, owner, reason);
+      abort_paired_before_submit(goal_handle, owner, diagnostic_action, reason);
     }
+  }
+
+  void accept_paired(const std::shared_ptr<PairedGoalHandle> goal_handle)
+  {
+    accept_paired_goal(goal_handle, kLegacyMotionLimitScale, "move_paired_tcp");
+  }
+
+  void accept_scaled_paired(const std::shared_ptr<ScaledPairedGoalHandle> goal_handle)
+  {
+    accept_paired_goal(
+      goal_handle, goal_handle->get_goal()->motion_limit_scale, "move_paired_tcp_scaled");
   }
 
   template<typename GoalHandle, typename Result>
@@ -469,12 +532,13 @@ private:
     (void)finish_goal(goal, result, internal.outcome);
   }
 
+  template<typename PairedAction>
   void abort_paired_before_submit(
-    const std::shared_ptr<PairedGoalHandle> & goal, const std::string & owner,
-    const std::string & reason)
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<PairedAction>> & goal,
+    const std::string & owner, const std::string & diagnostic_action, const std::string & reason)
   {
     session_->release(owner, reason);
-    auto result = std::make_shared<MovePairedTcp::Result>();
+    auto result = std::make_shared<typename PairedAction::Result>();
     CommandResult internal;
     internal.outcome = CommandResult::Outcome::rejected;
     internal.runtime_status = OA_RUNTIME_EINVAL;
@@ -482,7 +546,7 @@ private:
     const auto goal_id = goal->get_goal_id();
     fill_common_result(*result, internal, goal_id);
     record_terminal(
-      "move_paired_tcp", owner,
+      diagnostic_action, owner,
       rclcpp::Time(goal->get_goal()->header.stamp).nanoseconds(), internal);
     (void)finish_goal(goal, result, internal.outcome);
   }
@@ -789,6 +853,7 @@ private:
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_publisher_;
   rclcpp_action::Server<MoveJoint>::SharedPtr joint_server_;
   rclcpp_action::Server<MovePairedTcp>::SharedPtr paired_server_;
+  rclcpp_action::Server<MovePairedTcpScaled>::SharedPtr scaled_paired_server_;
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr legacy_subscription_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;

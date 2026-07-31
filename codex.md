@@ -16,7 +16,9 @@ as that skill requires.
 - `scripts/launch_rviz.sh` launches the separate stock RViz engineering view.
   The web portal intentionally uses its own 30 Hz measured-pose WebGL viewer,
   with drag/orbit, wheel zoom, touch pinch, reset, resize caps, and stale-state
-  overlays. It is not RViz pixels and is not collision checking.
+  overlays. A local-only button toggles the default blue/light-blue palette and
+  an RViz-like neutral palette. It is not RViz pixels and is not collision
+  checking.
 - The C/C++ model, unit conversion, IK/FK, CAN transport, commissioning,
   runtime, control API, ROS node, and portal server are implemented. Browser UI
   code is JavaScript; do not add Python production code. Existing Python test
@@ -61,9 +63,15 @@ before state capture/guard evaluation. Stop invalidates that reservation before
 submission, and `/api/stop` has a bounded urgent worker/admission lane separate
 from expensive ordinary API work. Preserve both properties.
 
-Motion remains deliberately smooth and conservative. The user said it may be
-made faster if necessary, but no increase was needed for this work. Any physical
-speed change must wait for actual hardware commissioning and safety validation.
+Portal motion now defaults to 80% of configured virtual velocity,
+acceleration, and jerk limits, with a 50–100% slider; the former fixed value was
+50%. The percentage is a limit scale, not a linear travel-time promise. The
+strict v3 portal request preserves the binary64 value through the additive
+`MovePairedTcpScaled` action and `SessionCommand`, while legacy v1/v2 requests,
+the original `MovePairedTcp` action, the CLI, and the deprecated PoseArray path
+remain at 50%. The synchronized seventh-order motion profile is unchanged.
+Any physical speed change still requires hardware commissioning and safety
+validation.
 
 ## Useful virtual coordinates
 
@@ -95,16 +103,18 @@ keepout occurs before 1 mm of validated progress, so it must be rejected.
 ## Latest verification evidence
 
 - Native component suites passed in the one-job test build.
-- Current source-built `test_virtual_control_session`: 18/18 passed in 273.50 s.
-- Current source-built `test_portal_core`: 34/34 passed. Focused projection and
-  reservation cases passed 7/7.
-- The remaining 13 registered ROS tests passed. ROS-dependent CTests must be run
-  with both setup files sourced; a deliberately bare-shell run produced missing
-  shared-library/import errors, and the corrected six-test subset passed 6/6 in
-  72.49 s.
+- Current source-built full ROS suite: 15/15 passed in 363.47 s.
+  `test_virtual_control_session` passed 18/18 in 273.79 s and
+  `test_portal_core` passed 35/35 in 1.32 s.
+- The 44.94 s ROS contract drove a real `/api/v3/move` request through the
+  scaled action to measured completion, rejected 0.49/1.01/NaN/+Inf/-Inf at
+  the action boundary, and verified accepted-goal cancellation plus
+  race-tolerant portal/launch cleanup.
 - Independent final reviews reported CLEAN for the collision boundary,
   non-monotonic IK search, no-op rejection, unit handling, urgent stop, and UI
-  wording.
+  wording. Two additional independent reviews reported CLEAN for the adjustable
+  movement limits, additive action compatibility, live v3 wiring, viewer palette,
+  and final cleanup behavior.
 - Live production portal checks projected `[5000,5000,5000]` cm to roughly
   `[37.94,53.18,45.49]` cm, projected the pole target `[40,5,40]` cm to roughly
   `[6.13,13.76,12.57]` cm, completed from measured virtual feedback, returned
@@ -153,6 +163,6 @@ finishing future work, use `git diff --check`, rebuild in one-job mode to avoid
 another out-of-memory event, and verify that `bash run.sh --no-build` accepts the
 current production stamp.
 
-The verified best-effort portal work was committed and pushed when this handoff
-was written. Do not push further work, create a PR, or alter remotes without
-explicit user authorization.
+The verified best-effort portal work was committed and pushed as `d66c44b`.
+The user explicitly authorized the subsequent movement-slider/view-style work
+to be committed and pushed; later unrelated work still needs fresh authority.

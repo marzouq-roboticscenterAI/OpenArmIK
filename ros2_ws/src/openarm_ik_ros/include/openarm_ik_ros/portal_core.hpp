@@ -5,6 +5,8 @@
 #define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1
 #include <openarm_model.h>
 
+#include "openarm_ik_ros/motion_profile.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +31,7 @@ struct MoveRequest
   enum class Side {left, right};
   Side side{Side::left};
   Point target{};
+  double motion_limit_scale{kLegacyMotionLimitScale};
 };
 
 struct UnitMoveRequest
@@ -36,6 +39,7 @@ struct UnitMoveRequest
   MoveRequest::Side side{MoveRequest::Side::left};
   oa_length_unit coordinate_unit{OA_LENGTH_UNIT_METRES};
   oa_vec3d target{};
+  double motion_limit_scale{kLegacyMotionLimitScale};
 };
 
 struct GuardInput
@@ -125,6 +129,7 @@ class StrictJson
 public:
   static bool parse_move(std::string_view body, MoveRequest & out, std::string & reason);
   static bool parse_move_v2(std::string_view body, UnitMoveRequest & out, std::string & reason);
+  static bool parse_move_v3(std::string_view body, UnitMoveRequest & out, std::string & reason);
   static bool empty_object(std::string_view body);
 };
 

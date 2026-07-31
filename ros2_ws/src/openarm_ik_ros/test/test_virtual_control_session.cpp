@@ -196,6 +196,56 @@ TEST(VirtualControlSession, PairedNamedTargetsReachMeasuredCompletion)
   EXPECT_GT(recorder.result->terminal_feedback_seq[1], recorder.result->seed_feedback_seq[1]);
 }
 
+TEST(VirtualControlSession, ValidatesAndAppliesPairedMotionLimitScale)
+{
+  {
+    Recorder recorder;
+    VirtualControlSession session(
+      [&recorder](const MeasuredState & value) {return recorder.state(value);}, []() {});
+    std::string reason;
+    ASSERT_TRUE(session.reserve("invalid-scale", reason));
+    SessionCommand invalid;
+    invalid.kind = SessionCommand::Kind::paired_tcp;
+    invalid.owner = "invalid-scale";
+    invalid.left_tcp_m = {0.20, 0.30, 0.85};
+    invalid.right_tcp_m = {0.20, -0.30, 0.85};
+    invalid.motion_limit_scale = 0.49;
+    EXPECT_FALSE(session.submit(std::move(invalid), reason));
+    EXPECT_EQ(reason, "invalid_motion_limit_scale");
+    session.release("invalid-scale", "test_release");
+  }
+
+  const auto planned_duration = [](const double scale, const std::string & owner) {
+      Recorder recorder;
+      VirtualControlSession session(
+        [&recorder](const MeasuredState & value) {return recorder.state(value);}, []() {});
+      std::string reason;
+      EXPECT_TRUE(session.reserve(owner, reason)) << reason;
+      SessionCommand command;
+      command.kind = SessionCommand::Kind::paired_tcp;
+      command.owner = owner;
+      command.left_tcp_m = {0.20, 0.30, 0.85};
+      command.right_tcp_m = {0.20, -0.30, 0.85};
+      command.motion_limit_scale = scale;
+      command.terminal = [&recorder](const CommandResult & value) {
+          return recorder.terminal(value);
+        };
+      EXPECT_TRUE(session.submit(std::move(command), reason)) << reason;
+      EXPECT_TRUE(wait_health(session, [](const auto & health) {
+        return health.adapter_state == openarm_ik_ros::AdapterState::executing;
+      }, 10s));
+      const std::uint64_t duration = session.health().plan_duration_ns;
+      EXPECT_GT(duration, 0U);
+      EXPECT_TRUE(session.cancel(owner));
+      EXPECT_TRUE(recorder.wait_result(2s));
+      return duration;
+    };
+
+  const std::uint64_t legacy_duration = planned_duration(0.5, "legacy-scale");
+  const std::uint64_t maximum_duration = planned_duration(1.0, "maximum-scale");
+  EXPECT_LT(maximum_duration, legacy_duration);
+}
+
 TEST(VirtualControlSession, BestEffortReachAndPoleMitigationCommandsCompleteFromFeedback)
 {
   namespace portal = openarm_ik_ros::portal;

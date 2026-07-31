@@ -201,6 +201,7 @@ bool StrictJson::parse_move(std::string_view body, MoveRequest & out, std::strin
   }
   body.remove_prefix(1);
   body.remove_suffix(1);
+  MoveRequest parsed;
   bool have_side = false;
   std::array<bool, 3> have_axis{};
   for (std::string_view field : split_fields(body)) {
@@ -217,13 +218,13 @@ bool StrictJson::parse_move(std::string_view body, MoveRequest & out, std::strin
         return false;
       }
       have_side = true;
-      out.side = value == "\"left\"" ? MoveRequest::Side::left : MoveRequest::Side::right;
+      parsed.side = value == "\"left\"" ? MoveRequest::Side::left : MoveRequest::Side::right;
       continue;
     }
     std::size_t axis = 3;
     if (key == "\"x\"") {axis = 0;} else if (key == "\"y\"") {axis = 1;} else if (
       key == "\"z\"") {axis = 2;}
-    if (axis == 3 || have_axis[axis] || !parse_number(value, out.target[axis])) {
+    if (axis == 3 || have_axis[axis] || !parse_number(value, parsed.target[axis])) {
       reason = "only unique finite numeric x, y, z fields are allowed";
       return false;
     }
@@ -233,6 +234,7 @@ bool StrictJson::parse_move(std::string_view body, MoveRequest & out, std::strin
     reason = "side, x, y, and z are required";
     return false;
   }
+  out = parsed;
   return true;
 }
 
@@ -295,6 +297,84 @@ bool StrictJson::parse_move_v2(
   }
   if (!have_side || !have_unit || !have_axis[0] || !have_axis[1] || !have_axis[2]) {
     reason = "side, unit, x, y, and z are required";
+    return false;
+  }
+  out = parsed;
+  return true;
+}
+
+bool StrictJson::parse_move_v3(
+  std::string_view body, UnitMoveRequest & out, std::string & reason)
+{
+  if (body.size() < 2 || body.size() > 512) {
+    reason = "JSON body length is invalid";
+    return false;
+  }
+  body = trim(body);
+  if (body.size() < 2 || body.front() != '{' || body.back() != '}') {
+    reason = "JSON object required";
+    return false;
+  }
+  body.remove_prefix(1);
+  body.remove_suffix(1);
+  UnitMoveRequest parsed;
+  bool have_side = false;
+  bool have_unit = false;
+  bool have_motion_limit_scale = false;
+  std::array<bool, 3> have_axis{};
+  for (std::string_view field : split_fields(body)) {
+    const std::size_t colon = field.find(':');
+    if (colon == std::string_view::npos || field.find(':', colon + 1) != std::string_view::npos) {
+      reason = "malformed JSON field";
+      return false;
+    }
+    const std::string_view key = trim(field.substr(0, colon));
+    const std::string_view value = trim(field.substr(colon + 1));
+    if (key == "\"side\"") {
+      if (have_side || !parse_side(value, parsed.side)) {
+        reason = "side must be unique and left or right";
+        return false;
+      }
+      have_side = true;
+      continue;
+    }
+    if (key == "\"unit\"") {
+      if (have_unit || !parse_length_unit(value, parsed.coordinate_unit)) {
+        reason = "unit must be unique and m, cm, or in";
+        return false;
+      }
+      have_unit = true;
+      continue;
+    }
+    if (key == "\"motion_limit_scale\"") {
+      if (have_motion_limit_scale || !parse_number(value, parsed.motion_limit_scale) ||
+        !valid_motion_limit_scale(parsed.motion_limit_scale))
+      {
+        reason = "motion_limit_scale must be unique, finite, and in [0.5, 1.0]";
+        return false;
+      }
+      have_motion_limit_scale = true;
+      continue;
+    }
+    std::size_t axis = 3;
+    if (key == "\"x\"") {axis = 0;} else if (key == "\"y\"") {axis = 1;} else if (
+      key == "\"z\"") {axis = 2;}
+    double coordinate = 0.0;
+    if (axis == 3 || have_axis[axis] || !parse_number(value, coordinate)) {
+      reason = "only unique finite numeric x, y, z fields are allowed";
+      return false;
+    }
+    if (axis == 0) {parsed.target.x = coordinate;} else if (axis == 1) {
+      parsed.target.y = coordinate;
+    } else {
+      parsed.target.z = coordinate;
+    }
+    have_axis[axis] = true;
+  }
+  if (!have_side || !have_unit || !have_axis[0] || !have_axis[1] || !have_axis[2] ||
+    !have_motion_limit_scale)
+  {
+    reason = "side, unit, x, y, z, and motion_limit_scale are required";
     return false;
   }
   out = parsed;
@@ -857,6 +937,7 @@ bool normalise_move_to_metres(
   MoveRequest converted;
   converted.side = input.side;
   converted.target = {metres.x, metres.y, metres.z};
+  converted.motion_limit_scale = input.motion_limit_scale;
   output = converted;
   return true;
 }
