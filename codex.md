@@ -71,17 +71,49 @@ The portal's 3D view is now a real RViz window (`rviz/openarm_bare.rviz`,
 shared in `scripts/lib/rviz_env.sh`. The Firefox viewer oracle was retired with
 the canvas it drove, so the ROS test inventory is 14, not 15.
 
+## Python conversion (commits ae3a383 .. HEAD)
+
+All seven Python test harnesses in the ROS package and the Python launch file
+are gone. 1549 lines of Python became 235.
+
+- `test/c/*.c` are C11 sharing `test/c/test_support.h`: test_generated_urdf
+  (libxml2), test_no_can_linkage, test_invalid_expiry_parameter,
+  test_visualization_urdf (libxml2 + json-c + libcrypto).
+- `test/c/*.cpp` are C++ because ROS 2 exposes actions only through
+  rclcpp_action: test_active_sigint, test_cli_server_lifecycle,
+  test_ros_contract. The last one carries a small loopback HTTP client rather
+  than adding a curl dependency.
+- `launch/openarm_ik_rviz.launch.xml` replaces the Python launch file.
+  robot_state_publisher's robot_description needs `type="str"`; without it the
+  launch parameter parser infers a type from the URDF payload and fails.
+
+The 235 remaining Python lines are deliberate and should stay:
+
+- `model/tools/generate_model.py` drives xacro, which is itself Python.
+  Replacing it means reimplementing xacro.
+- `model/tests/test_reference.py` and `test_generator.py` are an independent
+  oracle: they parse the URDF with a different implementation to cross-check
+  the C model. Porting them to C would delete the independence that is their
+  entire value.
+
+Two ports changed behaviour deliberately, both noted in their headers: the
+visualization test's 12 random postures come from a fixed LCG rather than
+Python's Mersenne Twister, and XML serialization comparisons use libxml2's
+serializer on both sides rather than ElementTree's bytes.
+
 ## Outstanding requests not yet implemented
 
 - Expose centroid/mirrored/converge and the E-stop through the ROS actions,
   portal HTTP API, and CLI. They exist and are tested only at the C ABI level.
+- Web page buttons that auto-populate the XYZ boxes for every demo.
+- A box object in RViz plus pick / lift / place demos.
 - Clap and cross-arms demos. The arms need only come close, not touch. Measured
   clearance stays above the 25 mm planning gate down to roughly 0.30 m between
   claws at x=0.30, z=0.35; below that the planner starts refusing. Crossing was
   not yet characterised: the throwaway probe used to sweep it had a state bug
   (it read OA_CONTROL_ESTATE from an unsettled controller as infeasibility).
-- A box object in RViz plus pick / lift / place demos.
-- Porting the remaining Python (test and launch tooling) to C.
+- Clap and cross-arms only need the claws to come close, not touch, so the
+  25 mm planning gate is not the obstacle it first appeared to be.
 
 ## Safety and behavior that must not regress
 
