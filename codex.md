@@ -1,6 +1,6 @@
 # OpenArmIK Codex handoff
 
-Last updated: 2026-07-30. This file is the starting point for future Codex
+Last updated: 2026-08-03. This file is the starting point for future Codex
 sessions. Work only inside `/home/signalprocessing-dev/OpenArmIK` unless the
 user explicitly changes scope. Read the root `SKILL.md` completely when the
 user asks to use it, and maintain `.swarm/ledger.md` and `.swarm/learnings.md`
@@ -31,6 +31,57 @@ as that skill requires.
   `enactic/openarm_description@6c7b720f1ba48e8bafa3a3dc752c45f397b42221`.
   The generated URDF and redistributed viewer collision meshes come from this
   pin and include the upstream license.
+
+## Bimanual motion, real-time keepout, contact, E-stop (commit 5d3eb56)
+
+Four simultaneous-motion planners now share one validated body in
+`control/src/control_core.cpp`: paired, centroid (both claws translate by the
+vector carrying their measured midpoint to a target), mirrored (one claw
+commanded, the other mirrored across y = 0), and converge (both claws advance
+on a shared point until contact torque, a keepout violation, or the planned
+prefix ends). All four inherit identical all-or-nothing, identity-binding,
+freshness and expiry semantics.
+
+`model/openarm_collision.{h,c}` is the single source of truth for the keepout
+geometry, in C. The portal guard delegates to it. It was verified bit-exact
+against the previous portal implementation over 400k randomized scenes.
+
+Two thresholds exist and must stay distinct: planning requires 25 mm
+(`oa_collision_required_clearance_m`), the real-time monitor intervenes at
+10 mm (`oa_collision_intervention_clearance_m`). Sharing one value aborted
+motions the planner legitimately accepted, because the measured arm always
+trails its reference; `test_virtual_control_session` catches that regression.
+
+Simulated contact reports **servo effort while the plant is held**, not
+penetration depth. Holding the plant at the obstacle surface keeps penetration
+near zero, so a penetration-based reaction stays negligible however hard the
+arm pushes. Do not "simplify" it back.
+
+`oa_estop_assert` is a process-wide lock-free latch with no handle and no lock,
+safe from any thread or a signal handler, sampled at the top of every control
+cycle in every lifecycle state before any other work. It is a software
+interlock, not a hardwired E-stop.
+
+Runtime additions live in `openarm_runtime_motion.h`. `openarm_runtime.h` stays
+byte-identical to its frozen copy; centroid and mirrored are header-only
+adapters adding no symbols, and the manifest moved 50 -> 57 explicitly.
+
+The portal's 3D view is now a real RViz window (`rviz/openarm_bare.rviz`,
+`Panels: []`) rather than the in-browser WebGL proxy. Renderer/HiDPI setup is
+shared in `scripts/lib/rviz_env.sh`. The Firefox viewer oracle was retired with
+the canvas it drove, so the ROS test inventory is 14, not 15.
+
+## Outstanding requests not yet implemented
+
+- Expose centroid/mirrored/converge and the E-stop through the ROS actions,
+  portal HTTP API, and CLI. They exist and are tested only at the C ABI level.
+- Clap and cross-arms demos. The arms need only come close, not touch. Measured
+  clearance stays above the 25 mm planning gate down to roughly 0.30 m between
+  claws at x=0.30, z=0.35; below that the planner starts refusing. Crossing was
+  not yet characterised: the throwaway probe used to sweep it had a state bug
+  (it read OA_CONTROL_ESTATE from an unsettled controller as infeasibility).
+- A box object in RViz plus pick / lift / place demos.
+- Porting the remaining Python (test and launch tooling) to C.
 
 ## Safety and behavior that must not regress
 
