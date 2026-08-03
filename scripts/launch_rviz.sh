@@ -5,6 +5,7 @@ root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$root_dir/scripts/lib/description_pin.sh"
 source "$root_dir/scripts/build_lock.sh"
 source "$root_dir/scripts/lib/launch_integrity.sh"
+source "$root_dir/scripts/lib/rviz_env.sh"
 output_root="$root_dir/ros2_ws"
 build_mode=auto
 jobs=
@@ -106,56 +107,7 @@ expected_package_prefix=$(realpath -e -- "$output_root/install/openarm_ik_ros")
   exit 1
 }
 
-# RViz/Ogre on this Wayland desktop requires XWayland/GLX.  Its Ogre render
-# window can flicker after a HiDPI resize when Qt uses devicePixelRatio=2, so
-# keep scaling off for this process only.  XWayland still reports 192 DPI and
-# preserves readable fonts without the unstable double-scaled render target.
-export QT_QPA_PLATFORM=xcb
-export QT_XCB_GL_INTEGRATION=xcb_glx
-export QT_ENABLE_HIGHDPI_SCALING=0
-export QT_SCREEN_SCALE_FACTORS=1
-unset QT_SCALE_FACTOR QT_AUTO_SCREEN_SCALE_FACTOR || true
-renderer=${OPENARM_RVIZ_RENDERER:-auto}
-if [[ "$renderer" == "auto" ]]; then
-  # Hardware GLX presentation flickers during live resize through XWayland on
-  # this HiDPI hybrid-GPU laptop.  The small OpenArm scene runs smoothly in
-  # llvmpipe and remains stable while resizing.  Keep GPU acceleration for a
-  # native X11 session or when explicitly requested.
-  if [[ ${XDG_SESSION_TYPE:-} == "wayland" ]]; then
-    renderer=software
-  elif [[ -e /dev/nvidia0 ]] && command -v nvidia-smi >/dev/null 2>&1 && \
-      nvidia-smi >/dev/null 2>&1; then
-    renderer=nvidia
-  else
-    renderer=integrated
-  fi
-fi
-case "$renderer" in
-  nvidia)
-    unset LIBGL_ALWAYS_SOFTWARE || true
-    export __NV_PRIME_RENDER_OFFLOAD=1
-    export __GLX_VENDOR_LIBRARY_NAME=nvidia
-    export __VK_LAYER_NV_optimus=NVIDIA_only
-    export __GL_SYNC_TO_VBLANK=1
-    export __GL_GSYNC_ALLOWED=0
-    export __GL_VRR_ALLOWED=0
-    printf 'OpenArm RViz renderer: NVIDIA PRIME offload (XWayland/GLX)\n'
-    ;;
-  integrated)
-    unset LIBGL_ALWAYS_SOFTWARE || true
-    unset __NV_PRIME_RENDER_OFFLOAD __GLX_VENDOR_LIBRARY_NAME __VK_LAYER_NV_optimus __GL_SYNC_TO_VBLANK __GL_GSYNC_ALLOWED __GL_VRR_ALLOWED || true
-    printf 'OpenArm RViz renderer: integrated GPU (XWayland/GLX)\n'
-    ;;
-  software)
-    unset __NV_PRIME_RENDER_OFFLOAD __GLX_VENDOR_LIBRARY_NAME __VK_LAYER_NV_optimus __GL_SYNC_TO_VBLANK __GL_GSYNC_ALLOWED __GL_VRR_ALLOWED || true
-    export LIBGL_ALWAYS_SOFTWARE=1
-    printf 'OpenArm RViz renderer: Mesa software rasterizer (XWayland/GLX)\n'
-    ;;
-  *)
-    printf 'OPENARM_RVIZ_RENDERER must be auto, nvidia, integrated, or software\n' >&2
-    exit 2
-    ;;
-esac
+openarm_configure_rviz_environment || exit $?
 
 rviz_enabled=1
 launch_arguments=()

@@ -1,5 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+/* The keepout geometry lives in the model library, whose header carries the
+ * legacy unprefixed status names. Suppress them for this translation unit
+ * before any public header is seen; this file uses the OA_CONTROL_* names
+ * throughout and never relies on the legacy aliases. */
+#define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1
+
 #include "control_core.hpp"
+#include "openarm_collision.h"
 
 #include <algorithm>
 #include <atomic>
@@ -164,10 +171,26 @@ void DamiaoMotorSimulator::command(const double q_model, const double dq_model) 
     command_raw_dq_ = dq_model / config_.q_scale;
 }
 
+void DamiaoMotorSimulator::set_blocked(const bool blocked,
+                                       const double reaction_gain_nm_per_rad) noexcept {
+    blocked_ = blocked;
+    /* A stiff joint reaches full rated torque within a fraction of a radian of
+     * unclosed error. The default is derived from the motor's own tmax so every
+     * joint saturates at the same relative overshoot. */
+    const double fallback = config_.tmax_nm / 0.15;
+    reaction_gain_nm_per_rad_ =
+        (std::isfinite(reaction_gain_nm_per_rad) && reaction_gain_nm_per_rad > 0.0)
+            ? reaction_gain_nm_per_rad
+            : fallback;
+}
+
 FeedbackFrame DamiaoMotorSimulator::capture(const double dt_s,
                                             const std::uint64_t capture_ns,
                                             const bool frozen) noexcept {
-    if (!frozen) {
+    /* A blocked plant is held by an external obstacle. The reference keeps
+     * advancing, so the position error the controller must overcome grows and
+     * the reaction torque reported below rises with it. */
+    if (!frozen && !blocked_) {
         const double max_velocity = config_.max_velocity_rad_s;
         const double max_acceleration = config_.max_acceleration_rad_s2;
         const double position_error = command_raw_q_ - plant_raw_q_;
@@ -194,7 +217,24 @@ FeedbackFrame DamiaoMotorSimulator::capture(const double dt_s,
     }
     const std::uint32_t q_field = encode_field(plant_raw_q_, config_.pmax_rad, 65535U);
     const std::uint32_t dq_field = encode_field(plant_raw_dq_, config_.vmax_rad_s, 4095U);
-    const std::uint32_t tau_field = encode_field(0.0, config_.tmax_nm, 4095U);
+    /* Free motion in this simulator is frictionless and gravity-free, so the
+     * only torque reported is the servo effort spent against an external
+     * contact. While blocked the reference keeps advancing and the plant does
+     * not, so the unclosed error, and with it the reported torque, grows until
+     * it saturates. Encoding is the ordinary DaMiao torque field, so the
+     * contact monitor observes it through the same quantized feedback path as
+     * real hardware would. */
+    double contact_tau_model_nm = 0.0;
+    if (blocked_) {
+        const double error_model_rad =
+            (command_raw_q_ - plant_raw_q_) * config_.q_scale;
+        contact_tau_model_nm = reaction_gain_nm_per_rad_ * error_model_rad;
+        if (!std::isfinite(contact_tau_model_nm)) {
+            contact_tau_model_nm = 0.0;
+        }
+    }
+    const std::uint32_t tau_field =
+        encode_field(contact_tau_model_nm * config_.q_scale, config_.tmax_nm, 4095U);
     const std::uint8_t status = fault_status_ != 0U ? fault_status_ : (enabled_ ? 1U : 0U);
     FeedbackFrame frame{};
     frame.data[0] = static_cast<std::uint8_t>(
@@ -424,6 +464,27 @@ JointVector ArmRuntime::measured_dq() const noexcept {
         dq[joint] = motor_[joint].mapped_dq();
     }
     return dq;
+}
+
+JointVector ArmRuntime::measured_tau() const noexcept {
+    JointVector tau{};
+    for (std::size_t joint = 0; joint < motor_.size(); ++joint) {
+        tau[joint] = motor_[joint].mapped_tau();
+    }
+    return tau;
+}
+
+void ArmRuntime::set_blocked(const bool blocked,
+                             const double reaction_gain_nm_per_rad) noexcept {
+    for (auto &motor : motor_) {
+        motor.set_blocked(blocked, reaction_gain_nm_per_rad);
+    }
+}
+
+void ArmRuntime::clear_contact() noexcept {
+    for (auto &motor : motor_) {
+        motor.set_blocked(false, 0.0);
+    }
 }
 
 bool ArmRuntime::complete_fresh(const std::uint64_t now_ns,
@@ -656,8 +717,13 @@ oa_control_status Controller::plan_joint(const oa_joint_move &request,
     return OA_CONTROL_OK;
 }
 
-oa_control_status Controller::plan_paired(const oa_paired_tcp_move &request,
-                                  std::unique_ptr<MotionPlan> &out) noexcept {
+oa_control_status Controller::plan_preconditions() noexcept {
+    /* The E-stop is sampled before anything else, so a latched stop can never be
+     * overtaken by a newly submitted plan. */
+    if (oa_estop_asserted() != 0U) {
+        estop_latched_ = true;
+        return OA_CONTROL_EESTOP;
+    }
     if (lifecycle_ != OA_LIFECYCLE_ARMED_IDLE) {
         return OA_CONTROL_ESTATE;
     }
@@ -670,6 +736,34 @@ oa_control_status Controller::plan_paired(const oa_paired_tcp_move &request,
     if (!collision_allowed()) {
         return OA_CONTROL_ECOLLISION;
     }
+    return OA_CONTROL_OK;
+}
+
+oa_control_status Controller::plan_paired(const oa_paired_tcp_move &request,
+                                  std::unique_ptr<MotionPlan> &out) noexcept {
+    const oa_control_status precondition = plan_preconditions();
+    if (precondition != OA_CONTROL_OK) {
+        return precondition;
+    }
+    PairedPlanRequest common{};
+    common.kind = OA_PLAN_PAIRED_TCP;
+    common.expiry_ns = request.expiry_ns;
+    common.required_feedback_seq = {request.required_feedback_seq[0],
+                                    request.required_feedback_seq[1]};
+    std::copy(request.left_tcp_m, request.left_tcp_m + 3, common.target_tcp[0].begin());
+    std::copy(request.right_tcp_m, request.right_tcp_m + 3, common.target_tcp[1].begin());
+    common.velocity_scale = request.velocity_scale;
+    common.acceleration_scale = request.acceleration_scale;
+    common.jerk_scale = request.jerk_scale;
+    common.tcp_tol_m = request.tcp_tol_m;
+    common.collision_scene_revision = request.collision_scene_revision;
+    common.max_branch_step_rad = request.max_branch_step_rad;
+    common.min_singular_value = request.min_singular_value;
+    return plan_paired_common(common, out);
+}
+
+oa_control_status Controller::plan_paired_common(
+    const PairedPlanRequest &request, std::unique_ptr<MotionPlan> &out) noexcept {
     if (request.expiry_ns <= now_ns_ ||
         request.required_feedback_seq[0] != arm_[0].feedback_sequence() ||
         request.required_feedback_seq[1] != arm_[1].feedback_sequence() ||
@@ -682,7 +776,7 @@ oa_control_status Controller::plan_paired(const oa_paired_tcp_move &request,
         return OA_CONTROL_EINVAL;
     }
     auto plan = std::make_unique<MotionPlan>();
-    plan->kind = OA_PLAN_PAIRED_TCP;
+    plan->kind = request.kind;
     plan->active_arm_mask = 0x3U;
     plan->manifest_revision = manifest_->config().manifest_revision;
     plan->model_revision = manifest_->config().model_revision;
@@ -694,8 +788,7 @@ oa_control_status Controller::plan_paired(const oa_paired_tcp_move &request,
     for (std::size_t side = 0; side < 2U; ++side) {
         plan->seed_seq[side] = arm_[side].feedback_sequence();
         plan->start_q[side] = arm_[side].measured_q();
-        const auto *target_data = side == 0U ? request.left_tcp_m : request.right_tcp_m;
-        std::copy(target_data, target_data + 3, plan->target_tcp[side].begin());
+        plan->target_tcp[side] = request.target_tcp[side];
         for (const double value : plan->target_tcp[side]) {
             if (!finite(value)) {
                 return OA_CONTROL_EINVAL;
@@ -768,6 +861,186 @@ oa_control_status Controller::plan_paired(const oa_paired_tcp_move &request,
     return OA_CONTROL_OK;
 }
 
+namespace {
+
+std::array<double, 3> difference(const std::array<double, 3> &a,
+                                 const std::array<double, 3> &b) noexcept {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+
+double magnitude(const std::array<double, 3> &value) noexcept {
+    return std::sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2]);
+}
+
+bool finite_point(const double value[3]) noexcept {
+    return std::isfinite(value[0]) && std::isfinite(value[1]) && std::isfinite(value[2]);
+}
+
+}  // namespace
+
+oa_control_status Controller::plan_centroid(const oa_centroid_tcp_move &request,
+                                            std::unique_ptr<MotionPlan> &out) noexcept {
+    const oa_control_status precondition = plan_preconditions();
+    if (precondition != OA_CONTROL_OK) {
+        return precondition;
+    }
+    if (!finite_point(request.target_centroid_m)) {
+        return OA_CONTROL_EINVAL;
+    }
+    /* The midpoint is taken from measured feedback, never from a previous
+     * command, so the translation is relative to where the arms actually are. */
+    std::array<std::array<double, 3>, 2> measured_tcp{};
+    for (std::size_t side = 0; side < 2U; ++side) {
+        KinematicResult fk{};
+        if (!forward(static_cast<std::uint32_t>(side), arm_[side].measured_q(), fk)) {
+            return OA_CONTROL_EFAULT;
+        }
+        measured_tcp[side] = fk.tcp_xyz;
+    }
+    PairedPlanRequest common{};
+    common.kind = OA_PLAN_CENTROID_TCP;
+    common.expiry_ns = request.expiry_ns;
+    common.required_feedback_seq = {request.required_feedback_seq[0],
+                                    request.required_feedback_seq[1]};
+    for (std::size_t axis = 0; axis < 3U; ++axis) {
+        const double centroid = 0.5 * (measured_tcp[0][axis] + measured_tcp[1][axis]);
+        const double delta = request.target_centroid_m[axis] - centroid;
+        if (!std::isfinite(delta)) {
+            return OA_CONTROL_EINVAL;
+        }
+        for (std::size_t side = 0; side < 2U; ++side) {
+            const double target = measured_tcp[side][axis] + delta;
+            if (!std::isfinite(target)) {
+                return OA_CONTROL_EINVAL;
+            }
+            common.target_tcp[side][axis] = target;
+        }
+    }
+    common.velocity_scale = request.velocity_scale;
+    common.acceleration_scale = request.acceleration_scale;
+    common.jerk_scale = request.jerk_scale;
+    common.tcp_tol_m = request.tcp_tol_m;
+    common.collision_scene_revision = request.collision_scene_revision;
+    common.max_branch_step_rad = request.max_branch_step_rad;
+    common.min_singular_value = request.min_singular_value;
+    return plan_paired_common(common, out);
+}
+
+oa_control_status Controller::plan_mirrored(const oa_mirrored_tcp_move &request,
+                                            std::unique_ptr<MotionPlan> &out) noexcept {
+    const oa_control_status precondition = plan_preconditions();
+    if (precondition != OA_CONTROL_OK) {
+        return precondition;
+    }
+    if (request.lead_side != OA_LEFT && request.lead_side != OA_RIGHT) {
+        return OA_CONTROL_EINVAL;
+    }
+    if (!finite_point(request.lead_tcp_m)) {
+        return OA_CONTROL_EINVAL;
+    }
+    const std::size_t lead = static_cast<std::size_t>(request.lead_side);
+    const std::size_t follow = lead == 0U ? 1U : 0U;
+    PairedPlanRequest common{};
+    common.kind = OA_PLAN_MIRRORED_TCP;
+    common.expiry_ns = request.expiry_ns;
+    common.required_feedback_seq = {request.required_feedback_seq[0],
+                                    request.required_feedback_seq[1]};
+    /* The body sagittal plane is y = 0, so the mirror negates y only. */
+    common.target_tcp[lead] = {request.lead_tcp_m[0], request.lead_tcp_m[1],
+                               request.lead_tcp_m[2]};
+    common.target_tcp[follow] = {request.lead_tcp_m[0], -request.lead_tcp_m[1],
+                                 request.lead_tcp_m[2]};
+    common.velocity_scale = request.velocity_scale;
+    common.acceleration_scale = request.acceleration_scale;
+    common.jerk_scale = request.jerk_scale;
+    common.tcp_tol_m = request.tcp_tol_m;
+    common.collision_scene_revision = request.collision_scene_revision;
+    common.max_branch_step_rad = request.max_branch_step_rad;
+    common.min_singular_value = request.min_singular_value;
+    return plan_paired_common(common, out);
+}
+
+oa_control_status Controller::plan_converge(const oa_converge_tcp_move &request,
+                                            std::unique_ptr<MotionPlan> &out) noexcept {
+    const oa_control_status precondition = plan_preconditions();
+    if (precondition != OA_CONTROL_OK) {
+        return precondition;
+    }
+    if (!finite_point(request.target_m) || !std::isfinite(request.stop_distance_m) ||
+        request.stop_distance_m < 0.0 || !std::isfinite(request.minimum_progress_m) ||
+        request.minimum_progress_m < 0.0 ||
+        !std::isfinite(request.contact_torque_fraction)) {
+        return OA_CONTROL_EINVAL;
+    }
+    const std::array<double, 3> target{request.target_m[0], request.target_m[1],
+                                       request.target_m[2]};
+    PairedPlanRequest common{};
+    common.kind = OA_PLAN_CONVERGE_TCP;
+    common.expiry_ns = request.expiry_ns;
+    common.required_feedback_seq = {request.required_feedback_seq[0],
+                                    request.required_feedback_seq[1]};
+    for (std::size_t side = 0; side < 2U; ++side) {
+        KinematicResult fk{};
+        if (!forward(static_cast<std::uint32_t>(side), arm_[side].measured_q(), fk)) {
+            return OA_CONTROL_EFAULT;
+        }
+        const std::array<double, 3> ray = difference(target, fk.tcp_xyz);
+        const double distance = magnitude(ray);
+        if (!std::isfinite(distance)) {
+            return OA_CONTROL_EINVAL;
+        }
+        /* Stop short of the convergence point along this arm's own approach
+         * ray. An arm already inside the stop radius has nothing to travel. */
+        const double travel = distance - request.stop_distance_m;
+        if (travel < request.minimum_progress_m) {
+            return OA_CONTROL_EUNREACHABLE;
+        }
+        const double scale = travel / distance;
+        for (std::size_t axis = 0; axis < 3U; ++axis) {
+            const double value = fk.tcp_xyz[axis] + ray[axis] * scale;
+            if (!std::isfinite(value)) {
+                return OA_CONTROL_EINVAL;
+            }
+            common.target_tcp[side][axis] = value;
+        }
+    }
+    common.velocity_scale = request.velocity_scale;
+    common.acceleration_scale = request.acceleration_scale;
+    common.jerk_scale = request.jerk_scale;
+    common.tcp_tol_m = request.tcp_tol_m;
+    common.collision_scene_revision = request.collision_scene_revision;
+    common.max_branch_step_rad = request.max_branch_step_rad;
+    common.min_singular_value = request.min_singular_value;
+    const oa_control_status status = plan_paired_common(common, out);
+    if (status != OA_CONTROL_OK) {
+        return status;
+    }
+    out->contact_monitored = true;
+    out->contact_persistence_cycles =
+        request.contact_persistence_cycles == 0U
+            ? oa_control_default_contact_persistence_cycles()
+            : request.contact_persistence_cycles;
+    const double fraction = request.contact_torque_fraction > 0.0
+                                ? request.contact_torque_fraction
+                                : oa_control_default_contact_torque_fraction();
+    for (std::size_t side = 0; side < 2U; ++side) {
+        for (std::size_t joint = 0; joint < 7U; ++joint) {
+            const double explicit_threshold = request.contact_torque_nm[joint];
+            const auto &motor = manifest_->config().arm[side].motor[joint];
+            double threshold = explicit_threshold;
+            if (!std::isfinite(threshold) || threshold <= 0.0) {
+                threshold = fraction * motor.tmax_nm;
+            }
+            if (!std::isfinite(threshold) || threshold <= 0.0) {
+                out.reset();
+                return OA_CONTROL_EINVAL;
+            }
+            out->contact_threshold_nm[side][joint] = threshold;
+        }
+    }
+    return OA_CONTROL_OK;
+}
+
 std::uint64_t Controller::trajectory_duration(
     const std::array<JointVector, 2> &start,
     const std::array<JointVector, 2> &target, const double velocity_scale,
@@ -826,6 +1099,7 @@ oa_control_status Controller::execute(const MotionPlan &plan, const oa_execute_r
         plan.duration_ns > request.expiry_ns - start_ns) {
         return OA_CONTROL_EINVAL;
     }
+    reset_contact_report();
     executing_ = plan;
     command_id_ = next_command_id_++;
     command_start_ns_ = start_ns;
@@ -843,7 +1117,238 @@ oa_control_status Controller::execute(const MotionPlan &plan, const oa_execute_r
                    OA_CONTROL_OK, command_id_) ? OA_CONTROL_OK : OA_CONTROL_EBUSY;
 }
 
+bool Controller::keepout_clear(const std::array<JointVector, 2> &q,
+                               KeepoutStatus &status) const noexcept {
+    status = {};
+    status.minimum_clearance_m = -std::numeric_limits<double>::infinity();
+    oa_collision_scene scene{};
+    scene.abi_version = OA_COLLISION_ABI_VERSION;
+    scene.struct_size = static_cast<std::uint32_t>(sizeof(scene));
+    for (std::size_t side = 0; side < 2U; ++side) {
+        KinematicResult fk{};
+        if (!forward(static_cast<std::uint32_t>(side), q[side], fk)) {
+            return false;
+        }
+        for (std::size_t joint = 0; joint < 7U; ++joint) {
+            for (std::size_t axis = 0; axis < 3U; ++axis) {
+                scene.point[side][joint][axis] = fk.joint_xyz[joint][axis];
+            }
+        }
+        for (std::size_t axis = 0; axis < 3U; ++axis) {
+            scene.point[side][7][axis] = fk.tcp_xyz[axis];
+        }
+    }
+    /* Monitor at the intervention floor, not the planning gate: a planner may
+     * legitimately accept a path sitting exactly on the planning clearance, and
+     * the measured arm always trails its reference. */
+    oa_collision_report report{};
+    const oa_model_status evaluated = oa_collision_evaluate_with_threshold(
+        &scene, oa_collision_intervention_clearance_m(), &report);
+    status.violation = report.violation;
+    status.side = report.side;
+    status.segment_a = report.segment_a;
+    status.segment_b = report.segment_b;
+    status.minimum_clearance_m = report.minimum_clearance_m;
+    if (evaluated != OA_MODEL_OK) {
+        return false;
+    }
+    status.clear = report.clear != 0U;
+    return status.clear;
+}
+
+bool Controller::monitor_keepout() noexcept {
+    /* Evaluated every cycle from measured feedback, not from the plan. A plan
+     * validated at submission time can still be carried into a violation by
+     * disturbance, drift, or a stale start pose, so the gate is re-proved
+     * continuously while the arms are moving. */
+    const std::array<JointVector, 2> measured{arm_[0].measured_q(), arm_[1].measured_q()};
+    KeepoutStatus status{};
+    if (keepout_clear(measured, status)) {
+        contact_report_.minimum_clearance_m = status.minimum_clearance_m;
+        return true;
+    }
+    contact_report_.cause = OA_STOP_CAUSE_KEEPOUT;
+    contact_report_.keepout_violation = status.violation;
+    contact_report_.keepout_side = status.side;
+    contact_report_.keepout_segment_a = status.segment_a;
+    contact_report_.keepout_segment_b = status.segment_b;
+    contact_report_.minimum_clearance_m = status.minimum_clearance_m;
+    contact_report_.stop_monotonic_ns = now_ns_;
+    for (std::size_t side = 0; side < 2U; ++side) {
+        contact_report_.stop_feedback_seq[side] = arm_[side].feedback_sequence();
+        const auto q = arm_[side].measured_q();
+        std::copy(q.begin(), q.end(), contact_report_.stopped_q_rad[side]);
+        KinematicResult fk{};
+        if (forward(static_cast<std::uint32_t>(side), q, fk)) {
+            std::copy(fk.tcp_xyz.begin(), fk.tcp_xyz.end(),
+                      contact_report_.stopped_tcp_m[side]);
+        }
+    }
+    return false;
+}
+
+bool Controller::monitor_contact() noexcept {
+    if (!executing_ || !executing_->contact_monitored) {
+        return true;
+    }
+    std::uint32_t side_mask = 0U;
+    std::array<std::uint32_t, 2> joint_mask{};
+    std::array<JointVector, 2> measured_tau{};
+    for (std::size_t side = 0; side < 2U; ++side) {
+        measured_tau[side] = arm_[side].measured_tau();
+        for (std::size_t joint = 0; joint < 7U; ++joint) {
+            const double threshold = executing_->contact_threshold_nm[side][joint];
+            if (threshold > 0.0 && std::abs(measured_tau[side][joint]) >= threshold) {
+                side_mask |= (1U << side);
+                joint_mask[side] |= (1U << joint);
+            }
+        }
+    }
+    if (side_mask == 0U) {
+        contact_streak_ = 0U;
+        return true;
+    }
+    /* Require the threshold to hold for consecutive cycles so a single noisy
+     * quantized torque sample cannot end a command. */
+    ++contact_streak_;
+    if (contact_streak_ < executing_->contact_persistence_cycles) {
+        return true;
+    }
+    contact_report_.cause = OA_STOP_CAUSE_CONTACT;
+    contact_report_.contact_detected = 1U;
+    contact_report_.contact_side_mask = side_mask;
+    contact_report_.stop_monotonic_ns = now_ns_;
+    for (std::size_t side = 0; side < 2U; ++side) {
+        contact_report_.contact_joint_mask[side] = joint_mask[side];
+        contact_report_.stop_feedback_seq[side] = arm_[side].feedback_sequence();
+        std::copy(measured_tau[side].begin(), measured_tau[side].end(),
+                  contact_report_.contact_torque_nm[side]);
+        std::copy(executing_->contact_threshold_nm[side].begin(),
+                  executing_->contact_threshold_nm[side].end(),
+                  contact_report_.threshold_torque_nm[side]);
+        const auto q = arm_[side].measured_q();
+        std::copy(q.begin(), q.end(), contact_report_.stopped_q_rad[side]);
+        KinematicResult fk{};
+        if (forward(static_cast<std::uint32_t>(side), q, fk)) {
+            std::copy(fk.tcp_xyz.begin(), fk.tcp_xyz.end(),
+                      contact_report_.stopped_tcp_m[side]);
+        }
+    }
+    return false;
+}
+
+void Controller::apply_sim_contact() noexcept {
+    /* The obstacle decides only whether the arm is held. The torque the contact
+     * monitor sees is the servo effort that holding produces, which the motor
+     * simulator derives from the reference overshoot it cannot close. */
+    for (std::size_t side = 0; side < 2U; ++side) {
+        const oa_sim_contact &contact = sim_contact_[side];
+        if (contact.enabled == 0U) {
+            arm_[side].clear_contact();
+            continue;
+        }
+        KinematicResult fk{};
+        if (!forward(static_cast<std::uint32_t>(side), arm_[side].measured_q(), fk)) {
+            arm_[side].clear_contact();
+            continue;
+        }
+        const std::array<double, 3> offset{fk.tcp_xyz[0] - contact.center_m[0],
+                                           fk.tcp_xyz[1] - contact.center_m[1],
+                                           fk.tcp_xyz[2] - contact.center_m[2]};
+        const double distance = magnitude(offset);
+        if (!std::isfinite(distance) || !(distance < contact.radius_m)) {
+            arm_[side].clear_contact();
+            continue;
+        }
+        arm_[side].set_blocked(true, contact.reaction_gain_nm_per_rad);
+    }
+}
+
+void Controller::reset_contact_report() noexcept {
+    contact_report_ = {};
+    contact_report_.struct_size = static_cast<std::uint32_t>(sizeof(contact_report_));
+    contact_report_.abi_version = OA_CONTROL_ABI_V1;
+    contact_report_.cause = OA_STOP_CAUSE_NONE;
+    contact_report_.minimum_clearance_m = std::numeric_limits<double>::quiet_NaN();
+    contact_streak_ = 0U;
+}
+
+oa_control_status Controller::complete_on_contact() noexcept {
+    /* Contact and keepout stops end the command successfully: the arms did what
+     * was asked of them and halted on physical evidence. The controller returns
+     * to armed-idle holding the measured pose rather than latching a fault. */
+    const auto completed_id = command_id_;
+    materialize_stop(true);
+    executing_.reset();
+    command_id_ = 0U;
+    settle_start_ns_ = 0U;
+    settle_feedback_seq_ = {};
+    settle_feedback_intervals_ = 0U;
+    settling_published_ = false;
+    lifecycle_ = OA_LIFECYCLE_ARMED_IDLE;
+    return publish(OA_EVENT_STOPPED, OA_CONTROL_OK, completed_id) ? OA_CONTROL_OK
+                                                                  : OA_CONTROL_EBUSY;
+}
+
+oa_control_status Controller::contact_report(oa_contact_report &out) const noexcept {
+    const std::uint32_t size = out.struct_size;
+    const std::uint32_t version = out.abi_version;
+    if (size < sizeof(oa_contact_report) || version != OA_CONTROL_ABI_V1) {
+        return OA_CONTROL_EABI;
+    }
+    out = contact_report_;
+    out.struct_size = static_cast<std::uint32_t>(sizeof(oa_contact_report));
+    out.abi_version = OA_CONTROL_ABI_V1;
+    return OA_CONTROL_OK;
+}
+
+oa_control_status Controller::set_sim_contact(const oa_sim_contact &contact) noexcept {
+    if (options_.backend != OA_BACKEND_VIRTUAL) {
+        return OA_CONTROL_EUNSUPPORTED;
+    }
+    if (contact.side != OA_LEFT && contact.side != OA_RIGHT) {
+        return OA_CONTROL_EINVAL;
+    }
+    if (contact.enabled != 0U) {
+        /* A zero reaction gain selects the per-motor default. A negative gain
+         * would push the arm into the obstacle, so it is a caller error rather
+         * than something to silently clamp. */
+        if (!finite_point(contact.center_m) || !std::isfinite(contact.radius_m) ||
+            contact.radius_m <= 0.0 || !std::isfinite(contact.reaction_gain_nm_per_rad) ||
+            contact.reaction_gain_nm_per_rad < 0.0) {
+            return OA_CONTROL_EINVAL;
+        }
+    }
+    sim_contact_[static_cast<std::size_t>(contact.side)] = contact;
+    if (contact.enabled == 0U) {
+        arm_[static_cast<std::size_t>(contact.side)].clear_contact();
+    }
+    return OA_CONTROL_OK;
+}
+
 oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept {
+    /* The emergency stop is sampled first, unconditionally, in every lifecycle
+     * state and before any argument validation, feedback processing, or command
+     * work. Nothing in this function can run ahead of it and nothing can mask
+     * it: the latch is a lock-free global that any thread or signal handler can
+     * set at any instant. */
+    if (oa_estop_asserted() != 0U) {
+        if (!estop_latched_) {
+            estop_latched_ = true;
+            contact_report_.cause = OA_STOP_CAUSE_ESTOP;
+            contact_report_.stop_monotonic_ns = monotonic_ns >= now_ns_ ? monotonic_ns
+                                                                        : now_ns_;
+            if (monotonic_ns >= now_ns_) {
+                now_ns_ = monotonic_ns;
+            }
+            return set_interlock(true, deadman_active_);
+        }
+        if (monotonic_ns >= now_ns_) {
+            now_ns_ = monotonic_ns;
+        }
+        return OA_CONTROL_EESTOP;
+    }
+    estop_latched_ = false;
     if (monotonic_ns < now_ns_) {
         return OA_CONTROL_EINVAL;
     }
@@ -926,6 +1431,9 @@ oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept
             }
         }
     }
+    /* Resolve virtual mechanical resistance before stepping the plant so an
+     * obstacle blocks this cycle's motion rather than the next one. */
+    apply_sim_contact();
     const double dt_s = static_cast<double>(now_ns_ - previous_ns) * 1.0e-9;
     for (std::size_t side = 0; side < 2U; ++side) {
         if (!arm_[side].command_and_step(q_reference[side], dq_reference[side],
@@ -948,6 +1456,19 @@ oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept
     for (std::size_t side = 0; side < 2U; ++side) {
         if (arm_[side].snapshot(now_ns_, options_.feedback_timeout_ns).fault_mask != 0U) {
             return latch_fault(OA_CONTROL_EFAULT);
+        }
+    }
+    /* Real-time monitors. Both are evaluated from the feedback published this
+     * cycle, so they gate on where the arms measurably are rather than on where
+     * the plan predicted they would be. Contact is checked first: when an arm
+     * is resisted it is also the most likely to be approaching a keepout, and
+     * halting on contact is the better-conditioned outcome of the two. */
+    if (lifecycle_ == OA_LIFECYCLE_EXECUTING && command_started_) {
+        if (!monitor_contact()) {
+            return complete_on_contact();
+        }
+        if (!monitor_keepout()) {
+            return complete_on_contact();
         }
     }
     if (lifecycle_ == OA_LIFECYCLE_EXECUTING &&

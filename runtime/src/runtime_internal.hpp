@@ -4,6 +4,7 @@
 
 #define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1
 #include "openarm_runtime.h"
+#include "openarm_runtime_motion.h"
 #include "openarm_control.h"
 #include "openarm_model.h"
 

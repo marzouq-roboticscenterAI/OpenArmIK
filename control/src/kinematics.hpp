@@ -24,7 +24,11 @@ struct IkResult {
     bool collision_checked{};
 };
 
+/* Row-major [linear xyz; angular xyz] x 7, expressed in openarm_body_link0. */
+using JacobianMatrix = std::array<std::array<double, 7>, 6>;
+
 bool forward(std::uint32_t side, const JointVector &q, KinematicResult &out) noexcept;
+bool jacobian(std::uint32_t side, const JointVector &q, JacobianMatrix &out) noexcept;
 bool inverse(std::uint32_t side, const std::array<double, 3> &target,
              const JointVector &seed, IkResult &out) noexcept;
 bool model_limit(std::uint32_t side, std::size_t joint, double &lower,

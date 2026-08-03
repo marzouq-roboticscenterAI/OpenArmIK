@@ -178,6 +178,7 @@ install(TARGETS openarm_runtime EXPORT openarm_runtimeTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES include/openarm_runtime.h include/openarm_runtime_units.h
+    include/openarm_runtime_motion.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES tests/abi_v1/openarm_runtime.h tests/abi_v1/openarm_commission.h
     tests/abi_v1/layout_contract.h tests/abi_v1/symbol_references.h

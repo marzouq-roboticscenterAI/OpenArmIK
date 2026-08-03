@@ -231,6 +231,16 @@ if(BUILD_TESTING AND OA_CONTROL_BUILD_TESTS)
     endif()
     add_test(NAME openarm_control_tests COMMAND openarm_control_tests)
 
+    add_executable(openarm_control_bimanual_tests tests/test_bimanual.cpp)
+    target_include_directories(openarm_control_bimanual_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(openarm_control_bimanual_tests PRIVATE
+        openarm_control_test Threads::Threads)
+    target_compile_options(openarm_control_bimanual_tests PRIVATE
+        -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2)
+    add_test(NAME openarm_control_bimanual_tests
+        COMMAND openarm_control_bimanual_tests)
+
     add_executable(openarm_control_c11_abi tests/c11_abi_consumer.c)
     target_link_libraries(openarm_control_c11_abi PRIVATE openarm_control)
     set_target_properties(openarm_control_c11_abi PROPERTIES LINKER_LANGUAGE CXX)

@@ -20,6 +20,25 @@ using openarm::control::Manifest;
 using openarm::control::MotionPlan;
 
 namespace {
+
+/* Process-wide emergency stop latch.
+ *
+ * Deliberately a plain lock-free atomic with no owner, no allocation, and no
+ * dependency on any handle, registry, mutex, or thread. Asserting it cannot
+ * block, cannot fail, and cannot be starved by a controller that is mid-cycle
+ * or by a caller holding any other lock in the process. That is what makes it
+ * "always listened to": there is no state in which the assertion path is
+ * unavailable. */
+std::atomic<std::uint32_t> g_estop_latched{0U};
+std::atomic<std::uint64_t> g_estop_assertions{0U};
+static_assert(std::atomic<std::uint32_t>::is_always_lock_free,
+              "the emergency stop latch must be lock-free on this target");
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free,
+              "the emergency stop counter must be lock-free on this target");
+
+constexpr double kDefaultContactTorqueFraction = 0.25;
+constexpr std::uint32_t kDefaultContactPersistenceCycles = 3U;
+
 template <typename T>
 bool valid_record(const T *record) noexcept {
     return record != nullptr && record->abi_version == OA_CONTROL_ABI_V1 &&
@@ -467,6 +486,125 @@ extern "C" oa_control_status oa_controller_plan_paired_tcp_with_units(
     converted.max_branch_step_rad = request->max_branch_step_rad;
     converted.min_singular_value = request->min_singular_value;
     return oa_controller_plan_paired_tcp(controller, &converted, out);
+}
+
+extern "C" double oa_control_default_contact_torque_fraction(void) {
+    return kDefaultContactTorqueFraction;
+}
+
+extern "C" uint32_t oa_control_default_contact_persistence_cycles(void) {
+    return kDefaultContactPersistenceCycles;
+}
+
+extern "C" void oa_estop_assert(void) {
+    g_estop_assertions.fetch_add(1U, std::memory_order_relaxed);
+    g_estop_latched.store(1U, std::memory_order_seq_cst);
+}
+
+extern "C" uint32_t oa_estop_asserted(void) {
+    return g_estop_latched.load(std::memory_order_seq_cst);
+}
+
+extern "C" oa_control_status oa_estop_clear(void) {
+    g_estop_latched.store(0U, std::memory_order_seq_cst);
+    return OA_CONTROL_OK;
+}
+
+extern "C" uint64_t oa_estop_assert_count(void) {
+    return g_estop_assertions.load(std::memory_order_relaxed);
+}
+
+extern "C" oa_control_status oa_controller_plan_centroid_tcp(
+    oa_controller *controller, const oa_centroid_tcp_move *request,
+    oa_motion_plan **out) {
+    if (!valid_record(request) || out == nullptr) {
+        return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1
+                   ? OA_CONTROL_EABI
+                   : OA_CONTROL_EINVAL;
+    }
+    const oa_centroid_tcp_move normalized = *request;
+    return with_controller(controller, [&](Controller &impl) -> oa_control_status {
+        std::unique_ptr<MotionPlan> plan;
+        const oa_control_status status = impl.plan_centroid(normalized, plan);
+        if (status != OA_CONTROL_OK) {
+            return status;
+        }
+        oa_motion_plan *const handle = allocate_opaque_token<oa_motion_plan>();
+        auto slot = std::make_shared<PlanSlot>();
+        slot->impl = std::shared_ptr<const MotionPlan>(std::move(plan));
+        *out = publish_immutable(plan_registry(), handle, std::move(slot));
+        return OA_CONTROL_OK;
+    });
+}
+
+extern "C" oa_control_status oa_controller_plan_mirrored_tcp(
+    oa_controller *controller, const oa_mirrored_tcp_move *request,
+    oa_motion_plan **out) {
+    if (!valid_record(request) || request->reserved0 != 0U || out == nullptr) {
+        return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1
+                   ? OA_CONTROL_EABI
+                   : OA_CONTROL_EINVAL;
+    }
+    const oa_mirrored_tcp_move normalized = *request;
+    return with_controller(controller, [&](Controller &impl) -> oa_control_status {
+        std::unique_ptr<MotionPlan> plan;
+        const oa_control_status status = impl.plan_mirrored(normalized, plan);
+        if (status != OA_CONTROL_OK) {
+            return status;
+        }
+        oa_motion_plan *const handle = allocate_opaque_token<oa_motion_plan>();
+        auto slot = std::make_shared<PlanSlot>();
+        slot->impl = std::shared_ptr<const MotionPlan>(std::move(plan));
+        *out = publish_immutable(plan_registry(), handle, std::move(slot));
+        return OA_CONTROL_OK;
+    });
+}
+
+extern "C" oa_control_status oa_controller_plan_converge_tcp(
+    oa_controller *controller, const oa_converge_tcp_move *request,
+    oa_motion_plan **out) {
+    if (!valid_record(request) || request->reserved0 != 0U || out == nullptr) {
+        return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1
+                   ? OA_CONTROL_EABI
+                   : OA_CONTROL_EINVAL;
+    }
+    const oa_converge_tcp_move normalized = *request;
+    return with_controller(controller, [&](Controller &impl) -> oa_control_status {
+        std::unique_ptr<MotionPlan> plan;
+        const oa_control_status status = impl.plan_converge(normalized, plan);
+        if (status != OA_CONTROL_OK) {
+            return status;
+        }
+        oa_motion_plan *const handle = allocate_opaque_token<oa_motion_plan>();
+        auto slot = std::make_shared<PlanSlot>();
+        slot->impl = std::shared_ptr<const MotionPlan>(std::move(plan));
+        *out = publish_immutable(plan_registry(), handle, std::move(slot));
+        return OA_CONTROL_OK;
+    });
+}
+
+extern "C" oa_control_status oa_controller_get_contact_report(
+    oa_controller *controller, oa_contact_report *out) {
+    if (!valid_record(out)) {
+        return out != nullptr && out->abi_version != OA_CONTROL_ABI_V1 ? OA_CONTROL_EABI
+                                                                       : OA_CONTROL_EINVAL;
+    }
+    return with_controller(controller, [&](Controller &impl) -> oa_control_status {
+        return impl.contact_report(*out);
+    });
+}
+
+extern "C" oa_control_status oa_controller_sim_set_contact(
+    oa_controller *controller, const oa_sim_contact *contact) {
+    if (!valid_record(contact)) {
+        return contact != nullptr && contact->abi_version != OA_CONTROL_ABI_V1
+                   ? OA_CONTROL_EABI
+                   : OA_CONTROL_EINVAL;
+    }
+    const oa_sim_contact normalized = *contact;
+    return with_controller(controller, [&](Controller &impl) -> oa_control_status {
+        return impl.set_sim_contact(normalized);
+    });
 }
 
 extern "C" oa_control_status oa_motion_plan_get_report(const oa_motion_plan *plan,

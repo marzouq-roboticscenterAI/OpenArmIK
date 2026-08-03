@@ -5,12 +5,14 @@ root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$root_dir/scripts/lib/description_pin.sh"
 source "$root_dir/scripts/build_lock.sh"
 source "$root_dir/scripts/lib/launch_integrity.sh"
+source "$root_dir/scripts/lib/rviz_env.sh"
 output_root="$root_dir/ros2_ws"
 port=8080
 open_browser=1
 browser_command=xdg-open
 build_mode=auto
 jobs=
+show_rviz=1
 
 usage() {
   cat <<'EOF'
@@ -27,14 +29,19 @@ Options:
   --jobs JOBS        Maximum concurrent build jobs (default: build default)
   --no-browser       Print the URL without opening the browser
   --firefox          Open the portal specifically with Firefox
+  --no-rviz          Do not open the RViz 3D window
   -h, --help         Show this help
+
+The 3D view is a real RViz window loaded with a panel-free layout, so it shows
+the render view only. Use scripts/launch_rviz.sh for the full RViz engineering
+layout with the Displays and Views panels.
 
 This launcher is virtual-only. It does not open SocketCAN or control physical
 motors. Portal motion uses a limited sampled nominal virtual prefilter and
-central keepout. Controller collision checking remains unavailable
-(collision_checked=false); this is not physical collision certification or a
-verified scene. The browser canvas is a measured-pose visual proxy, not RViz
-pixels and not collision checking. Use scripts/launch_rviz.sh for stock RViz.
+central keepout, and the controller additionally re-proves that keepout from
+measured feedback on every control cycle. Certified collision checking remains
+unavailable (collision_checked=false); this is not physical collision
+certification or a verified scene.
 EOF
 }
 
@@ -68,6 +75,10 @@ while (($#)); do
       ;;
     --no-browser)
       open_browser=0
+      shift
+      ;;
+    --no-rviz)
+      show_rviz=0
       shift
       ;;
     --firefox)
@@ -168,6 +179,20 @@ expected_package_prefix=$(realpath -e -- "$output_root/install/openarm_ik_ros")
   exit 1
 }
 portal_binary="$package_prefix/lib/openarm_ik_ros/openarm_portal"
+share_dir="$package_prefix/share/openarm_ik_ros"
+close_helper="$package_prefix/lib/openarm_ik_ros/close_rviz_window"
+if ((show_rviz)); then
+  [[ -x "$close_helper" ]] || {
+    printf 'Missing %s; run %s/scripts/build.sh first.\n' "$close_helper" \
+      "$root_dir" >&2
+    exit 2
+  }
+  [[ -r "$share_dir/rviz/openarm_bare.rviz" ]] || {
+    printf 'Missing panel-free RViz layout in %s.\n' "$share_dir" >&2
+    exit 2
+  }
+  openarm_configure_rviz_environment || exit $?
+fi
 
 [[ -x "$portal_binary" ]] || {
   printf 'Missing compiled portal executable: %s\n' "$portal_binary" >&2
@@ -178,6 +203,7 @@ portal_binary="$package_prefix/lib/openarm_ik_ros/openarm_portal"
 }
 core_pid=
 portal_pid=
+rviz_pid=
 shutting_down=0
 
 process_is_running() {
@@ -211,6 +237,14 @@ shutdown() {
   shutting_down=1
   trap - EXIT HUP INT TERM
 
+  if [[ -n "$rviz_pid" ]] && process_is_running "$rviz_pid"; then
+    if ! "$close_helper" "$rviz_pid" --timeout 3; then
+      stop_group TERM "$rviz_pid"
+    fi
+    wait_for_exit "$rviz_pid" 30 || stop_group KILL "$rviz_pid"
+  fi
+  [[ -z "$rviz_pid" ]] || wait "$rviz_pid" 2>/dev/null || true
+
   if [[ -n "$portal_pid" ]] && process_is_running "$portal_pid"; then
     stop_group TERM "$portal_pid"
     wait_for_exit "$portal_pid" 50 || stop_group KILL "$portal_pid"
@@ -236,6 +270,16 @@ core_pid=$!
 
 setsid "$portal_binary" --port "$port" &
 portal_pid=$!
+
+if ((show_rviz)); then
+  # The 3D view is stock RViz rather than a browser canvas, loaded with a
+  # panel-free layout so only the render view is shown.  Keep it out of the ROS
+  # launcher's signal path: closing it through the window manager avoids the
+  # RViz/Ogre SIGINT teardown crash seen on this host.
+  setsid rviz2 -d "$share_dir/rviz/openarm_bare.rviz" \
+    --ros-args -r __node:=rviz2_portal &
+  rviz_pid=$!
+fi
 
 url="http://127.0.0.1:$port/"
 healthy=0
@@ -272,7 +316,7 @@ if ((open_browser)); then
 fi
 
 set +e
-wait -n "$core_pid" "$portal_pid"
+wait -n "$core_pid" "$portal_pid" ${rviz_pid:+"$rviz_pid"}
 status=$?
 set -e
 shutdown "$status"

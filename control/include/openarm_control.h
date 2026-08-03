@@ -110,6 +110,14 @@ typedef oa_control_status oa_status;
 
 #define OA_PLAN_JOINT UINT32_C(1)
 #define OA_PLAN_PAIRED_TCP UINT32_C(2)
+/* Both claws translate by the vector that carries their midpoint to a target. */
+#define OA_PLAN_CENTROID_TCP UINT32_C(3)
+/* One claw is commanded; the other mirrors it across the body sagittal plane. */
+#define OA_PLAN_MIRRORED_TCP UINT32_C(4)
+/* Both claws advance along the ray toward a shared point until measured joint
+ * torque reports contact, the real-time keepout monitor intervenes, or the
+ * planned prefix is exhausted. */
+#define OA_PLAN_CONVERGE_TCP UINT32_C(5)
 
 #define OA_STOP_DISABLE UINT32_C(1)
 #define OA_STOP_CONTROLLED UINT32_C(2)
@@ -241,6 +249,112 @@ typedef struct oa_paired_tcp_move_with_units {
     double min_singular_value;
 } oa_paired_tcp_move_with_units;
 
+/* Bimanual translation of the midpoint between the two hand_tcp origins.
+ * The measured midpoint is carried to target_centroid_m and the identical body
+ * frame delta is applied to both claws, so their relative pose is preserved. */
+typedef struct oa_centroid_tcp_move {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t expiry_ns;
+    uint64_t required_feedback_seq[2];
+    double target_centroid_m[3];
+    double velocity_scale;
+    double acceleration_scale;
+    double jerk_scale;
+    double tcp_tol_m;
+    uint64_t collision_scene_revision;
+    double max_branch_step_rad;
+    double min_singular_value;
+} oa_centroid_tcp_move;
+
+/* One claw is given a target; the other is commanded to the sagittal mirror of
+ * that target (y is negated, x and z are preserved). Both arms move together. */
+typedef struct oa_mirrored_tcp_move {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t expiry_ns;
+    uint64_t required_feedback_seq[2];
+    oa_side lead_side;
+    uint32_t reserved0;
+    double lead_tcp_m[3];
+    double velocity_scale;
+    double acceleration_scale;
+    double jerk_scale;
+    double tcp_tol_m;
+    uint64_t collision_scene_revision;
+    double max_branch_step_rad;
+    double min_singular_value;
+} oa_mirrored_tcp_move;
+
+/* Both claws converge on a single body-frame point. Execution halts at the
+ * first of: measured contact torque, a real-time keepout violation, or the end
+ * of the planned prefix. Halting on contact is a successful outcome, not a
+ * fault. */
+typedef struct oa_converge_tcp_move {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t expiry_ns;
+    uint64_t required_feedback_seq[2];
+    double target_m[3];
+    /* Per-joint absolute |tau| stop threshold in newton-metres, in model joint
+     * coordinates. A non-positive entry falls back to
+     * contact_torque_fraction * the motor's protocol tmax. */
+    double contact_torque_nm[7];
+    /* Fallback threshold as a fraction of each motor's tmax. Non-positive
+     * selects the built-in default returned by
+     * oa_control_default_contact_torque_fraction(). */
+    double contact_torque_fraction;
+    /* Contact must persist for this many consecutive cycles before the stop
+     * latches. Zero selects the built-in default. Rejects single-cycle noise. */
+    uint32_t contact_persistence_cycles;
+    uint32_t reserved0;
+    /* Stop this far short of target_m along the approach ray. */
+    double stop_distance_m;
+    /* Reject the request unless at least this much validated travel exists. */
+    double minimum_progress_m;
+    double velocity_scale;
+    double acceleration_scale;
+    double jerk_scale;
+    double tcp_tol_m;
+    uint64_t collision_scene_revision;
+    double max_branch_step_rad;
+    double min_singular_value;
+} oa_converge_tcp_move;
+
+typedef uint32_t oa_stop_cause;
+#define OA_STOP_CAUSE_NONE UINT32_C(0)
+#define OA_STOP_CAUSE_CONTACT UINT32_C(1)
+#define OA_STOP_CAUSE_KEEPOUT UINT32_C(2)
+#define OA_STOP_CAUSE_PLAN_COMPLETE UINT32_C(3)
+#define OA_STOP_CAUSE_ESTOP UINT32_C(4)
+
+/* Outcome of the real-time monitors for the most recent command. */
+typedef struct oa_contact_report {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    oa_stop_cause cause;
+    uint32_t contact_detected;
+    /* Bit 0 left, bit 1 right. */
+    uint32_t contact_side_mask;
+    /* Bit n set when joint n exceeded its threshold. Indexed per side. */
+    uint32_t contact_joint_mask[2];
+    uint32_t keepout_violation;
+    uint32_t keepout_side;
+    uint32_t keepout_segment_a;
+    uint32_t keepout_segment_b;
+    uint64_t stop_feedback_seq[2];
+    uint64_t stop_monotonic_ns;
+    /* Measured joint torque and pose at the latching cycle. */
+    double contact_torque_nm[2][7];
+    double threshold_torque_nm[2][7];
+    double stopped_q_rad[2][7];
+    double stopped_tcp_m[2][3];
+    double minimum_clearance_m;
+} oa_contact_report;
+
+double oa_control_default_contact_torque_fraction(void);
+uint32_t oa_control_default_contact_persistence_cycles(void);
+
 typedef struct oa_execute_request {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -334,6 +448,33 @@ typedef struct oa_sim_fault {
     uint64_t feedback_delay_ns;
 } oa_sim_fault;
 
+/* Virtual mechanical resistance for the simulated backend only.
+ *
+ * The obstacle is a body-frame sphere. Once the arm's measured hand_tcp
+ * penetrates it the plant is held in place while the trajectory reference keeps
+ * advancing, which is what a stiff position loop does against a hard stop. The
+ * reported torque is the resulting servo effort: it grows with the reference
+ * overshoot the motor is failing to close and saturates at the protocol tmax.
+ *
+ * Torque is deliberately not derived from penetration depth. Holding the plant
+ * at the obstacle surface keeps penetration near zero, so a penetration-based
+ * reaction would stay negligible no matter how hard the arm pushed.
+ *
+ * This models an object being grasped or an unexpected obstruction. It is not
+ * an environment collision model. */
+typedef struct oa_sim_contact {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    oa_side side;
+    uint32_t enabled;
+    double center_m[3];
+    double radius_m;
+    /* Reaction torque per radian of reference overshoot past the held plant.
+     * Zero selects a stiff default derived from each motor's tmax; a negative
+     * gain is rejected rather than clamped. */
+    double reaction_gain_nm_per_rad;
+} oa_sim_contact;
+
 typedef struct oa_sim_state {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -350,6 +491,28 @@ typedef struct oa_sim_state {
     ((uint32_t)offsetof(oa_paired_tcp_move, max_branch_step_rad))
 #define OA_SIM_FAULT_V1_PREFIX_SIZE \
     ((uint32_t)offsetof(oa_sim_fault, fault_status))
+
+/* Process-wide emergency stop latch.
+ *
+ * A real E-stop is a facility-wide device, not a property of one controller
+ * handle, and it must be honoured even when every lock in the process is held.
+ * This latch is therefore a lock-free atomic owned by the library rather than
+ * by any controller: oa_estop_assert never blocks, never allocates, and is safe
+ * to call from any thread and from a signal handler.
+ *
+ * Every controller samples the latch at the very top of every control cycle, in
+ * every lifecycle state, before any command, plan, or feedback processing. Once
+ * latched, motion is refused and the arms are stopped; the latch survives faults
+ * and command completion and clears only through an explicit oa_estop_clear.
+ *
+ * This is a software interlock. It is not a substitute for a hardwired,
+ * safety-rated emergency stop in the power path. */
+void oa_estop_assert(void);
+uint32_t oa_estop_asserted(void);
+/* Clears the latch. Returns OA_CONTROL_OK when the latch was released. */
+oa_control_status oa_estop_clear(void);
+/* Monotonically increasing count of assertions, for evidence and testing. */
+uint64_t oa_estop_assert_count(void);
 
 oa_control_status oa_manifest_create(const oa_manifest_config *config, oa_manifest **out);
 oa_control_status oa_manifest_get_openarm_v10_virtual_config(oa_manifest_config *out);
@@ -384,8 +547,26 @@ oa_control_status oa_controller_plan_paired_tcp_with_units(
     oa_controller *controller,
     const oa_paired_tcp_move_with_units *request,
     oa_motion_plan **out);
+/* Bimanual planners. Each derives both claw targets and then plans a single
+ * all-or-nothing paired motion: if either arm cannot be solved the whole
+ * request is rejected and no motion is produced. */
+oa_control_status oa_controller_plan_centroid_tcp(oa_controller *controller,
+                                                  const oa_centroid_tcp_move *request,
+                                                  oa_motion_plan **out);
+oa_control_status oa_controller_plan_mirrored_tcp(oa_controller *controller,
+                                                  const oa_mirrored_tcp_move *request,
+                                                  oa_motion_plan **out);
+oa_control_status oa_controller_plan_converge_tcp(oa_controller *controller,
+                                                  const oa_converge_tcp_move *request,
+                                                  oa_motion_plan **out);
 oa_control_status oa_motion_plan_get_report(const oa_motion_plan *plan,
                                             oa_motion_plan_report *out);
+/* Real-time monitor outcome for the most recently executed command. Valid once
+ * the command reaches a terminal event. */
+oa_control_status oa_controller_get_contact_report(oa_controller *controller,
+                                                   oa_contact_report *out);
+oa_control_status oa_controller_sim_set_contact(oa_controller *controller,
+                                                const oa_sim_contact *contact);
 oa_control_status oa_controller_execute(oa_controller *controller,
                                         const oa_motion_plan *plan,
                                         const oa_execute_request *request,

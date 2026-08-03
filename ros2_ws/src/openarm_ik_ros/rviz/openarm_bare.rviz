@@ -1,0 +1,58 @@
+##  Panel-free RViz layout for the portal demo.
+##
+##  An empty Panels list removes the Displays, Views, Tool Properties, Time and
+##  Selection docks, leaving only the 3D render view. The robot model and the
+##  camera below are therefore fixed by this file rather than adjusted in the
+##  running window; scripts/launch_rviz.sh keeps the full engineering layout for
+##  when those controls are wanted.
+Panels: []
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Description Topic:
+        Value: /robot_description
+      Enabled: true
+      Name: OpenArm RobotModel
+      Visual Enabled: true
+      Collision Enabled: false
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 1.600000023841858
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0.6499999761581421
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.3499999940395355
+      Target Frame: world
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 5.5
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: true
+  Height: 900
+  Hide Left Dock: true
+  Hide Right Dock: true
+  Width: 1400
+  X: 80
+  Y: 60

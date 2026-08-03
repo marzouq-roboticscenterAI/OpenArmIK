@@ -16,7 +16,8 @@ set(OA_XACRO_EXECUTABLE "" CACHE FILEPATH "xacro executable for regeneration")
 set(OA_XACRO_PYTHONPATH "" CACHE STRING "PYTHONPATH required by xacro")
 set(OA_XACRO_AMENT_PREFIX "" CACHE STRING "Base AMENT_PREFIX_PATH required by xacro")
 
-add_library(openarm_model STATIC src/openarm_model.c src/openarm_units.c)
+add_library(openarm_model STATIC src/openarm_model.c src/openarm_units.c
+  src/openarm_collision.c)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   set_source_files_properties(src/openarm_units.c PROPERTIES
     COMPILE_OPTIONS -frounding-math)

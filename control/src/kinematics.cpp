@@ -33,6 +33,23 @@ bool forward(const std::uint32_t side, const JointVector &q,
     return true;
 }
 
+bool jacobian(const std::uint32_t side, const JointVector &q,
+              JacobianMatrix &out) noexcept {
+    oa_jacobian result{};
+    if (oa_geometric_jacobian(model_for(side), q.data(), &result) != OA_MODEL_OK) {
+        return false;
+    }
+    for (std::size_t row = 0; row < 6U; ++row) {
+        for (std::size_t column = 0; column < OA_DOF; ++column) {
+            if (!std::isfinite(result.value[row][column])) {
+                return false;
+            }
+            out[row][column] = result.value[row][column];
+        }
+    }
+    return true;
+}
+
 bool inverse(const std::uint32_t side, const std::array<double, 3> &target,
              const JointVector &seed, IkResult &out) noexcept {
     oa_ik_options options{};

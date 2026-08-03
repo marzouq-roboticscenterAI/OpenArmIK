@@ -311,10 +311,13 @@ TEST(PortalPage, UsesSameOriginExternalAssetsAndSerializedCanonicalTargets)
   EXPECT_NE(page.find("value=\"in\""), std::string::npos);
   EXPECT_NE(page.find("value=\"m\""), std::string::npos);
   EXPECT_NE(page.find("id=\"motion-limit-scale\" type=\"range\" min=\"50\" max=\"100\" step=\"5\" value=\"80\""), std::string::npos);
-  EXPECT_NE(page.find("id=\"viewer-neutral-palette\" type=\"button\" aria-pressed=\"false\""), std::string::npos);
   EXPECT_NE(page.find("/web/portal.css"), std::string::npos);
   EXPECT_NE(page.find("/web/portal.js"), std::string::npos);
-  EXPECT_NE(page.find("/web/viewer.js"), std::string::npos);
+  // The 3D view is a real RViz window, so the page must not reintroduce the
+  // retired in-browser WebGL proxy or its controls.
+  EXPECT_EQ(page.find("/web/viewer.js"), std::string::npos);
+  EXPECT_EQ(page.find("viewer-canvas"), std::string::npos);
+  EXPECT_EQ(page.find("viewer-neutral-palette"), std::string::npos);
   EXPECT_EQ(page.find("<style>"), std::string::npos);
   EXPECT_NE(page.find("id=\"portal-targets\""), std::string::npos);
   EXPECT_NE(page.find("\"near_max_forward\""), std::string::npos);
@@ -332,10 +335,10 @@ TEST(PortalPage, CarriesStrictInputAndSafetyContracts)
   EXPECT_NE(page.find("not physically certified coordinates"), std::string::npos);
   EXPECT_NE(page.find("Controller collision checked: <strong>NO</strong>"), std::string::npos);
   EXPECT_NE(page.find("not a hardwired E-stop"), std::string::npos);
-  EXPECT_NE(page.find("visual proxy — not collision checking"), std::string::npos);
-  EXPECT_NE(page.find("OpenArm measured-pose viewer"), std::string::npos);
-  EXPECT_NE(page.find("only changes this local WebGL proxy and never sends a robot command"), std::string::npos);
-  EXPECT_NE(page.find("neutral is RViz-like, not stock RViz rendering"), std::string::npos);
+  EXPECT_NE(page.find("separate <strong>RViz</strong> window"), std::string::npos);
+  EXPECT_NE(page.find("panel-free layout"), std::string::npos);
+  EXPECT_NE(page.find("not collision checking"), std::string::npos);
+  EXPECT_NE(page.find("never used as control feedback"), std::string::npos);
   EXPECT_NE(page.find("no portal-switchable coordinate grid"), std::string::npos);
   EXPECT_NE(page.find("Virtual guard test inputs (cm)"), std::string::npos);
   EXPECT_NE(page.find("[5000, 5000, 5000]"), std::string::npos);

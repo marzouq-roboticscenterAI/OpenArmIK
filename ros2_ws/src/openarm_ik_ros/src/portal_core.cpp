@@ -16,15 +16,9 @@ namespace openarm_ik_ros::portal
 {
 namespace
 {
-constexpr double kArmRadius = 0.050;
-constexpr double kToolRadius = 0.075;
-constexpr double kRequiredClearance = 0.025;
-// The canonical body mesh contains a 60 x 60 mm central shaft.  Its
-// circumscribed cylinder conservatively covers the square; the former 115 mm
-// radius projected unrelated base/upper-mount extents through the workspace.
-constexpr double kPoleRadius = 0.04242640687119285;
-constexpr double kPoleBottom = 0.008;
-constexpr double kPoleTop = 0.758;
+// Link envelope, required clearance, and central-shaft keepout now live in the
+// model library (openarm_collision.h) so the pre-flight guard and the real-time
+// execution monitor gate on the same constants.
 constexpr std::size_t kSamples = 17;
 constexpr std::size_t kProjectionSearchSteps = 64;
 constexpr std::size_t kProjectionRefinementRounds = 3;
@@ -38,76 +32,9 @@ constexpr double kProjectionMaximumRayM = 2.0;
 // publication/serialization noise; an actual adjacent-code change still fails.
 constexpr double kGuardJointEquivalenceTolerance = 1.0e-6;
 
-double dot(const Point & a, const Point & b)
-{
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-Point subtract(const Point & a, const Point & b)
-{
-  return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-}
-
-Point add_scaled(const Point & a, const Point & b, double scale)
-{
-  return {a[0] + b[0] * scale, a[1] + b[1] * scale, a[2] + b[2] * scale};
-}
-
-double norm(const Point & a)
-{
-  return std::sqrt(dot(a, a));
-}
-
 Point origin(const oa_transform & transform)
 {
   return {transform.m[3], transform.m[7], transform.m[11]};
-}
-
-double segment_distance(const Point & p1, const Point & q1, const Point & p2, const Point & q2)
-{
-  const Point d1 = subtract(q1, p1);
-  const Point d2 = subtract(q2, p2);
-  const Point r = subtract(p1, p2);
-  const double a = dot(d1, d1);
-  const double e = dot(d2, d2);
-  const double f = dot(d2, r);
-  double s = 0.0;
-  double t = 0.0;
-  if (a <= 1.0e-18 && e <= 1.0e-18) {
-    return norm(r);
-  }
-  if (a <= 1.0e-18) {
-    t = std::clamp(f / e, 0.0, 1.0);
-  } else {
-    const double c = dot(d1, r);
-    if (e <= 1.0e-18) {
-      s = std::clamp(-c / a, 0.0, 1.0);
-    } else {
-      const double b = dot(d1, d2);
-      const double denominator = a * e - b * b;
-      if (denominator > 1.0e-18) {
-        s = std::clamp((b * f - c * e) / denominator, 0.0, 1.0);
-      }
-      t = (b * s + f) / e;
-      if (t < 0.0) {
-        t = 0.0;
-        s = std::clamp(-c / a, 0.0, 1.0);
-      } else if (t > 1.0) {
-        t = 1.0;
-        s = std::clamp((b - c) / a, 0.0, 1.0);
-      }
-    }
-  }
-  return norm(subtract(add_scaled(p1, d1, s), add_scaled(p2, d2, t)));
-}
-
-double point_cylinder_distance_squared(
-  const Point & point, double radius, double bottom, double top)
-{
-  const double radial_gap = std::max(0.0, std::hypot(point[0], point[1]) - radius);
-  const double axial_gap = point[2] < bottom ? bottom - point[2] :
-    (point[2] > top ? point[2] - top : 0.0);
-  return radial_gap * radial_gap + axial_gap * axial_gap;
 }
 
 std::vector<std::string_view> split_fields(std::string_view body)
@@ -551,48 +478,32 @@ bool NominalPathGuard::inverse(
 bool NominalPathGuard::scene_clear(
   const std::array<oa_fk_result, 2> & fk, double & clearance, std::string & reason)
 {
-  std::array<std::array<Point, 8>, 2> points{};
-  for (std::size_t side = 0; side < 2; ++side) {
-    for (std::size_t joint = 0; joint < OA_DOF; ++joint) {
-      points[side][joint] = origin(fk[side].joint_pre[joint]);
-    }
-    points[side][7] = origin(fk[side].hand_tcp);
+  // The keepout model itself lives in the model library so that this pre-flight
+  // guard and the real-time execution monitor cannot drift apart.
+  oa_collision_scene scene{};
+  if (oa_collision_scene_from_fk(&fk[0], &fk[1], &scene) != OA_MODEL_OK) {
+    clearance = -std::numeric_limits<double>::infinity();
+    reason = "nominal scene could not be constructed from forward kinematics";
+    return false;
   }
-  clearance = std::numeric_limits<double>::infinity();
-  for (std::size_t left = 0; left < 7; ++left) {
-    for (std::size_t right = 0; right < 7; ++right) {
-      const double radii = (left == 6 ? kToolRadius : kArmRadius) +
-        (right == 6 ? kToolRadius : kArmRadius);
-      const double value = segment_distance(
-        points[0][left], points[0][left + 1], points[1][right], points[1][right + 1]) - radii;
-      clearance = std::min(clearance, value);
-      if (std::isnan(value) || value < kRequiredClearance) {
-        reason = "nominal arm-arm capsule clearance is not proven";
-        return false;
-      }
-    }
+  oa_collision_report report{};
+  const oa_model_status status = oa_collision_evaluate(&scene, &report);
+  clearance = report.minimum_clearance_m;
+  if (status != OA_MODEL_OK) {
+    reason = "nominal scene contains a non-finite coordinate";
+    return false;
   }
-  for (std::size_t side = 0; side < 2; ++side) {
-    for (std::size_t segment = 0; segment < 7; ++segment) {
-      // Canonical link1 begins at J1 and lies wholly outward along the J1
-      // radial axis. Joint1 only rolls its cross-section about that axis, so
-      // no link1 vertex lies radially inward of this centerline. Using the
-      // generic isotropic radius here would fabricate inward mount volume;
-      // the centerline is its conservative shaft-facing envelope.
-      const double radius = segment == 0 ? 0.0 : (segment == 6 ? kToolRadius : kArmRadius);
-      const double value = finite_cylinder_capsule_clearance(
-        points[side][segment], points[side][segment + 1],
-        kPoleRadius, kPoleBottom, kPoleTop, radius);
-      clearance = std::min(clearance, value);
-      if (std::isnan(value) || value < kRequiredClearance) {
-        reason = "nominal central pole keepout clearance is not proven for arm " +
-          std::to_string(side) + " segment " + std::to_string(segment) +
-          " (clearance " + std::to_string(value) + " m)";
-        return false;
-      }
-    }
+  if (report.clear != 0u) {
+    return true;
   }
-  return true;
+  if (report.violation == OA_COLLISION_VIOLATION_ARM_ARM) {
+    reason = "nominal arm-arm capsule clearance is not proven";
+    return false;
+  }
+  reason = "nominal central pole keepout clearance is not proven for arm " +
+    std::to_string(report.side) + " segment " + std::to_string(report.segment_a) +
+    " (clearance " + std::to_string(report.minimum_clearance_m) + " m)";
+  return false;
 }
 
 GuardResult NominalPathGuard::validate(const GuardInput & input) const
@@ -1081,37 +992,11 @@ double finite_cylinder_capsule_clearance(
   const Point & a, const Point & b, double cylinder_radius,
   double cylinder_bottom, double cylinder_top, double capsule_radius)
 {
-  if (!std::all_of(a.begin(), a.end(), [](double value) {return std::isfinite(value);}) ||
-    !std::all_of(b.begin(), b.end(), [](double value) {return std::isfinite(value);}) ||
-    !std::isfinite(cylinder_radius) || !std::isfinite(cylinder_bottom) ||
-    !std::isfinite(cylinder_top) || !std::isfinite(capsule_radius) ||
-    cylinder_radius < 0.0 || cylinder_bottom > cylinder_top || capsule_radius < 0.0)
-  {
-    return -std::numeric_limits<double>::infinity();
-  }
-  const Point direction = subtract(b, a);
-  auto distance_squared = [&](double amount) {
-      return point_cylinder_distance_squared(
-        add_scaled(a, direction, amount), cylinder_radius, cylinder_bottom, cylinder_top);
-    };
-  // Squared distance to a closed convex set is convex along a segment. Ternary
-  // minimization therefore covers the cylindrical side, caps, and rim without
-  // axial clipping holes. Bias the result downward for fail-closed rounding.
-  double low = 0.0;
-  double high = 1.0;
-  for (std::size_t iteration = 0; iteration < 96; ++iteration) {
-    const double first = (2.0 * low + high) / 3.0;
-    const double second = (low + 2.0 * high) / 3.0;
-    if (distance_squared(first) <= distance_squared(second)) {
-      high = second;
-    } else {
-      low = first;
-    }
-  }
-  const double minimum = std::min({
-      distance_squared(0.0), distance_squared(1.0),
-      distance_squared((low + high) / 2.0)});
-  return std::max(0.0, std::sqrt(minimum) - 1.0e-9) - capsule_radius;
+  // Delegates to the canonical keepout geometry in the model library. The
+  // pre-flight guard and the real-time execution monitor must gate on bit-identical
+  // clearances, so there is exactly one implementation.
+  return oa_collision_finite_cylinder_capsule_clearance(
+    a.data(), b.data(), cylinder_radius, cylinder_bottom, cylinder_top, capsule_radius);
 }
 
 std::string json_escape(std::string_view value)

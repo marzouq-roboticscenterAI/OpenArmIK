@@ -16,8 +16,15 @@ file(STRINGS "${OA_EXPECTED_SYMBOLS}" expected_symbols)
 list(SORT expected_symbols)
 list(LENGTH actual_symbols actual_count)
 list(LENGTH expected_symbols expected_count)
-if(NOT actual_count EQUAL 50 OR NOT expected_count EQUAL 50)
-    message(FATAL_ERROR "Runtime V1 symbol count mismatch: archive=${actual_count}, expected=${expected_count}")
+# 50 frozen V1 entry points plus the 7 additive entry points declared in
+# openarm_runtime_motion.h. V1 itself is unchanged: nothing was removed, no
+# struct layout moved, and openarm_runtime.h remains byte-identical to its
+# frozen copy. Raising this number requires the same explicit review as any
+# other freeze update.
+set(OA_EXPECTED_SYMBOL_COUNT 57)
+if(NOT actual_count EQUAL OA_EXPECTED_SYMBOL_COUNT OR
+   NOT expected_count EQUAL OA_EXPECTED_SYMBOL_COUNT)
+    message(FATAL_ERROR "Runtime symbol count mismatch: archive=${actual_count}, expected=${expected_count}, required=${OA_EXPECTED_SYMBOL_COUNT}")
 endif()
 if(NOT actual_symbols STREQUAL expected_symbols)
     message(FATAL_ERROR "Runtime V1 symbol manifest mismatch")

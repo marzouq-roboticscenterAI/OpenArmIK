@@ -2,6 +2,11 @@
 #ifndef OPENARM_CONTROL_CORE_HPP
 #define OPENARM_CONTROL_CORE_HPP
 
+/* openarm_collision.h is deliberately NOT included here. It pulls in
+ * openarm_model.h, whose legacy unprefixed status names collide with the
+ * control header's, and this internal header is included by consumers that
+ * have already chosen their own include order. The keepout geometry is an
+ * implementation detail of control_core.cpp, so it stays there. */
 #include "kinematics.hpp"
 #include "openarm_control.h"
 
@@ -46,6 +51,10 @@ public:
     void set_enabled(bool enabled) noexcept;
     void set_fault(std::uint8_t status) noexcept;
     void command(double q_model, double dq_model) noexcept;
+    /* A blocked plant holds its position while the reference keeps advancing,
+     * which is how a stiff position loop behaves against a hard obstacle. The
+     * reported torque is the servo effort that unclosed error represents. */
+    void set_blocked(bool blocked, double reaction_gain_nm_per_rad) noexcept;
     [[nodiscard]] FeedbackFrame capture(double dt_s, std::uint64_t capture_ns,
                                         bool frozen) noexcept;
     void publish(const FeedbackFrame &frame) noexcept;
@@ -64,6 +73,8 @@ private:
     double command_raw_q_{};
     double command_raw_dq_{};
     bool enabled_{};
+    bool blocked_{};
+    double reaction_gain_nm_per_rad_{};
     std::uint8_t fault_status_{};
 };
 
@@ -99,6 +110,9 @@ public:
                      std::uint64_t now_ns) noexcept;
     void materialize_stop(bool enabled_hold, std::uint64_t now_ns) noexcept;
     void retire_pending_feedback() noexcept;
+    void set_blocked(bool blocked, double reaction_gain_nm_per_rad) noexcept;
+    void clear_contact() noexcept;
+    [[nodiscard]] JointVector measured_tau() const noexcept;
     [[nodiscard]] oa_arm_snapshot snapshot(std::uint64_t now_ns,
                                            std::uint64_t timeout_ns) const noexcept;
     [[nodiscard]] JointVector measured_q() const noexcept;
@@ -158,6 +172,11 @@ public:
     std::array<std::array<double, 3>, 2> achieved_tcp{};
     std::array<double, 2> tcp_residual{};
     bool collision_checked{};
+    /* Contact monitoring is requested by converge plans. When set, exceeding a
+     * per-joint measured torque threshold ends the command successfully. */
+    bool contact_monitored{};
+    std::uint32_t contact_persistence_cycles{};
+    std::array<JointVector, 2> contact_threshold_nm{};
     std::size_t waypoint_count{};
     std::array<std::array<JointVector, kMaxWaypoints>, 2> waypoint_q{};
     std::array<std::uint64_t, kMaxWaypoints> waypoint_time_ns{};
@@ -177,6 +196,14 @@ public:
                          std::unique_ptr<MotionPlan> &out) noexcept;
     oa_control_status plan_paired(const oa_paired_tcp_move &request,
                           std::unique_ptr<MotionPlan> &out) noexcept;
+    oa_control_status plan_centroid(const oa_centroid_tcp_move &request,
+                            std::unique_ptr<MotionPlan> &out) noexcept;
+    oa_control_status plan_mirrored(const oa_mirrored_tcp_move &request,
+                            std::unique_ptr<MotionPlan> &out) noexcept;
+    oa_control_status plan_converge(const oa_converge_tcp_move &request,
+                            std::unique_ptr<MotionPlan> &out) noexcept;
+    oa_control_status contact_report(oa_contact_report &out) const noexcept;
+    oa_control_status set_sim_contact(const oa_sim_contact &contact) noexcept;
     oa_control_status execute(const MotionPlan &plan, const oa_execute_request &request,
                       std::uint64_t &command_id) noexcept;
     oa_control_status advance(std::uint64_t monotonic_ns) noexcept;
@@ -211,6 +238,44 @@ private:
         double jerk_scale, std::uint32_t arm_mask) const noexcept;
     [[nodiscard]] bool measured_at_goal() noexcept;
 
+    /* Shared body of every bimanual Cartesian planner. Both targets are already
+     * resolved to body-frame metres; either arm failing rejects the request. */
+    struct PairedPlanRequest {
+        std::uint32_t kind{OA_PLAN_PAIRED_TCP};
+        std::uint64_t expiry_ns{};
+        std::array<std::uint64_t, 2> required_feedback_seq{};
+        std::array<std::array<double, 3>, 2> target_tcp{};
+        double velocity_scale{};
+        double acceleration_scale{};
+        double jerk_scale{};
+        double tcp_tol_m{};
+        std::uint64_t collision_scene_revision{};
+        double max_branch_step_rad{};
+        double min_singular_value{};
+    };
+    oa_control_status plan_paired_common(const PairedPlanRequest &request,
+                                         std::unique_ptr<MotionPlan> &out) noexcept;
+    /* Preconditions shared by every Cartesian planner. */
+    [[nodiscard]] oa_control_status plan_preconditions() noexcept;
+    /* Mirrors oa_collision_report without exposing the model headers here. */
+    struct KeepoutStatus {
+        bool clear{};
+        std::uint32_t violation{};
+        std::uint32_t side{};
+        std::uint32_t segment_a{};
+        std::uint32_t segment_b{};
+        double minimum_clearance_m{};
+    };
+    /* Real-time keepout evaluation from the supplied joint state. */
+    [[nodiscard]] bool keepout_clear(const std::array<JointVector, 2> &q,
+                                     KeepoutStatus &status) const noexcept;
+    /* Per-cycle monitors. Return false when the caller must stop this cycle. */
+    [[nodiscard]] bool monitor_keepout() noexcept;
+    [[nodiscard]] bool monitor_contact() noexcept;
+    void apply_sim_contact() noexcept;
+    void reset_contact_report() noexcept;
+    [[nodiscard]] oa_control_status complete_on_contact() noexcept;
+
     std::shared_ptr<const Manifest> manifest_;
     oa_controller_options options_{};
     std::array<ArmRuntime, 2> arm_;
@@ -233,6 +298,10 @@ private:
     bool settling_published_{};
     bool deadman_active_{true};
     std::uint64_t instance_id_{};
+    oa_contact_report contact_report_{};
+    std::uint32_t contact_streak_{};
+    std::array<oa_sim_contact, 2> sim_contact_{};
+    bool estop_latched_{};
     std::optional<MotionPlan> executing_{};
     std::array<oa_event, 64> events_{};
     std::size_t event_head_{};

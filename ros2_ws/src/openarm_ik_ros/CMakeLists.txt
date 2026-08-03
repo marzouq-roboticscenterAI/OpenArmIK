@@ -223,20 +223,10 @@ if(BUILD_TESTING)
       --description ${OPENARM_DESCRIPTION_SHARE}
       --cmake ${CMAKE_COMMAND})
   find_program(CHECK_URDF_EXECUTABLE NAMES check_urdf REQUIRED)
-  find_program(GECKODRIVER_EXECUTABLE NAMES geckodriver REQUIRED)
-  find_program(FIREFOX_EXECUTABLE NAMES firefox REQUIRED)
-  add_test(NAME test_visualization_urdf_parser
-    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test/test_viewer_browser.sh
-      --portal $<TARGET_FILE:openarm_portal>
-      --web ${CMAKE_CURRENT_SOURCE_DIR}/web
-      --viewer ${OPENARM_VIEWER_ASSET_DIR}
-      --license ${OPENARM_VIEWER_LICENSE}
-      --geckodriver ${GECKODRIVER_EXECUTABLE}
-      --firefox ${FIREFOX_EXECUTABLE}
-      --check-urdf ${CHECK_URDF_EXECUTABLE}
-      --urdf ${OPENARM_STAGE_A_VISUALIZATION_URDF}
-      --oracle ${CMAKE_CURRENT_SOURCE_DIR}/test/viewer_browser_oracle.js)
-  set_tests_properties(test_visualization_urdf_parser PROPERTIES TIMEOUT 90)
+  # The in-browser WebGL viewer was retired: the portal's 3D view is now a real
+  # RViz window, so there is no canvas for a Firefox oracle to drive. The URDF
+  # this test also exercised is still validated by test_visualization_urdf,
+  # which runs check_urdf directly and needs no browser.
   add_test(
     NAME test_invalid_expiry_parameter
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_invalid_expiry_parameter.py)

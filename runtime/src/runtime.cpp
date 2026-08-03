@@ -1257,3 +1257,236 @@ extern "C" oa_runtime_status oa_runtime_poll_event(
 extern "C" void oa_runtime_plan_destroy(oa_runtime_plan *plan) {
     openarm::runtime::plans.erase(plan);
 }
+
+/* ---------------------------------------------------------------------------
+ * Additive bimanual motion surface (openarm_runtime_motion.h).
+ *
+ * These live here rather than in a separate translation unit so they reuse the
+ * same require_runtime, deadline translation, plan-authority, and identity
+ * checks as the frozen V1 planners instead of re-deriving them.
+ * ------------------------------------------------------------------------ */
+
+extern "C" oa_runtime_status oa_runtime_plan_converge_tcp_body(
+    oa_runtime *runtime, const oa_runtime_converge_tcp_move *request,
+    oa_runtime_plan **out_plan) {
+    if (request == nullptr || request->struct_size < sizeof(*request) ||
+        request->abi_version != OA_RUNTIME_MOTION_ABI_VERSION ||
+        request->reserved0 != 0U) {
+        return OA_RUNTIME_EABI;
+    }
+    const oa_runtime_paired_tcp_move &base = request->base;
+    if (base.struct_size < sizeof(base) || base.abi_version != OA_RUNTIME_ABI_VERSION) {
+        return OA_RUNTIME_EABI;
+    }
+    std::shared_ptr<openarm::runtime::RuntimeData> pinned;
+    oa_runtime_status status = require_runtime(runtime, pinned);
+    if (status != OA_RUNTIME_OK) return status;
+    if (out_plan == nullptr) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_EINVAL, OA_RUNTIME_FACILITY_RUNTIME);
+    }
+    *out_plan = nullptr;
+    if (base.clock_id != OA_RUNTIME_CLOCK_MONOTONIC ||
+        base.units_id != OA_RUNTIME_UNITS_SI_V1 ||
+        base.frame_id != OA_RUNTIME_FRAME_OPENARM_BODY_LINK0 ||
+        base.orientation_policy != OA_RUNTIME_ORIENTATION_FREE ||
+        base.required_collision_policy !=
+            openarm::runtime::collision_policy_for(*pinned)) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_EINVAL, OA_RUNTIME_FACILITY_RUNTIME);
+    }
+    if (base.required_model_revision != pinned->manifest->config.model_revision ||
+        base.required_tcp_revision[0] != pinned->manifest->config.model_revision ||
+        base.required_tcp_revision[1] != pinned->manifest->config.model_revision) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_EIDENTITY, OA_RUNTIME_FACILITY_MODEL);
+    }
+    if (std::strncmp(base.required_coordinate_identity_sha256,
+                     pinned->coordinate_identity_digest.c_str(),
+                     OA_RUNTIME_DIGEST_CAPACITY) != 0) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_EIDENTITY, OA_RUNTIME_FACILITY_MODEL);
+    }
+    if (pinned->controller == nullptr) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_EUNSUPPORTED, OA_RUNTIME_FACILITY_RUNTIME);
+    }
+    std::shared_ptr<openarm::runtime::PlanData> plan;
+    try {
+        plan = std::make_shared<openarm::runtime::PlanData>();
+    } catch (...) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_ENOMEM, OA_RUNTIME_FACILITY_RUNTIME);
+    }
+    plan->runtime = pinned;
+    {
+        std::lock_guard<std::mutex> lock(pinned->mutex);
+        if (pinned->owner != 1U || pinned->plan_pending) {
+            openarm::runtime::runtime_init(pinned->last_error);
+            pinned->last_error.status = OA_RUNTIME_EBUSY;
+            pinned->last_error.facility = OA_RUNTIME_FACILITY_RUNTIME;
+            return OA_RUNTIME_EBUSY;
+        }
+        pinned->plan_pending = true;
+        pinned->plan_expiry_ns = base.expiry_runtime_monotonic_ns;
+        pinned->plan_authority_id = pinned->next_plan_authority_id++;
+        if (pinned->next_plan_authority_id == 0U) pinned->next_plan_authority_id = 1U;
+        plan->authority_id = pinned->plan_authority_id;
+        plan->holds_authority = true;
+    }
+    oa_converge_tcp_move move{};
+    openarm::runtime::control_init(move);
+    const std::uint64_t facade_now = openarm::runtime::now_ns();
+    const std::uint64_t controller_now =
+        pinned->controller_timeline_ns.load(std::memory_order_acquire);
+    if (!translate_future_deadline(base.expiry_runtime_monotonic_ns, facade_now,
+                                   controller_now, move.expiry_ns)) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_ETIMEOUT, OA_RUNTIME_FACILITY_RUNTIME);
+    }
+    plan->facade_expiry_ns = base.expiry_runtime_monotonic_ns;
+    std::copy_n(base.required_feedback_seq, 2U, move.required_feedback_seq);
+    std::copy_n(request->target_m, 3U, move.target_m);
+    std::copy_n(request->contact_torque_nm, 7U, move.contact_torque_nm);
+    move.contact_torque_fraction = request->contact_torque_fraction;
+    move.contact_persistence_cycles = request->contact_persistence_cycles;
+    move.stop_distance_m = request->stop_distance_m;
+    move.minimum_progress_m = request->minimum_progress_m;
+    move.velocity_scale = base.velocity_scale;
+    move.acceleration_scale = base.acceleration_scale;
+    move.jerk_scale = base.jerk_scale;
+    move.tcp_tol_m = base.tcp_tolerance_m;
+    move.collision_scene_revision = base.collision_scene_revision;
+    move.max_branch_step_rad = base.maximum_branch_step_rad;
+    move.min_singular_value = base.minimum_singular_value;
+    oa_control_status lower = OA_CONTROL_OK;
+    {
+        std::lock_guard<std::mutex> controller_lock(pinned->controller_mutex);
+        oa_snapshot current{};
+        openarm::runtime::control_init(current);
+        lower = oa_controller_snapshot(pinned->controller, &current);
+        if (lower == OA_CONTROL_OK &&
+            (base.required_feedback_seq[0] != current.arm[0].feedback_seq ||
+             base.required_feedback_seq[1] != current.arm[1].feedback_seq)) {
+            return openarm::runtime::record_error(
+                pinned, OA_RUNTIME_ESTALE, OA_RUNTIME_FACILITY_RUNTIME);
+        }
+        if (lower == OA_CONTROL_OK) {
+            lower = oa_controller_plan_converge_tcp(pinned->controller, &move, &plan->plan);
+        }
+    }
+    if (lower != OA_CONTROL_OK) {
+        return openarm::runtime::record_error(
+            pinned, openarm::runtime::map_control(lower),
+            OA_RUNTIME_FACILITY_CONTROL, lower);
+    }
+    oa_runtime_plan *const handle = openarm::runtime::plans.insert(plan);
+    if (handle == nullptr) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_ENOMEM, OA_RUNTIME_FACILITY_RUNTIME);
+    }
+    *out_plan = handle;
+    return OA_RUNTIME_OK;
+}
+
+extern "C" oa_runtime_status oa_runtime_get_contact_report(
+    oa_runtime *runtime, oa_runtime_contact_report *out_report) {
+    if (out_report == nullptr || out_report->struct_size < sizeof(*out_report) ||
+        out_report->abi_version != OA_RUNTIME_MOTION_ABI_VERSION) {
+        return OA_RUNTIME_EABI;
+    }
+    std::shared_ptr<openarm::runtime::RuntimeData> pinned;
+    const oa_runtime_status status = require_runtime(runtime, pinned);
+    if (status != OA_RUNTIME_OK) return status;
+    if (pinned->controller == nullptr) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_EUNSUPPORTED, OA_RUNTIME_FACILITY_RUNTIME);
+    }
+    oa_contact_report source{};
+    openarm::runtime::control_init(source);
+    oa_control_status lower = OA_CONTROL_OK;
+    {
+        std::lock_guard<std::mutex> controller_lock(pinned->controller_mutex);
+        lower = oa_controller_get_contact_report(pinned->controller, &source);
+    }
+    if (lower != OA_CONTROL_OK) {
+        return openarm::runtime::record_error(
+            pinned, openarm::runtime::map_control(lower),
+            OA_RUNTIME_FACILITY_CONTROL, lower);
+    }
+    oa_runtime_contact_report result{};
+    result.struct_size = static_cast<std::uint32_t>(sizeof(result));
+    result.abi_version = OA_RUNTIME_MOTION_ABI_VERSION;
+    result.cause = source.cause;
+    result.contact_detected = source.contact_detected;
+    result.contact_side_mask = source.contact_side_mask;
+    result.keepout_violation = source.keepout_violation;
+    result.keepout_side = source.keepout_side;
+    result.keepout_segment_a = source.keepout_segment_a;
+    result.keepout_segment_b = source.keepout_segment_b;
+    result.stop_monotonic_ns = source.stop_monotonic_ns;
+    result.minimum_clearance_m = source.minimum_clearance_m;
+    for (std::size_t side = 0; side < OA_RUNTIME_ARMS; ++side) {
+        result.contact_joint_mask[side] = source.contact_joint_mask[side];
+        result.stop_feedback_seq[side] = source.stop_feedback_seq[side];
+        std::copy_n(source.contact_torque_nm[side], OA_RUNTIME_DOF,
+                    result.contact_torque_nm[side]);
+        std::copy_n(source.threshold_torque_nm[side], OA_RUNTIME_DOF,
+                    result.threshold_torque_nm[side]);
+        std::copy_n(source.stopped_q_rad[side], OA_RUNTIME_DOF,
+                    result.stopped_q_rad[side]);
+        std::copy_n(source.stopped_tcp_m[side], 3U, result.stopped_tcp_m[side]);
+    }
+    *out_report = result;
+    return OA_RUNTIME_OK;
+}
+
+extern "C" oa_runtime_status oa_runtime_sim_set_contact(
+    oa_runtime *runtime, const oa_runtime_sim_contact *contact) {
+    if (contact == nullptr || contact->struct_size < sizeof(*contact) ||
+        contact->abi_version != OA_RUNTIME_MOTION_ABI_VERSION) {
+        return OA_RUNTIME_EABI;
+    }
+    std::shared_ptr<openarm::runtime::RuntimeData> pinned;
+    const oa_runtime_status status = require_runtime(runtime, pinned);
+    if (status != OA_RUNTIME_OK) return status;
+    if (pinned->controller == nullptr ||
+        pinned->options.backend != OA_RUNTIME_BACKEND_VIRTUAL) {
+        return openarm::runtime::record_error(
+            pinned, OA_RUNTIME_EUNSUPPORTED, OA_RUNTIME_FACILITY_RUNTIME);
+    }
+    oa_sim_contact lower_contact{};
+    openarm::runtime::control_init(lower_contact);
+    lower_contact.side = contact->side;
+    lower_contact.enabled = contact->enabled;
+    std::copy_n(contact->center_m, 3U, lower_contact.center_m);
+    lower_contact.radius_m = contact->radius_m;
+    lower_contact.reaction_gain_nm_per_rad = contact->reaction_gain_nm_per_rad;
+    oa_control_status lower = OA_CONTROL_OK;
+    {
+        std::lock_guard<std::mutex> controller_lock(pinned->controller_mutex);
+        lower = oa_controller_sim_set_contact(pinned->controller, &lower_contact);
+    }
+    if (lower != OA_CONTROL_OK) {
+        return openarm::runtime::record_error(
+            pinned, openarm::runtime::map_control(lower),
+            OA_RUNTIME_FACILITY_CONTROL, lower);
+    }
+    return OA_RUNTIME_OK;
+}
+
+/* The emergency stop deliberately takes no handle and acquires no lock: it must
+ * remain callable while any runtime is mid-cycle or holding any lock, and from
+ * a signal handler. It forwards straight to the lock-free control latch that
+ * every controller samples at the top of every cycle. */
+extern "C" void oa_runtime_estop_assert(void) { oa_estop_assert(); }
+
+extern "C" uint32_t oa_runtime_estop_asserted(void) { return oa_estop_asserted(); }
+
+extern "C" oa_runtime_status oa_runtime_estop_clear(void) {
+    return oa_estop_clear() == OA_CONTROL_OK ? OA_RUNTIME_OK : OA_RUNTIME_ESTATE;
+}
+
+extern "C" uint64_t oa_runtime_estop_assert_count(void) {
+    return oa_estop_assert_count();
+}

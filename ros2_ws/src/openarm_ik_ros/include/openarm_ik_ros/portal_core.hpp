@@ -3,6 +3,7 @@
 #define OPENARM_IK_ROS__PORTAL_CORE_HPP_
 
 #define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1
+#include <openarm_collision.h>
 #include <openarm_model.h>
 
 #include "openarm_ik_ros/motion_profile.hpp"
