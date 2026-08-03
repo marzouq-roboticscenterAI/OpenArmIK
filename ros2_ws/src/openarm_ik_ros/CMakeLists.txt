@@ -190,6 +190,8 @@ if(BUILD_TESTING)
   # XML parser already present through the ROS stack.
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(LIBXML2 REQUIRED IMPORTED_TARGET libxml-2.0)
+  pkg_check_modules(JSONC REQUIRED IMPORTED_TARGET json-c)
+  pkg_check_modules(LIBCRYPTO REQUIRED IMPORTED_TARGET libcrypto)
   # target name gets a _c suffix so it cannot collide with the ctest name.
   function(openarm_add_c_test source)
     add_executable(${source}_c test/c/${source}.c)
@@ -202,6 +204,9 @@ if(BUILD_TESTING)
 
   openarm_add_c_test(test_generated_urdf)
   target_link_libraries(test_generated_urdf_c PRIVATE PkgConfig::LIBXML2)
+  openarm_add_c_test(test_visualization_urdf)
+  target_link_libraries(test_visualization_urdf_c PRIVATE
+    PkgConfig::LIBXML2 PkgConfig::JSONC PkgConfig::LIBCRYPTO m)
   openarm_add_c_test(test_no_can_linkage)
   openarm_add_c_test(test_invalid_expiry_parameter)
 
@@ -235,7 +240,7 @@ if(BUILD_TESTING)
       --description-root ${OPENARM_DESCRIPTION_SHARE})
   add_test(
     NAME test_visualization_urdf
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_visualization_urdf.py
+    COMMAND test_visualization_urdf_c
       --canonical ${openarm_model_GENERATED_URDF}
       --visualization ${OPENARM_STAGE_A_VISUALIZATION_URDF}
       --manifest ${OPENARM_VIEWER_MANIFEST}
