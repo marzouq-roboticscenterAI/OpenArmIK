@@ -101,6 +101,83 @@ visualization test's 12 random postures come from a fixed LCG rather than
 Python's Mersenne Twister, and XML serialization comparisons use libxml2's
 serializer on both sides rather than ElementTree's bytes.
 
+## Next session: execution plan for the queued work
+
+Do these in order. Each is independently committable and testable.
+
+### 1. RViz inside the web portal (replaces the separate window)
+
+The user wants RViz pixels in the portal page, not a second window. The current
+separate-window setup in `launch_web_portal.sh` is the wrong shape and should be
+removed once this lands.
+
+`.swarm/web_rviz_recon.md` already researched this; follow its recommendation:
+capture the live `rviz2` top-level X11 window with XComposite
+(`XCompositeRedirectWindow` + `XCompositeNameWindowPixmap`), encode JPEG with
+libjpeg, and serve `multipart/x-mixed-replace` from the existing Beast server in
+`src/openarm_portal.cpp`. The page shows a plain `<img>`; no new JS machinery.
+Reject Xvfb/VNC/noVNC: those components are not installed and drag in Python.
+
+All libraries are present and confirmed on this host: x11 1.8.13,
+xcomposite 0.4.6, xext 1.3.4, libjpeg 2.1.5, xfixes 6.0.0.
+
+Two things to prove before building it out:
+- RViz's Ogre render widget may be a separate native X11 child window. Verify the
+  captured top-level pixmap actually contains the moving 3D scene, not just the
+  Qt frame. If it does not, walk the child tree and capture that child. Do NOT
+  fall back to a root-window crop; that captures whatever overlaps RViz.
+- The portal currently forces software rendering on Wayland. Confirm capture
+  works in that mode, since that is the default path.
+
+Integration notes: `dispatch_static`/`dispatch_api`/`dispatch_urgent` are all
+one-shot request handlers with `stream.expires_after(...)`. An MJPEG stream is
+long-lived and needs its own dispatch lane with no expiry, its own admission
+cap, and cancellation on shutdown. Capture on one thread into a single shared
+latest-frame buffer; do not capture per client. Capture only while a client is
+attached, with a heartbeat so an idle scene still refreshes.
+
+### 2. Expose the new motions through ROS, the portal, and the CLI
+
+`oa_controller_plan_{centroid,mirrored,converge}_tcp` and the E-stop exist and
+are tested at the C ABI level only. Needed:
+- new actions alongside `MovePairedTcpScaled` in `openarm_control_msgs`;
+- handlers in `openarm_ik_ros_node.cpp` routing to the runtime entry points in
+  `openarm_runtime_motion.h` (centroid and mirrored are header-only adapters;
+  converge is `oa_runtime_plan_converge_tcp_body`);
+- `SessionCommand::Kind` variants in `virtual_control_session.hpp`;
+- portal routes and CLI subcommands;
+- an always-available E-stop route on the existing urgent lane, calling
+  `oa_runtime_estop_assert`, plus a CLI `estop` subcommand.
+
+### 3. Clap and cross-arms demos
+
+The claws only need to come close, not touch, so the 25 mm planning gate is not
+the blocker it first appeared. Measured clearance stays above the gate down to
+roughly 0.30 m between claws at x=0.30, z=0.35; the planner starts refusing
+below that. Crossing is NOT characterised: the probe used to sweep it had a
+state bug and misread OA_CONTROL_ESTATE from an unsettled controller as
+infeasibility. Re-measure before designing the waypoints.
+
+### 4. Box in RViz plus pick / lift / place
+
+The box needs a scene object. The existing `oa_sim_contact` sphere gives the
+grasp resistance; a box also needs a visual marker published to RViz and a
+keepout entry if it should be avoided rather than grasped.
+
+### 5. Web page demo buttons
+
+`portal_page.cpp` already has a preset mechanism (`nominal_targets` serialized
+into `#portal-targets`). Add demo presets through the same path so the buttons
+only fill fields and never submit motion, matching the existing contract.
+
+## Open issue: portal shutdown time
+
+Teardown via SIGTERM measured 25.8 s with RViz in the tree. The RViz close
+helper accounts for only 1.9 s of that, so most of it is portal/ROS teardown.
+Not yet isolated to a cause, and not established whether the RViz addition made
+it worse. `test_ros_contract` does not cover this path; it bounds the bare
+`ros2 launch` teardown, not `launch_web_portal.sh`.
+
 ## Outstanding requests not yet implemented
 
 - Expose centroid/mirrored/converge and the E-stop through the ROS actions,
