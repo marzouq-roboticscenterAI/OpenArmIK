@@ -220,6 +220,18 @@ if(BUILD_TESTING)
     rclcpp::rclcpp
     rclcpp_action::rclcpp_action)
 
+  add_executable(test_ros_contract_cpp test/c/test_ros_contract.cpp)
+  target_compile_options(test_ros_contract_cpp PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_link_libraries(test_ros_contract_cpp PRIVATE
+    diagnostic_msgs::diagnostic_msgs
+    geometry_msgs::geometry_msgs
+    openarm_control_msgs::openarm_control_msgs
+    rclcpp::rclcpp
+    rclcpp_action::rclcpp_action
+    sensor_msgs::sensor_msgs
+    tf2_ros::tf2_ros
+    PkgConfig::JSONC)
+
   add_executable(test_active_sigint_cpp test/c/test_active_sigint.cpp)
   target_compile_options(test_active_sigint_cpp PRIVATE -Wall -Wextra -Wpedantic -Werror)
   target_link_libraries(test_active_sigint_cpp PRIVATE
@@ -273,7 +285,7 @@ if(BUILD_TESTING)
     COMMAND test_invalid_expiry_parameter_c)
   add_test(
     NAME test_ros_contract
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_ros_contract.py)
+    COMMAND test_ros_contract_cpp)
   add_test(
     NAME test_active_sigint
     COMMAND test_active_sigint_cpp)
