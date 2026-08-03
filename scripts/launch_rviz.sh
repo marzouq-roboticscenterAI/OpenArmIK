@@ -88,9 +88,7 @@ if ! flock -n 9; then
 fi
 openarm_ensure_current_launch_tree \
   "$root_dir" "$output_root" "$build_mode" "$jobs"
-for variable in SNAP SNAP_ARCH SNAP_COMMON SNAP_CONTEXT SNAP_COOKIE SNAP_DATA SNAP_INSTANCE_KEY SNAP_LIBRARY_PATH SNAP_NAME SNAP_REAL_HOME SNAP_REEXEC SNAP_REVISION SNAP_USER_COMMON SNAP_USER_DATA GTK_PATH GTK_EXE_PREFIX GTK_IM_MODULE_FILE GDK_PIXBUF_MODULEDIR GDK_PIXBUF_MODULE_FILE GIO_MODULE_DIR QT_PLUGIN_PATH QT_QPA_PLATFORMTHEME XDG_DATA_DIRS; do
-  unset "$variable" || true
-done
+openarm_sanitize_snap_environment
 source /opt/ros/lyrical/setup.bash
 source "$output_root/install/setup.bash"
 export PYTHONDONTWRITEBYTECODE=1

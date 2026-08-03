@@ -5,6 +5,25 @@
 # XWayland/GLX path on this desktop, so the renderer selection and the HiDPI
 # workaround live here rather than being duplicated and drifting apart.
 
+# Removes the Snap runtime leakage a Snap-packaged terminal (VS Code) injects
+# into its children. Those variables point Qt/GTK plugin discovery at
+# /snap/core20, whose Ubuntu 20.04 glibc then loses to this host's:
+#   rviz2: symbol lookup error: /snap/core20/.../libpthread.so.0:
+#          undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE
+#
+# Call this BEFORE sourcing any ROS setup.bash: it clears XDG_DATA_DIRS, which
+# ROS then repopulates. Calling it afterwards would discard ROS's own entries.
+openarm_sanitize_snap_environment() {
+  local variable
+  for variable in SNAP SNAP_ARCH SNAP_COMMON SNAP_CONTEXT SNAP_COOKIE SNAP_DATA \
+    SNAP_INSTANCE_KEY SNAP_LIBRARY_PATH SNAP_NAME SNAP_REAL_HOME SNAP_REEXEC \
+    SNAP_REVISION SNAP_USER_COMMON SNAP_USER_DATA GTK_PATH GTK_EXE_PREFIX \
+    GTK_IM_MODULE_FILE GDK_PIXBUF_MODULEDIR GDK_PIXBUF_MODULE_FILE \
+    GIO_MODULE_DIR QT_PLUGIN_PATH QT_QPA_PLATFORMTHEME XDG_DATA_DIRS; do
+    unset "$variable" || true
+  done
+}
+
 # Applies the Qt platform and GPU environment RViz needs on this host.
 # Honours OPENARM_RVIZ_RENDERER=auto|nvidia|integrated|software.
 # Returns 2 for an unrecognised renderer.

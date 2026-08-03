@@ -161,6 +161,7 @@ openarm_ensure_current_launch_tree \
 }
 
 set +u
+openarm_sanitize_snap_environment
 source /opt/ros/lyrical/setup.bash
 source "$install_setup"
 set -u
