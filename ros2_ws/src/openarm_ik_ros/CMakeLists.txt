@@ -186,6 +186,34 @@ if(BUILD_TESTING)
     target_compile_options(test_openarm_control_cli PRIVATE --coverage -O0)
     target_link_options(test_openarm_control_cli PRIVATE --coverage)
   endif()
+  # The former Python test harnesses are compiled C programs. libxml2 is the C
+  # XML parser already present through the ROS stack.
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(LIBXML2 REQUIRED IMPORTED_TARGET libxml-2.0)
+  # target name gets a _c suffix so it cannot collide with the ctest name.
+  function(openarm_add_c_test source)
+    add_executable(${source}_c test/c/${source}.c)
+    target_include_directories(${source}_c PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/test/c")
+    target_compile_options(${source}_c PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    set_target_properties(${source}_c PROPERTIES C_STANDARD 11
+      C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+  endfunction()
+
+  openarm_add_c_test(test_generated_urdf)
+  target_link_libraries(test_generated_urdf_c PRIVATE PkgConfig::LIBXML2)
+  openarm_add_c_test(test_no_can_linkage)
+  openarm_add_c_test(test_invalid_expiry_parameter)
+
+  # Actions are only exposed through rclcpp_action, so the two action-driven
+  # harnesses are C++ while the rest of the ports are C.
+  add_executable(test_active_sigint_cpp test/c/test_active_sigint.cpp)
+  target_compile_options(test_active_sigint_cpp PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_link_libraries(test_active_sigint_cpp PRIVATE
+    openarm_control_msgs::openarm_control_msgs
+    rclcpp::rclcpp
+    rclcpp_action::rclcpp_action)
+
   add_test(
     NAME test_cli_server_lifecycle
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_cli_server_lifecycle.py
@@ -193,7 +221,7 @@ if(BUILD_TESTING)
       --production-executable $<TARGET_FILE:openarm_control_cli>)
   add_test(
     NAME test_no_can_linkage
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_no_can_linkage.py
+    COMMAND test_no_can_linkage_c
       --executable $<TARGET_FILE:openarm_ik_ros_node>
       --session-library $<TARGET_FILE:openarm_virtual_control_session>)
   add_test(NAME test_openarm_control_cli_help COMMAND openarm_control_cli --help)
@@ -202,7 +230,7 @@ if(BUILD_TESTING)
       "LEFT_X_METRES LEFT_Y_METRES LEFT_Z_METRES RIGHT_X_METRES RIGHT_Y_METRES RIGHT_Z_METRES")
   add_test(
     NAME test_generated_urdf
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_generated_urdf.py
+    COMMAND test_generated_urdf_c
       --urdf ${openarm_model_GENERATED_URDF}
       --description-root ${OPENARM_DESCRIPTION_SHARE})
   add_test(
@@ -229,13 +257,13 @@ if(BUILD_TESTING)
   # which runs check_urdf directly and needs no browser.
   add_test(
     NAME test_invalid_expiry_parameter
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_invalid_expiry_parameter.py)
+    COMMAND test_invalid_expiry_parameter_c)
   add_test(
     NAME test_ros_contract
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_ros_contract.py)
   add_test(
     NAME test_active_sigint
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_active_sigint.py)
+    COMMAND test_active_sigint_cpp)
   set_tests_properties(test_ros_contract test_active_sigint test_cli_server_lifecycle
     test_no_can_linkage test_invalid_expiry_parameter
     PROPERTIES RUN_SERIAL TRUE)
