@@ -265,7 +265,7 @@ trap 'shutdown 129' HUP
 trap 'shutdown 143' TERM
 trap 'shutdown $?' EXIT
 
-setsid ros2 launch openarm_ik_ros openarm_ik_rviz.launch.py rviz:=false &
+setsid ros2 launch openarm_ik_ros openarm_ik_rviz.launch.xml rviz:=false &
 core_pid=$!
 
 setsid "$portal_binary" --port "$port" &

@@ -113,7 +113,7 @@ def main():
     environment.setdefault("ROS_DOMAIN_ID", str(100 + os.getpid() % 100))
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     launch = subprocess.Popen(
-        ["ros2", "launch", "openarm_ik_ros", "openarm_ik_rviz.launch.py", "rviz:=false"],
+        ["ros2", "launch", "openarm_ik_ros", "openarm_ik_rviz.launch.xml", "rviz:=false"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

@@ -128,7 +128,7 @@ for argument in "${launcher_arguments[@]}"; do
 done
 
 if (( ! rviz_enabled )); then
-  exec ros2 launch openarm_ik_ros openarm_ik_rviz.launch.py \
+  exec ros2 launch openarm_ik_ros openarm_ik_rviz.launch.xml \
     rviz:=false "${launch_arguments[@]}"
 fi
 
@@ -197,7 +197,7 @@ trap 'shutdown $?' EXIT
 
 # Keep RViz out of the ROS launcher's signal path.  Closing it through the
 # window manager avoids the RViz/Ogre SIGINT teardown crash seen on this host.
-setsid ros2 launch openarm_ik_ros openarm_ik_rviz.launch.py \
+setsid ros2 launch openarm_ik_ros openarm_ik_rviz.launch.xml \
   rviz:=false "${launch_arguments[@]}" &
 core_pid=$!
 setsid rviz2 -d "$share_dir/rviz/openarm_ik.rviz" --ros-args -r __node:=rviz2 &

@@ -265,7 +265,7 @@ openarm_launch_artifact_paths() {
     "viewer_hand|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/hand.stl" \
     "viewer_finger|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/viewer/mesh/finger.stl" \
     "setup|$output_root/install/setup.bash" \
-    "launch|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/launch/openarm_ik_rviz.launch.py" \
+    "launch|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/launch/openarm_ik_rviz.launch.xml" \
     "rviz|$output_root/install/openarm_ik_ros/share/openarm_ik_ros/rviz/openarm_ik.rviz"
 }
 

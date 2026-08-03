@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<!--
+  Launch the measured virtual controller and its sole robot-state TF authority.
+
+  XML rather than Python so the package carries no Python launch source. The
+  ros2 launch engine is itself Python; this removes the file we maintain, not
+  that dependency.
+-->
+<launch>
+  <arg name="rviz" default="true"/>
+
+  <!-- robot_state_publisher takes the model as a string parameter, so the
+       pinned Stage-A visualization URDF is read in here. type="str" is
+       required: without it the launch parameter parser tries to infer a type
+       from the XML payload and rejects it. -->
+  <node pkg="robot_state_publisher" exec="robot_state_publisher"
+        name="robot_state_publisher" output="screen">
+    <param name="robot_description" type="str"
+           value="$(command 'cat $(find-pkg-share openarm_ik_ros)/urdf/openarm_v10_bimanual_stage_a_visualization.urdf')"/>
+  </node>
+
+  <node pkg="openarm_ik_ros" exec="openarm_ik_ros_node" name="openarm_ik_ros"
+        output="screen"/>
+
+  <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen"
+        if="$(var rviz)"
+        args="-d $(find-pkg-share openarm_ik_ros)/rviz/openarm_ik.rviz"/>
+</launch>
