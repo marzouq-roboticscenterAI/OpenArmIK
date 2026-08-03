@@ -212,6 +212,14 @@ if(BUILD_TESTING)
 
   # Actions are only exposed through rclcpp_action, so the two action-driven
   # harnesses are C++ while the rest of the ports are C.
+  add_executable(test_cli_server_lifecycle_cpp test/c/test_cli_server_lifecycle.cpp)
+  target_compile_options(test_cli_server_lifecycle_cpp PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+  target_link_libraries(test_cli_server_lifecycle_cpp PRIVATE
+    openarm_control_msgs::openarm_control_msgs
+    rclcpp::rclcpp
+    rclcpp_action::rclcpp_action)
+
   add_executable(test_active_sigint_cpp test/c/test_active_sigint.cpp)
   target_compile_options(test_active_sigint_cpp PRIVATE -Wall -Wextra -Wpedantic -Werror)
   target_link_libraries(test_active_sigint_cpp PRIVATE
@@ -221,7 +229,7 @@ if(BUILD_TESTING)
 
   add_test(
     NAME test_cli_server_lifecycle
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_cli_server_lifecycle.py
+    COMMAND test_cli_server_lifecycle_cpp
       --executable $<TARGET_FILE:test_openarm_control_cli>
       --production-executable $<TARGET_FILE:openarm_control_cli>)
   add_test(
