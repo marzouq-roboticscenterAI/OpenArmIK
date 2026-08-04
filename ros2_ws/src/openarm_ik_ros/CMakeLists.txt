@@ -96,6 +96,7 @@ target_link_libraries(openarm_ik_ros_node PRIVATE
 add_executable(openarm_control_cli src/openarm_control_cli.cpp)
 target_compile_options(openarm_control_cli PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_control_cli PRIVATE
+  OpenArm::Runtime
   diagnostic_msgs::diagnostic_msgs
   openarm_control_msgs::openarm_control_msgs
   rclcpp::rclcpp
@@ -129,6 +130,7 @@ target_compile_definitions(openarm_portal PRIVATE BOOST_ERROR_CODE_HEADER_ONLY)
 target_compile_options(openarm_portal PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_portal PRIVATE
   openarm_rviz_capture
+  OpenArm::Runtime
   openarm_portal_core
   diagnostic_msgs::diagnostic_msgs
   openarm_control_msgs::openarm_control_msgs
@@ -190,6 +192,7 @@ if(BUILD_TESTING)
     OPENARM_CLI_TEST_CONTEXT_SHUTDOWN_AFTER_ACCEPT)
   target_compile_options(test_openarm_control_cli PRIVATE -Wall -Wextra -Wpedantic -Werror)
   target_link_libraries(test_openarm_control_cli PRIVATE
+    OpenArm::Runtime
     diagnostic_msgs::diagnostic_msgs
     openarm_control_msgs::openarm_control_msgs
     rclcpp::rclcpp

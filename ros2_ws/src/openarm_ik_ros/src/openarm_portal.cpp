@@ -2,6 +2,8 @@
 #include "openarm_ik_ros/portal_core.hpp"
 #include "openarm_ik_ros/rviz_capture.hpp"
 
+#include <openarm_runtime_motion.h>
+
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/thread_pool.hpp>
 #include <boost/beast/core.hpp>
@@ -621,6 +623,25 @@ public:
     return command();
   }
 
+  // The emergency stop is a process-wide lock-free latch. It takes no handle
+  // and no lock, so it is honoured even while a command holds the controller.
+  std::string engage_estop()
+  {
+    oa_runtime_estop_assert();
+    (void)cancel();
+    return std::string("{\"estop\":\"engaged\",\"asserted\":") +
+      (oa_runtime_estop_asserted() != 0U ? "true" : "false") +
+      ",\"assertions\":" + std::to_string(oa_runtime_estop_assert_count()) +
+      ",\"note\":\"software interlock; not a hardwired safety-rated E-stop\"}";
+  }
+
+  std::string release_estop()
+  {
+    const bool cleared = oa_runtime_estop_clear() == OA_RUNTIME_OK;
+    return std::string("{\"estop\":\"") + (cleared ? "released" : "release_failed") +
+      "\",\"asserted\":" + (oa_runtime_estop_asserted() != 0U ? "true" : "false") + "}";
+  }
+
   std::string verify_simulation() const
   {
     GuardInput input;
@@ -1081,6 +1102,9 @@ private:
       dispatch_static(std::move(stream), std::move(request));
     } else if (request.method() == http::verb::get && target == "/api/rviz/stream") {
       dispatch_stream(std::move(stream), std::move(request));
+    } else if (request.method() == http::verb::post &&
+      (target == "/api/estop" || target == "/api/estop/release")) {
+      dispatch_urgent(std::move(stream), std::move(request));
     } else if (request.method() == http::verb::post && target == "/api/stop") {
       // Keep authenticated software-stop handling independent of expensive IK
       // work and ordinary API admission.  Validation remains in serve_api.
@@ -1142,7 +1166,8 @@ private:
     }
     if (request.method() != http::verb::post ||
       (target != "/api/move" && target != "/api/v2/move" && target != "/api/v3/move" &&
-      target != "/api/stop" && target != "/api/verify"))
+      target != "/api/stop" && target != "/api/verify" && target != "/api/estop" &&
+      target != "/api/estop/release"))
     {
       write_json(stream, http::status::not_found, "{\"error\":\"route not found\"}");
       return;
@@ -1171,6 +1196,24 @@ private:
     if (!policy_.validate(headers, reason)) {
       write_json(stream, http::status::forbidden,
         "{\"error\":\"" + json_escape(reason) + "\"}");
+      return;
+    }
+    if (target == "/api/estop" || target == "/api/estop/release") {
+      if (!StrictJson::empty_object(request.body())) {
+        write_json(stream, http::status::bad_request,
+          "{\"error\":\"body must be an empty JSON object\"}");
+        return;
+      }
+      write_json(stream, http::status::ok,
+        target == "/api/estop" ? node_->engage_estop() : node_->release_estop());
+      return;
+    }
+    // Refuse motion at the boundary while the stop is latched. The controller
+    // would reject it anyway, but accepting a request that cannot move is
+    // misleading, and the operator should be told the stop is the reason.
+    if (oa_runtime_estop_asserted() != 0U && target != "/api/stop") {
+      write_json(stream, http::status::service_unavailable,
+        "{\"error\":\"emergency stop is engaged; release it before commanding motion\"}");
       return;
     }
     if (target == "/api/stop" || target == "/api/verify") {

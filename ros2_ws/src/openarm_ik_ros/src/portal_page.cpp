@@ -30,6 +30,22 @@ std::string targets_json()
 }
 }  // namespace
 
+// The same waypoints the CLI demos use, all measured against the real-time
+// keepout monitor. Metres, openarm_body_link0.
+std::string demo_targets_json()
+{
+  return R"JSON([
+{"id":"clap_open","label":"Clap: open","left":[0.30,0.26,0.35],"right":[0.30,-0.26,0.35]},
+{"id":"clap_closed","label":"Clap: closed","left":[0.30,0.12,0.35],"right":[0.30,-0.12,0.35]},
+{"id":"cross_open","label":"Cross: open","left":[0.30,0.26,0.45],"right":[0.30,-0.26,0.45]},
+{"id":"cross_split","label":"Cross: split height","left":[0.30,0.26,0.58],"right":[0.30,-0.26,0.32]},
+{"id":"cross_across","label":"Cross: reach across","left":[0.30,0.04,0.58],"right":[0.30,-0.04,0.32]},
+{"id":"mirror","label":"Mirrored pair","left":[0.30,0.22,0.40],"right":[0.30,-0.22,0.40]},
+{"id":"forward_mid","label":"Forward mid","left":[0.30,0.22,0.30],"right":[0.30,-0.22,0.30]},
+{"id":"neutral_low","label":"Near low","left":[0.15,0.22,0.15],"right":[0.15,-0.22,0.15]}
+])JSON";
+}
+
 std::string portal_page(std::string_view csrf)
 {
   return std::string(R"HTML(<!doctype html>
@@ -42,13 +58,15 @@ std::string portal_page(std::string_view csrf)
 <div class="card"><h2>Measured TCP / target — <span id="unit-heading">centimetres (cm)</span>, openarm_body_link0</h2><div class="caption">+X forward, +Y left, +Z up. Presets span a wide, virtual-model-validated workspace but are not physically certified coordinates. Preset buttons only fill fields; they never submit motion.</div><fieldset class="units"><legend>Coordinate display/input units</legend><div class="unit-options"><label><input type="radio" name="coordinate-unit" value="cm" checked>Centimetres (cm)</label><label><input type="radio" name="coordinate-unit" value="in">Inches (in)</label><label><input type="radio" name="coordinate-unit" value="m">Metres (m)</label></div></fieldset><div class="caption">All control coordinates remain IEEE-754 binary64. ROS and visualization geometry remain metric. The proxy has no portal-switchable coordinate grid.</div><div id="age" class="caption">Waiting for encoder-derived joint state…</div></div>
 <div class="card"><h2>Movement limits — <span id="motion-limit-value">80%</span></h2><label class="motion-limit" for="motion-limit-scale">Configured velocity, acceleration, and jerk limit scale</label><input id="motion-limit-scale" type="range" min="50" max="100" step="5" value="80"><div class="caption">50% is the previous portal behavior; 100% is the virtual model's configured maximum. The smooth seventh-order trajectory remains bounded. This percentage scales three limits equally, so travel time is not linear.</div></div>
 <div class="card"><h2>Virtual guard test inputs (cm)</h2><div class="caption"><strong>Near-full audited reach:</strong> use the High far preset: Left [28, 67, 52], Right [28, -67, 52].<br><strong>Impossible/reach projection:</strong> Left [5000, 5000, 5000], Right [5000, -5000, 5000]. From neutral, each makes a large best-effort move instead of commanding 50 m.<br><strong>Pole mitigation:</strong> Left [40, 5, 40], Right [40, -5, 40]. The sampled guard stops at its 2.5 cm nominal gate.<br><strong>Inter-arm mitigation:</strong> move both arms to their own Near-max forward presets, then request Left [48, -17, 35]. The left arm stops before the right-arm capsule gate.<br>These are virtual regression inputs, not physically certified poses.</div></div>
+<div class="card"><h2>Demo poses</h2><div class="caption">Each button fills <strong>both</strong> the left and right target fields with one waypoint of a demo. Buttons only fill fields; they never submit motion. Every waypoint was measured against the real-time keepout monitor. Run a full sequence with <code>openarm_control_cli clap</code> or <code>cross</code>.</div><div id="demo-presets" class="presets"></div></div>
 <div class="card"><h2>Left target (orientation unconstrained)</h2><div class="xyz"><label><span id="lx-label">X (cm)</span><input class="coordinate" id="lx" type="text" inputmode="decimal" required aria-labelledby="lx-label"></label><label><span id="ly-label">Y (cm)</span><input class="coordinate" id="ly" type="text" inputmode="decimal" required aria-labelledby="ly-label"></label><label><span id="lz-label">Z (cm)</span><input class="coordinate" id="lz" type="text" inputmode="decimal" required aria-labelledby="lz-label"></label></div><div id="left-presets" class="presets"></div><button id="left" disabled>Move Left (Right target = freshest measured TCP)</button></div>
 <div class="card"><h2>Right target (orientation unconstrained)</h2><div class="xyz"><label><span id="rx-label">X (cm)</span><input class="coordinate" id="rx" type="text" inputmode="decimal" required aria-labelledby="rx-label"></label><label><span id="ry-label">Y (cm)</span><input class="coordinate" id="ry" type="text" inputmode="decimal" required aria-labelledby="ry-label"></label><label><span id="rz-label">Z (cm)</span><input class="coordinate" id="rz" type="text" inputmode="decimal" required aria-labelledby="rz-label"></label></div><div id="right-presets" class="presets"></div><button id="right" disabled>Move Right (Left target = freshest measured TCP)</button></div>
 <div id="form-error" class="error" role="alert"></div><div id="form-notice" class="notice" aria-live="polite"></div>
 <div class="card"><button class="verify" id="verify">Auto Calibrate — simulation verification only</button><div class="caption">Nonmoving model/state verification; it performs no physical calibration.</div><button class="stop" id="stop">Request software stop (not a hardwired E-stop)</button><div class="caption">Cancels the active portal goal. It is not safety-rated and cannot replace a hardwired E-stop.</div></div>
 <div class="card"><h2>Measured command progress/result</h2><div id="status" class="status">No portal command.</div></div></section>
 <section class="viewer"><h2>RViz</h2><div class="frame"><img id="rviz-stream" src="/api/rviz/stream" alt="Live RViz 3D view"></div><div class="caption">These are real <strong>RViz</strong> pixels, captured from the running rviz2 process and streamed as MJPEG. The view is cropped to the 3D render area, so the Qt menus and toolbars are not shown. It is display-only: the stream sends no input to RViz.</div><div class="caption">RViz renders the measured pose of the pinned model. It is not collision checking, and its freshness is never used as control feedback.</div></section></main>
-<script id="portal-targets" type="application/json">)HTML" + targets_json() + R"HTML(</script></body></html>)HTML";
+<script id="portal-targets" type="application/json">)HTML" + targets_json() + R"HTML(</script>
+<script id="portal-demos" type="application/json">)HTML" + demo_targets_json() + R"HTML(</script></body></html>)HTML";
 }
 
 }  // namespace openarm_ik_ros::portal

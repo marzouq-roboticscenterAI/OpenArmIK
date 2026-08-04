@@ -4,6 +4,7 @@
   const $ = id => document.getElementById(id);
   const csrf = document.querySelector('meta[name="portal-csrf"]').content;
   const targets = JSON.parse($('portal-targets').textContent);
+  const demos = JSON.parse($('portal-demos').textContent);
   const axes = ['x', 'y', 'z'];
   const sides = ['left', 'right'];
   const metresPerUnit = {m: 1.0, cm: 0.01, in: 0.0254};
@@ -88,6 +89,32 @@
     clearError();
     $('form-notice').textContent = 'Fields filled in ' + unitNames[unit] + ' only; review values and press Move to submit.';
   }
+  // Demo buttons fill both sides at once; a demo pose is a bimanual pair.
+  function applyDemo(entry) {
+    for (const side of sides) {
+      targetsM[side] = entry[side].slice();
+      for (let index = 0; index < 3; ++index) {
+        fieldState[fieldId(side, index)].touched = true;
+      }
+      renderSide(side);
+    }
+    clearError();
+    $('form-notice').textContent =
+      'Filled both targets from "' + entry.label + '"; review values and press Move to submit.';
+  }
+  function renderDemoPresets() {
+    const container = $('demo-presets');
+    if (!container) return;
+    for (const entry of demos) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'preset';
+      button.dataset.demo = entry.id;
+      button.textContent = entry.label;
+      button.addEventListener('click', () => applyDemo(entry));
+      container.append(button);
+    }
+  }
   function renderPresets(side) {
     const container = $(side + '-presets');
     const entries = [{id: 'current', label: 'Current measured'}].concat(targets[side]);
@@ -146,5 +173,5 @@
   $('left').addEventListener('click', () => move('left')); $('right').addEventListener('click', () => move('right'));
   $('stop').addEventListener('click', () => post('/api/stop').catch(error => {$('status').textContent = error.message;}));
   $('verify').addEventListener('click', () => post('/api/verify').catch(error => {$('status').textContent = error.message;}));
-  renderPresets('left'); renderPresets('right'); updateUnitText(); updateMotionLimit(); syncUnitRadios(); state(); window.setInterval(state, 250);
+  renderPresets('left'); renderPresets('right'); renderDemoPresets(); updateUnitText(); updateMotionLimit(); syncUnitRadios(); state(); window.setInterval(state, 250);
 })();

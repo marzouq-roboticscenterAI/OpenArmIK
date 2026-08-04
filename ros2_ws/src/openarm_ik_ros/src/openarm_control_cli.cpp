@@ -3,6 +3,7 @@
 #include <openarm_control_msgs/action/move_joint.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp_scaled.hpp>
+#include <openarm_runtime_motion.h>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
@@ -406,6 +407,7 @@ void usage()
     "RIGHT_X_METRES RIGHT_Y_METRES RIGHT_Z_METRES\n"
     "  openarm_control_cli mirror left|right X_METRES Y_METRES Z_METRES\n"
     "  openarm_control_cli clap [CYCLES]\n"
+    "  openarm_control_cli estop | estop-release\n"
     "  openarm_control_cli cross [CYCLES]\n";
 }
 }
@@ -439,6 +441,18 @@ int main(int argc, char ** argv)
       goal.right_tcp_m.y = number(argv[7]);
       goal.right_tcp_m.z = number(argv[8]);
       result = run_goal<MovePairedTcp>(node, goal, "/openarm_ik/move_paired_tcp");
+    } else if (argc == 2 && std::string(argv[1]) == "estop") {
+      // Lock-free and handle-free: it does not need the action server to be up.
+      oa_runtime_estop_assert();
+      std::cout << "emergency stop engaged (assertions="
+                << oa_runtime_estop_assert_count()
+                << "); software interlock, not a hardwired E-stop" << std::endl;
+      result = oa_runtime_estop_asserted() != 0U ? 0 : 1;
+    } else if (argc == 2 && std::string(argv[1]) == "estop-release") {
+      result = oa_runtime_estop_clear() == OA_RUNTIME_OK ? 0 : 1;
+      std::cout << (oa_runtime_estop_asserted() == 0U ? "emergency stop released"
+                                                      : "emergency stop still engaged")
+                << std::endl;
     } else if ((argc == 2 || argc == 3) && std::string(argv[1]) == "clap") {
       result = demo_clap(node, argc == 3 ? static_cast<int>(number(argv[2])) : 3);
     } else if ((argc == 2 || argc == 3) && std::string(argv[1]) == "cross") {
