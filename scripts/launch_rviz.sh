@@ -81,6 +81,10 @@ if [[ -z "$runtime_dir" || ! -d "$runtime_dir" || ! -w "$runtime_dir" ]]; then
   chmod 700 -- "$runtime_dir"
 fi
 lock_file="$runtime_dir/openarmik-gui-$UID.lock"
+# The GUI lock is held on fd 9. Every child must be spawned with it closed:
+# an fd inherited by a grandchild (robot_state_publisher, for one) keeps the
+# lock held long after this script exits, and the next launch then refuses to
+# start with "An OpenArm GUI is already running".
 exec 9>"$lock_file"
 if ! flock -n 9; then
   printf 'An OpenArm GUI is already running; close it or press Ctrl+C in its terminal.\n' >&2
@@ -195,10 +199,12 @@ trap 'shutdown $?' EXIT
 
 # Keep RViz out of the ROS launcher's signal path.  Closing it through the
 # window manager avoids the RViz/Ogre SIGINT teardown crash seen on this host.
-setsid ros2 launch openarm_ik_ros openarm_ik_rviz.launch.xml \
-  rviz:=false "${launch_arguments[@]}" &
+(exec 9>&-; openarm_close_shared_lock_fds
+  exec setsid ros2 launch openarm_ik_ros openarm_ik_rviz.launch.xml \
+    rviz:=false "${launch_arguments[@]}") &
 core_pid=$!
-setsid rviz2 -d "$share_dir/rviz/openarm_ik.rviz" --ros-args -r __node:=rviz2 &
+(exec 9>&-; openarm_close_shared_lock_fds
+  exec setsid rviz2 -d "$share_dir/rviz/openarm_ik.rviz" --ros-args -r __node:=rviz2) &
 rviz_pid=$!
 
 set +e
