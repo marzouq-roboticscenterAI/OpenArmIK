@@ -242,6 +242,16 @@ Ordering matters in that script. `converge` ends with the claws inside the
 keepout intervention floor on purpose, and the demos after it only pass because
 the monitor permits a retreat from there.
 
+### Portal surfaces
+
+Single-arm moves (`/api/v3/move`) pin the other arm to its measured TCP and may
+be shortened to a best-effort prefix. The dual move (`/api/v3/move-both`, the
+Move Both Arms button) commands both targets in one paired command and is
+**never** shortened: stopping one arm early while the other continues would
+change the relative geometry the guard's samples were validated against. The
+guard interpolates both arms along their own lines when `MoveRequest::dual` is
+set, so clearance is sampled on the pair actually in motion.
+
 ### Three rules that are easy to break again
 
 1. **A monitor stop is a success only for converge.** Mapping STOPPED to
@@ -256,6 +266,12 @@ the monitor permits a retreat from there.
 3. **The box grasp radius is 0.05 m for a reason.** The clap midpoint passes
    0.064 m from the box and clap closes inside the grasp separation, so a
    larger radius makes the clap demo pick the box up and carry it away.
+
+Sequencing note for anyone extending the sweep: the session holds a reservation
+until the previous goal is terminal and the portal state is briefly stale on
+either side of a command. Post motion back to back and you get exit 4 from the
+CLI or 409 from the portal, which looks like a broken command but is a racing
+harness. `climove` and the debounced `wait_idle` in the sweep exist for that.
 
 ## Outstanding requests not yet implemented
 
