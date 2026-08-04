@@ -196,28 +196,46 @@ it worse. `test_ros_contract` does not cover this path; it bounds the bare
   motion is refused at the portal boundary while latched.
 - Graspable scene box marker plus web demo-pose buttons that fill both targets.
 
+### Tool capsule: measured, and it is too small
+
+The collision meshes are **millimetres**. Measured half-extents about the
+segment-6 tool axis: hand corner 88.8 mm, finger corner 82.9 mm, link7 44.7 mm.
+`kToolRadius` is 75 mm, so the capsule **under-covers the gripper by 13.8 mm in
+the jaw direction**. This is a real gap and was not introduced here; it is
+recorded rather than silently changed because widening it to ~89 mm makes the
+guard stricter and would need every documented preset re-measured against the
+2.5 cm gate (`test_virtual_control_session` asserts a 2.6598 cm minimum).
+Decide that deliberately.
+
+Shrinking the radius is not an option and does not help crossing. The waste is
+the shape: the gripper is a 57 x 168 x 16 mm flat plate, and a circular capsule
+sweeps 5.05 L around 0.15 L of actual hardware. Only an oriented box would fit
+it tightly.
+
 ### Cross-arms: what is actually achievable
 
-A genuine crossing is **not** possible on this robot under the audited keepout.
-Each tool is a 75 mm capsule, so two tools need 175 mm of centre separation.
-About twenty geometries were tested (x-stagger, z-stagger, high/low, and
-multi-step via sequences); every one that carries a claw past the centreline
-brings the two tool *segments* inside that and trips the monitor at ~9.6 mm.
-Some variants fail earlier as unreachable. The demo therefore reaches to 4 cm
-either side of the centreline at separated heights, measured at ~22 mm
-clearance. Clap closes to 24 cm apart at ~31 mm clearance.
+A genuine crossing **is** possible, but only stacked in Z, not side by side.
+Working waypoint: left claw to y=-0.04 at z=0.62, right claw to y=+0.04 at
+z=0.22, both at x=0.30, commanded together, measured at 26.5 mm clearance.
 
-Do not "fix" this by lowering the gate without saying so: it is the collision
-model doing its job.
+The window is narrow and was mapped empirically over roughly thirty geometries:
+- deeper than about 4 cm either side is unreachable, or the leading tool enters
+  the trailing forearm (ARM_ARM, segment 6 vs 4) at ~10 mm;
+- pulling either arm back in x brings its tool near the central shaft (POLE,
+  segment 6) at ~9.7 mm;
+- side-by-side passes cannot work at any x-stagger, because two 75 mm tool
+  capsules need 175 mm of centre separation.
+
+Clap closes to 24 cm apart at ~31 mm clearance.
+
+Do not "fix" a failure here by lowering the gate without saying so.
 
 ## Outstanding requests not yet implemented
 
-- Centroid and converge are still C-ABI only. Mirrored is exposed through the
-  CLI (`mirror`), which computes the sagittal mirror and submits an ordinary
-  paired move. Centroid needs measured TCPs, and converge needs a new
-  SessionCommand kind to reach `oa_runtime_plan_converge_tcp_body`; a single
-  `MoveBimanual` action with a mode field would cover all three with far less
-  scaffolding than three separate actions.
+- Nothing from the original request list. Centroid, mirrored and converge are
+  now exposed through the `MoveBimanual` action, the session, and the CLI.
+- Open: the tool capsule under-coverage recorded above, and the portal
+  shutdown-time note further down (Ctrl+C itself is fixed and fast).
 - Clap and cross-arms demos. The arms need only come close, not touch. Measured
   clearance stays above the 25 mm planning gate down to roughly 0.30 m between
   claws at x=0.30, z=0.35; below that the planner starts refusing. Crossing was
