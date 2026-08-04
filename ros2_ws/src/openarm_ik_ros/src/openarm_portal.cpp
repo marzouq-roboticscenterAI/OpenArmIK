@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openarm_ik_ros/portal_core.hpp"
+#include "openarm_ik_ros/rviz_capture.hpp"
 
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/thread_pool.hpp>
@@ -761,6 +762,11 @@ private:
   static constexpr unsigned kStaticPending = 1U;
   static constexpr unsigned kMaximumApi = 8U;
   static constexpr unsigned kMaximumUrgent = 4U;
+  // MJPEG viewers are long-lived, so they get their own small lane. Capping
+  // them keeps a browser reload storm from starving the API and stop lanes.
+  static constexpr unsigned kMaximumStream = 3U;
+  static constexpr int kStreamQuality = 72;
+  static constexpr auto kStreamInterval = std::chrono::milliseconds(66);
 
   class IntakeSession : public std::enable_shared_from_this<IntakeSession>
   {
@@ -845,9 +851,13 @@ public:
     acceptor_.close(ignored);
     cancel_intakes();
     node_->begin_shutdown();
+    // Streams never finish on their own, so they must be told to stop before
+    // the pool is joined or shutdown would hang here forever.
+    stream_stopping_.store(true);
     static_pool_.join();
     urgent_pool_.join();
     api_pool_.join();
+    stream_pool_.join();
   }
 
 private:
@@ -952,6 +962,81 @@ private:
     }
   }
 
+  // A long-lived multipart/x-mixed-replace response carrying the live rviz2
+  // window. Deliberately not routed through dispatch_api: that lane sets a
+  // two-second deadline, which is correct for one-shot requests and fatal for
+  // a stream.
+  void dispatch_stream(beast::tcp_stream stream, Request request)
+  {
+    if (stream_admitted_.fetch_add(1) >= kMaximumStream) {
+      stream_admitted_.fetch_sub(1);
+      write_json(stream, http::status::service_unavailable,
+        "{\"error\":\"too many viewers\"}");
+      close_stream(stream);
+      return;
+    }
+    try {
+      asio::post(stream_pool_,
+        [this, stream = std::move(stream), request = std::move(request)]() mutable {
+          try {
+            serve_stream(stream, request);
+          } catch (const std::exception & exception) {
+            std::fprintf(stderr, "openarm_portal stream: %s\n", exception.what());
+          }
+          close_stream(stream);
+          stream_admitted_.fetch_sub(1);
+        });
+    } catch (...) {
+      stream_admitted_.fetch_sub(1);
+      throw;
+    }
+  }
+
+  void serve_stream(beast::tcp_stream & stream, const Request & request)
+  {
+    static constexpr const char * kBoundary = "openarmframe";
+    // No read/write deadline: the response never completes by design.
+    stream.expires_never();
+    std::string header =
+      "HTTP/1.1 200 OK\r\n"
+      "Content-Type: multipart/x-mixed-replace; boundary=" + std::string(kBoundary) +
+      "\r\nCache-Control: no-store, no-cache, must-revalidate\r\n"
+      "Pragma: no-cache\r\nConnection: close\r\n\r\n";
+    beast::error_code error;
+    asio::write(stream.socket(), asio::buffer(header), error);
+    if (error) {return;}
+    (void)request;
+
+    std::vector<unsigned char> frame;
+    auto next = std::chrono::steady_clock::now();
+    while (!stream_stopping_.load()) {
+      {
+        // One capture at a time: the X connection is not shared safely and a
+        // single encode serves every viewer.
+        std::lock_guard<std::mutex> lock(capture_mutex_);
+        if (capture_.connect() && capture_.locate()) {
+          std::vector<unsigned char> encoded;
+          if (capture_.grab(encoded, kStreamQuality)) {
+            frame = std::move(encoded);
+          }
+        }
+      }
+      if (!frame.empty()) {
+        std::string part = "--" + std::string(kBoundary) +
+          "\r\nContent-Type: image/jpeg\r\nContent-Length: " +
+          std::to_string(frame.size()) + "\r\n\r\n";
+        asio::write(stream.socket(), asio::buffer(part), error);
+        if (error) {return;}
+        asio::write(stream.socket(), asio::buffer(frame), error);
+        if (error) {return;}
+        asio::write(stream.socket(), asio::buffer(std::string("\r\n")), error);
+        if (error) {return;}
+      }
+      next += kStreamInterval;
+      std::this_thread::sleep_until(next);
+    }
+  }
+
   void start_intake(tcp::socket socket)
   {
     if (active_intakes_.size() >= kMaximumIntake) {
@@ -994,6 +1079,8 @@ private:
       (target == "/" || (assets_.ready() && assets_.find(target) != nullptr));
     if (static_route) {
       dispatch_static(std::move(stream), std::move(request));
+    } else if (request.method() == http::verb::get && target == "/api/rviz/stream") {
+      dispatch_stream(std::move(stream), std::move(request));
     } else if (request.method() == http::verb::post && target == "/api/stop") {
       // Keep authenticated software-stop handling independent of expensive IK
       // work and ordinary API admission.  Validation remains in serve_api.
@@ -1161,9 +1248,14 @@ private:
   asio::thread_pool static_pool_{kStaticWorkers};
   asio::thread_pool api_pool_{4};
   asio::thread_pool urgent_pool_{1};
+  asio::thread_pool stream_pool_{kMaximumStream};
   std::atomic_uint static_admitted_{0};
   std::atomic_uint api_admitted_{0};
   std::atomic_uint urgent_admitted_{0};
+  std::atomic_uint stream_admitted_{0};
+  std::atomic_bool stream_stopping_{false};
+  RvizCapture capture_;
+  std::mutex capture_mutex_;
   std::deque<std::shared_ptr<IntakeSession>> active_intakes_;
   std::shared_ptr<PortalNode> node_;
   std::string csrf_;

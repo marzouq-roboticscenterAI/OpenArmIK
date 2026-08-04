@@ -110,6 +110,17 @@ target_include_directories(openarm_portal_core PUBLIC include)
 target_compile_options(openarm_portal_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_portal_core PUBLIC openarm_model::openarm_model)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(XCOMPOSITE REQUIRED IMPORTED_TARGET xcomposite)
+pkg_check_modules(LIBJPEG REQUIRED IMPORTED_TARGET libjpeg)
+
+add_library(openarm_rviz_capture STATIC src/rviz_capture.cpp)
+target_include_directories(openarm_rviz_capture PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_compile_options(openarm_rviz_capture PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_rviz_capture PUBLIC
+  X11::X11 PkgConfig::XCOMPOSITE PkgConfig::LIBJPEG)
+
 add_executable(openarm_portal src/openarm_portal.cpp)
 add_dependencies(openarm_portal openarm_viewer_assets openarm_viewer_integrity)
 target_include_directories(openarm_portal PRIVATE include "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -117,6 +128,7 @@ target_sources(openarm_portal PRIVATE "${OPENARM_VIEWER_INTEGRITY_INCLUDE}")
 target_compile_definitions(openarm_portal PRIVATE BOOST_ERROR_CODE_HEADER_ONLY)
 target_compile_options(openarm_portal PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_portal PRIVATE
+  openarm_rviz_capture
   openarm_portal_core
   diagnostic_msgs::diagnostic_msgs
   openarm_control_msgs::openarm_control_msgs

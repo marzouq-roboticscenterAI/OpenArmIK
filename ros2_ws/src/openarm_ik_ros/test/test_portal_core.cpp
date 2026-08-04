@@ -335,8 +335,9 @@ TEST(PortalPage, CarriesStrictInputAndSafetyContracts)
   EXPECT_NE(page.find("not physically certified coordinates"), std::string::npos);
   EXPECT_NE(page.find("Controller collision checked: <strong>NO</strong>"), std::string::npos);
   EXPECT_NE(page.find("not a hardwired E-stop"), std::string::npos);
-  EXPECT_NE(page.find("separate <strong>RViz</strong> window"), std::string::npos);
-  EXPECT_NE(page.find("panel-free layout"), std::string::npos);
+  EXPECT_NE(page.find("/api/rviz/stream"), std::string::npos);
+  EXPECT_NE(page.find("real <strong>RViz</strong> pixels"), std::string::npos);
+  EXPECT_NE(page.find("display-only"), std::string::npos);
   EXPECT_NE(page.find("not collision checking"), std::string::npos);
   EXPECT_NE(page.find("never used as control feedback"), std::string::npos);
   EXPECT_NE(page.find("no portal-switchable coordinate grid"), std::string::npos);
