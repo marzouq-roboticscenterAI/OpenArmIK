@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <openarm_control_msgs/action/move_joint.hpp>
+#include <openarm_control_msgs/action/move_bimanual.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp_scaled.hpp>
 #include <openarm_runtime_motion.h>
@@ -25,6 +26,7 @@ using namespace std::chrono_literals;
 using MoveJoint = openarm_control_msgs::action::MoveJoint;
 using MovePairedTcp = openarm_control_msgs::action::MovePairedTcp;
 using MovePairedTcpScaled = openarm_control_msgs::action::MovePairedTcpScaled;
+using MoveBimanual = openarm_control_msgs::action::MoveBimanual;
 
 #ifndef OPENARM_CLI_RESULT_TIMEOUT_MS
 #define OPENARM_CLI_RESULT_TIMEOUT_MS 45000
@@ -393,6 +395,34 @@ int demo_cross(const rclcpp::Node::SharedPtr & node, const int cycles)
   return run_sequence(node, &open_pose, 1, 1.0);
 }
 
+// Bimanual modes that need measured state or the contact monitor, routed
+// through the node's MoveBimanual action rather than resolved here.
+int run_bimanual(
+  const rclcpp::Node::SharedPtr & node, const std::uint8_t mode, const double x,
+  const double y, const double z, const double stop_distance = 0.05,
+  const std::uint8_t lead_side = 0U)
+{
+  MoveBimanual::Goal goal;
+  goal.header.stamp = node->now();
+  goal.header.frame_id = "openarm_body_link0";
+  goal.mode = mode;
+  goal.lead_side = lead_side;
+  goal.motion_limit_scale = 1.0;
+  goal.stop_distance_m = stop_distance;
+  goal.contact_torque_fraction = 0.0;   // library default
+  if (mode == MoveBimanual::Goal::MODE_MIRRORED) {
+    goal.left_tcp_m.x = x; goal.left_tcp_m.y = y; goal.left_tcp_m.z = z;
+  } else {
+    goal.target_m.x = x; goal.target_m.y = y; goal.target_m.z = z;
+  }
+  return run_goal<MoveBimanual>(node, goal, "/openarm_ik/move_bimanual");
+}
+
+// Pick the scene box up, carry it, and set it down.
+//
+// The node grasps the box when the claws close to under 26 cm around it and
+// releases when they open past 34 cm, both judged from measured forward
+// kinematics.
 int demo_pick_place(const rclcpp::Node::SharedPtr & node)
 {
   static const Waypoint steps[] = {
@@ -432,7 +462,9 @@ void usage()
     "  openarm_control_cli clap [CYCLES]\n"
     "  openarm_control_cli estop | estop-release\n"
     "  openarm_control_cli cross [CYCLES]\n"
-    "  openarm_control_cli pick-place\n";
+    "  openarm_control_cli pick-place\n"
+    "  openarm_control_cli centroid X_METRES Y_METRES Z_METRES\n"
+    "  openarm_control_cli converge X_METRES Y_METRES Z_METRES [STOP_DISTANCE_METRES]\n";
 }
 }
 
@@ -481,6 +513,14 @@ int main(int argc, char ** argv)
       result = demo_clap(node, argc == 3 ? static_cast<int>(number(argv[2])) : 3);
     } else if ((argc == 2 || argc == 3) && std::string(argv[1]) == "cross") {
       result = demo_cross(node, argc == 3 ? static_cast<int>(number(argv[2])) : 2);
+    } else if (argc == 5 && std::string(argv[1]) == "centroid") {
+      result = run_bimanual(
+        node, MoveBimanual::Goal::MODE_CENTROID, number(argv[2]), number(argv[3]),
+        number(argv[4]));
+    } else if ((argc == 5 || argc == 6) && std::string(argv[1]) == "converge") {
+      result = run_bimanual(
+        node, MoveBimanual::Goal::MODE_CONVERGE, number(argv[2]), number(argv[3]),
+        number(argv[4]), argc == 6 ? number(argv[5]) : 0.05);
     } else if (argc == 2 && std::string(argv[1]) == "pick-place") {
       result = demo_pick_place(node);
     } else if (argc == 6 && std::string(argv[1]) == "mirror") {

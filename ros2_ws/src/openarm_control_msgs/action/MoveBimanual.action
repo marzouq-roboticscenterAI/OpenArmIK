@@ -1,0 +1,48 @@
+# Bimanual Cartesian motion. One action covers the modes that share a planner
+# body in the control layer, so they inherit identical all-or-nothing,
+# identity-binding, freshness and expiry semantics.
+std_msgs/Header header
+uint8 MODE_PAIRED=0
+uint8 MODE_CENTROID=1
+uint8 MODE_MIRRORED=2
+uint8 MODE_CONVERGE=3
+uint8 mode
+# MODE_PAIRED: both targets. MODE_MIRRORED: left_tcp_m is the lead target and
+# right_tcp_m is ignored. Unused by the other modes.
+geometry_msgs/Point left_tcp_m
+geometry_msgs/Point right_tcp_m
+# MODE_CENTROID: where the midpoint between the claws should end up.
+# MODE_CONVERGE: the point both claws advance on.
+geometry_msgs/Point target_m
+# MODE_MIRRORED: 0 left leads, 1 right leads.
+uint8 lead_side
+# MODE_CONVERGE only.
+float64 stop_distance_m
+float64 contact_torque_fraction
+float64 motion_limit_scale
+---
+uint8 OUTCOME_COMPLETED=1
+uint8 OUTCOME_CANCELED=2
+uint8 OUTCOME_REJECTED=3
+uint8 OUTCOME_ABORTED=4
+uint8 outcome
+uint32 control_status
+unique_identifier_msgs/UUID goal_id
+uint64 command_id
+uint64 left_seed_feedback_seq
+uint64 right_seed_feedback_seq
+uint64 plan_duration_ns
+uint64 left_terminal_feedback_seq
+uint64 right_terminal_feedback_seq
+uint32 lifecycle
+uint32 event
+uint32 cause
+bool collision_checked
+string reason
+---
+uint32 lifecycle
+uint32 event
+uint64 command_id
+uint64 left_feedback_seq
+uint64 right_feedback_seq
+float64 measured_progress

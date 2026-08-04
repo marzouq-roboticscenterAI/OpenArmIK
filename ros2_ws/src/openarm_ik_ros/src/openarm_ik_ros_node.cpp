@@ -9,6 +9,7 @@
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <openarm_control_msgs/action/move_joint.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp.hpp>
+#include <openarm_control_msgs/action/move_bimanual.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp_scaled.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -45,9 +46,11 @@ namespace
 using MoveJoint = openarm_control_msgs::action::MoveJoint;
 using MovePairedTcp = openarm_control_msgs::action::MovePairedTcp;
 using MovePairedTcpScaled = openarm_control_msgs::action::MovePairedTcpScaled;
+using MoveBimanual = openarm_control_msgs::action::MoveBimanual;
 using JointGoalHandle = rclcpp_action::ServerGoalHandle<MoveJoint>;
 using PairedGoalHandle = rclcpp_action::ServerGoalHandle<MovePairedTcp>;
 using ScaledPairedGoalHandle = rclcpp_action::ServerGoalHandle<MovePairedTcpScaled>;
+using BimanualGoalHandle = rclcpp_action::ServerGoalHandle<MoveBimanual>;
 using openarm_ik_ros::CommandFeedback;
 using openarm_ik_ros::CommandResult;
 using openarm_ik_ros::MeasuredState;
@@ -202,6 +205,17 @@ public:
       },
       [this](const std::shared_ptr<PairedGoalHandle> goal) {return on_paired_cancel(goal);},
       [this](const std::shared_ptr<PairedGoalHandle> goal) {accept_paired(goal);});
+    bimanual_server_ = rclcpp_action::create_server<MoveBimanual>(
+      this, "/openarm_ik/move_bimanual",
+      [this](
+        const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const MoveBimanual::Goal> goal)
+      {
+        return on_bimanual_goal(uuid, std::move(goal));
+      },
+      [this](const std::shared_ptr<BimanualGoalHandle> goal) {
+        return on_scaled_paired_cancel_like(goal);
+      },
+      [this](const std::shared_ptr<BimanualGoalHandle> goal) {accept_bimanual(goal);});
     scaled_paired_server_ = rclcpp_action::create_server<MovePairedTcpScaled>(
       this, "/openarm_ik/move_paired_tcp_scaled",
       [this](
@@ -392,6 +406,81 @@ private:
       rclcpp_action::CancelResponse::ACCEPT : rclcpp_action::CancelResponse::REJECT;
   }
 
+  template<typename GoalHandle>
+  rclcpp_action::CancelResponse on_scaled_paired_cancel_like(
+    const std::shared_ptr<GoalHandle> goal)
+  {
+    return session_->cancel(uuid_string(goal->get_goal_id())) ?
+      rclcpp_action::CancelResponse::ACCEPT : rclcpp_action::CancelResponse::REJECT;
+  }
+
+  rclcpp_action::GoalResponse on_bimanual_goal(
+    const rclcpp_action::GoalUUID & uuid,
+    const std::shared_ptr<const MoveBimanual::Goal> goal)
+  {
+    std::string reason;
+    const bool needs_pair = goal->mode == MoveBimanual::Goal::MODE_PAIRED;
+    const bool needs_lead = goal->mode == MoveBimanual::Goal::MODE_MIRRORED;
+    const bool needs_target = goal->mode == MoveBimanual::Goal::MODE_CENTROID ||
+      goal->mode == MoveBimanual::Goal::MODE_CONVERGE;
+    if (!valid_stamp(goal->header.stamp, reason) || goal->header.frame_id.empty() ||
+      goal->mode > MoveBimanual::Goal::MODE_CONVERGE ||
+      !valid_motion_limit_scale(goal->motion_limit_scale) ||
+      ((needs_pair || needs_lead) && !finite_point(goal->left_tcp_m)) ||
+      (needs_pair && !finite_point(goal->right_tcp_m)) ||
+      (needs_lead && goal->lead_side > 1U) ||
+      (needs_target && !finite_point(goal->target_m)) ||
+      (goal->mode == MoveBimanual::Goal::MODE_CONVERGE &&
+      !(std::isfinite(goal->stop_distance_m) && goal->stop_distance_m >= 0.0)))
+    {
+      record_rejection("move_bimanual", uuid_string(uuid),
+        reason.empty() ? "invalid_bimanual_goal" : reason);
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+    if (!session_->reserve(uuid_string(uuid), reason)) {
+      record_rejection("move_bimanual", uuid_string(uuid), reason);
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+    record_request(
+      "move_bimanual", uuid_string(uuid), rclcpp::Time(goal->header.stamp).nanoseconds());
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+  }
+
+  void accept_bimanual(const std::shared_ptr<BimanualGoalHandle> goal_handle)
+  {
+    const auto goal = goal_handle->get_goal();
+    // The mirror is pure arithmetic about the body sagittal plane, so it is
+    // resolved to an ordinary pair here. Centroid and converge need measured
+    // state and the contact monitor, so they are handed to the runtime
+    // adapters by the session instead.
+    accept_paired_goal(
+      goal_handle, goal->motion_limit_scale, "move_bimanual",
+      [goal](SessionCommand & command) {
+        switch (goal->mode) {
+          case MoveBimanual::Goal::MODE_CENTROID:
+            command.kind = SessionCommand::Kind::centroid_tcp;
+            command.target_m = {goal->target_m.x, goal->target_m.y, goal->target_m.z};
+            break;
+          case MoveBimanual::Goal::MODE_CONVERGE:
+            command.kind = SessionCommand::Kind::converge_tcp;
+            command.target_m = {goal->target_m.x, goal->target_m.y, goal->target_m.z};
+            command.stop_distance_m = goal->stop_distance_m;
+            command.contact_torque_fraction = goal->contact_torque_fraction;
+            break;
+          case MoveBimanual::Goal::MODE_MIRRORED: {
+            const std::array<double, 3> lead{
+              goal->left_tcp_m.x, goal->left_tcp_m.y, goal->left_tcp_m.z};
+            const std::array<double, 3> mirrored{lead[0], -lead[1], lead[2]};
+            command.left_tcp_m = goal->lead_side == 0U ? lead : mirrored;
+            command.right_tcp_m = goal->lead_side == 0U ? mirrored : lead;
+            break;
+          }
+          default:
+            break;
+        }
+      });
+  }
+
   bool transform_pair(
     const std_msgs::msg::Header & header, const geometry_msgs::msg::Point & left,
     const geometry_msgs::msg::Point & right, std::array<double, 3> & left_body,
@@ -421,7 +510,8 @@ private:
   template<typename PairedAction>
   void accept_paired_goal(
     const std::shared_ptr<rclcpp_action::ServerGoalHandle<PairedAction>> goal_handle,
-    const double motion_limit_scale, const std::string & diagnostic_action)
+    const double motion_limit_scale, const std::string & diagnostic_action,
+    const std::function<void(SessionCommand &)> & customize = nullptr)
   {
     const auto goal = goal_handle->get_goal();
     const std::string owner = uuid_string(goal_handle->get_goal_id());
@@ -440,6 +530,11 @@ private:
     command.left_tcp_m = left;
     command.right_tcp_m = right;
     command.motion_limit_scale = motion_limit_scale;
+    // Bimanual modes reuse this whole path and only re-point the plan at a
+    // different runtime adapter.
+    if (customize) {
+      customize(command);
+    }
     command.feedback = [this, goal_handle](const CommandFeedback & value) {
         if (!goal_publishable(goal_handle)) {
           return false;
@@ -930,6 +1025,7 @@ private:
   rclcpp_action::Server<MoveJoint>::SharedPtr joint_server_;
   rclcpp_action::Server<MovePairedTcp>::SharedPtr paired_server_;
   rclcpp_action::Server<MovePairedTcpScaled>::SharedPtr scaled_paired_server_;
+  rclcpp_action::Server<MoveBimanual>::SharedPtr bimanual_server_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr box_publisher_;
   // Claw separation at which the box is taken and let go. The clap demo closes
   // to 0.24 m, so the grasp threshold sits just above the box width.

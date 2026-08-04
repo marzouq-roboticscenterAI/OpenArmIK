@@ -5,6 +5,7 @@
 #include "openarm_ik_ros/motion_profile.hpp"
 
 #include "openarm_runtime.h"
+#include "openarm_runtime_motion.h"
 
 #include <array>
 #include <cstdint>
@@ -74,7 +75,7 @@ struct CommandResult
 
 struct SessionCommand
 {
-  enum class Kind {joint, paired_tcp};
+  enum class Kind {joint, paired_tcp, centroid_tcp, converge_tcp};
   Kind kind{Kind::joint};
   std::string owner;
   std::uint32_t side{kLeftSide};
@@ -82,6 +83,12 @@ struct SessionCommand
   double target_rad{};
   std::array<double, 3> left_tcp_m{};
   std::array<double, 3> right_tcp_m{};
+  // centroid_tcp: where the claw midpoint should end up.
+  // converge_tcp: the point both claws advance on until contact.
+  std::array<double, 3> target_m{};
+  double stop_distance_m{0.05};
+  double contact_torque_fraction{0.0};
+  double minimum_progress_m{0.001};
   double motion_limit_scale{kLegacyMotionLimitScale};
   std::function<bool(const CommandFeedback &)> feedback;
   std::function<bool(const CommandResult &)> terminal;

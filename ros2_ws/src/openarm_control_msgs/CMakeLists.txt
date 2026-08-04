@@ -12,6 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/MoveJoint.action"
   "action/MovePairedTcp.action"
   "action/MovePairedTcpScaled.action"
+  "action/MoveBimanual.action"
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs unique_identifier_msgs)
 
 ament_export_dependencies(rosidl_default_runtime)

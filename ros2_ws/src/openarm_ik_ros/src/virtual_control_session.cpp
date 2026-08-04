@@ -153,7 +153,7 @@ public:
       reason = closing_ ? "closing" : "reservation_mismatch";
       return false;
     }
-    if (command.kind == SessionCommand::Kind::paired_tcp &&
+    if (command.kind != SessionCommand::Kind::joint &&
       !valid_motion_limit_scale(command.motion_limit_scale))
     {
       reason = "invalid_motion_limit_scale";
@@ -643,7 +643,31 @@ private:
           health_.capabilities.coordinate_identity_sha256);
         move.maximum_branch_step_rad = 2.0;
         move.minimum_singular_value = 0.0;
-        status = oa_runtime_plan_paired_tcp_body(runtime_, &move, &plan);
+        // Centroid and converge share this base request; the runtime adapters
+        // derive both claw targets from it, so every identity, revision and
+        // freshness field above applies unchanged.
+        if (pending->kind == SessionCommand::Kind::centroid_tcp) {
+          oa_runtime_centroid_tcp_move centroid{};
+          centroid.struct_size = sizeof(centroid);
+          centroid.abi_version = OA_RUNTIME_MOTION_ABI_VERSION;
+          centroid.base = move;
+          std::copy(
+            pending->target_m.begin(), pending->target_m.end(),
+            centroid.target_centroid_m);
+          status = oa_runtime_plan_centroid_tcp_body(runtime_, &centroid, &plan);
+        } else if (pending->kind == SessionCommand::Kind::converge_tcp) {
+          oa_runtime_converge_tcp_move converge{};
+          converge.struct_size = sizeof(converge);
+          converge.abi_version = OA_RUNTIME_MOTION_ABI_VERSION;
+          converge.base = move;
+          std::copy(pending->target_m.begin(), pending->target_m.end(), converge.target_m);
+          converge.contact_torque_fraction = pending->contact_torque_fraction;
+          converge.stop_distance_m = pending->stop_distance_m;
+          converge.minimum_progress_m = pending->minimum_progress_m;
+          status = oa_runtime_plan_converge_tcp_body(runtime_, &converge, &plan);
+        } else {
+          status = oa_runtime_plan_paired_tcp_body(runtime_, &move, &plan);
+        }
       }
       if (status != OA_RUNTIME_ESTALE) {
         break;
@@ -820,7 +844,13 @@ private:
         health_.last_error.lower_code = event.source_status;
         notify_health_unlocked();
       }
-      if (event.kind == OA_RUNTIME_EVENT_COMPLETED) {
+      // A real-time monitor stop is a successful terminal, not a fault: the
+      // arms did what was asked and halted on physical evidence. Converge
+      // relies on this. Leaving STOPPED unhandled stranded the command until
+      // its heartbeat expired and wedged the adapter.
+      if (event.kind == OA_RUNTIME_EVENT_COMPLETED ||
+        event.kind == OA_RUNTIME_EVENT_STOPPED)
+      {
         complete_active(event);
         if (adapter_faulted()) {
           return;
