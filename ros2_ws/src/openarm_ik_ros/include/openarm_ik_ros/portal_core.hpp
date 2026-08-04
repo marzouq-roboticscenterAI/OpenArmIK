@@ -33,6 +33,10 @@ struct MoveRequest
   Side side{Side::left};
   Point target{};
   double motion_limit_scale{kLegacyMotionLimitScale};
+  // Both arms move to their own targets at the same time. `side` and `target`
+  // are unused in this mode; dual_target is indexed 0 left, 1 right.
+  bool dual{false};
+  std::array<Point, 2> dual_target{};
 };
 
 struct UnitMoveRequest
@@ -131,6 +135,8 @@ public:
   static bool parse_move(std::string_view body, MoveRequest & out, std::string & reason);
   static bool parse_move_v2(std::string_view body, UnitMoveRequest & out, std::string & reason);
   static bool parse_move_v3(std::string_view body, UnitMoveRequest & out, std::string & reason);
+  static bool parse_move_both(std::string_view body, UnitMoveRequest & out,
+    Point & right_target, std::string & reason);
   static bool empty_object(std::string_view body);
 };
 

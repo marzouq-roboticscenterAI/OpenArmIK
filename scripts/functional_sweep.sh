@@ -17,6 +17,32 @@ pass=0; fail=0
 check() { if [[ "$2" == "$3" ]]; then echo "  PASS  $1"; pass=$((pass+1));
           else echo "  FAIL  $1  (got '$2' want '$3')"; fail=$((fail+1)); fi }
 cli() { timeout 240 ros2 run openarm_ik_ros openarm_control_cli "$@" 2>&1; }
+# Motion commands must not be posted back to back: the session holds a
+# reservation until the previous goal is terminal, and a racing goal is
+# rejected with exit 4, which reads like a broken command rather than a
+# sequencing mistake in this script.
+climove() { wait_idle; cli "$@"; }
+# The portal refuses a new goal while one is active, so wait for it to go idle
+# rather than racing it. Without this the next POST returns 409 and the failure
+# looks like a routing bug instead of a sequencing one.
+# Requires fresh state and no active command, sustained across three polls.
+# A single poll is not enough: right after a goal is posted command_active has
+# not flipped true yet, and right after one ends the state is briefly stale, so
+# a one-shot check races and the next POST comes back 409 or reads zeros.
+wait_idle() {
+  local streak=0
+  for _ in $(seq 1 400); do
+    if curl -s --max-time 2 http://127.0.0.1:8080/api/state |
+       grep -q '"state_fresh":true,"command_active":false'; then
+      streak=$((streak+1))
+      [[ $streak -ge 3 ]] && return 0
+    else
+      streak=0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
 
 CSRF=$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -oP '(?<=name="portal-csrf" content=")[0-9a-f]{64}')
 H=(-H "Content-Type: application/json" -H "Origin: http://127.0.0.1:8080"
@@ -30,6 +56,7 @@ check "page has demo buttons" "$(curl -s --max-time 5 http://127.0.0.1:8080/ | g
 check "page embeds stream"    "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -c '/api/rviz/stream')" "1"
 check "page has box preset"   "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -c 'box_grasp')" "1"
 check "page has cross preset" "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -c 'cross_over')" "1"
+check "page has Move Both"    "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -c 'id=\"both\"')" "1"
 
 echo "== MJPEG stream =="
 python3 - <<'PY'
@@ -55,16 +82,16 @@ PY
 
 echo "== CLI motion =="
 check "status"          "$(cli status >/dev/null 2>&1; echo $?)" "0"
-check "move-joint"      "$(cli move-joint openarm_left_joint4 0.3 >/dev/null 2>&1; echo $?)" "0"
-check "move-paired-tcp" "$(cli move-paired-tcp openarm_body_link0 0.30 0.24 0.40 0.30 -0.24 0.40 >/dev/null 2>&1; echo $?)" "0"
-check "mirror"          "$(cli mirror left 0.30 0.22 0.38 >/dev/null 2>&1; echo $?)" "0"
-check "centroid"        "$(cli centroid 0.32 0.00 0.42 >/dev/null 2>&1; echo $?)" "0"
-check "converge"        "$(cli converge 0.34 0.00 0.40 0.08 >/dev/null 2>&1; echo $?)" "0"
-check "converge again"  "$(cli converge 0.34 0.00 0.42 0.06 >/dev/null 2>&1; echo $?)" "0"
-check "clap"            "$(cli clap 1 >/dev/null 2>&1; echo $?)" "0"
-check "cross"           "$(cli cross 1 >/dev/null 2>&1; echo $?)" "0"
-check "home"            "$(cli home >/dev/null 2>&1; echo $?)" "0"
-check "pick-place"      "$(cli pick-place >/dev/null 2>&1; echo $?)" "0"
+check "move-joint"      "$(climove move-joint openarm_left_joint4 0.3 >/dev/null 2>&1; echo $?)" "0"
+check "move-paired-tcp" "$(climove move-paired-tcp openarm_body_link0 0.30 0.24 0.40 0.30 -0.24 0.40 >/dev/null 2>&1; echo $?)" "0"
+check "mirror"          "$(climove mirror left 0.30 0.22 0.38 >/dev/null 2>&1; echo $?)" "0"
+check "centroid"        "$(climove centroid 0.32 0.00 0.42 >/dev/null 2>&1; echo $?)" "0"
+check "converge"        "$(climove converge 0.34 0.00 0.40 0.08 >/dev/null 2>&1; echo $?)" "0"
+check "converge again"  "$(climove converge 0.34 0.00 0.42 0.06 >/dev/null 2>&1; echo $?)" "0"
+check "clap"            "$(climove clap 1 >/dev/null 2>&1; echo $?)" "0"
+check "cross"           "$(climove cross 1 >/dev/null 2>&1; echo $?)" "0"
+check "home"            "$(climove home >/dev/null 2>&1; echo $?)" "0"
+check "pick-place"      "$(climove pick-place >/dev/null 2>&1; echo $?)" "0"
 
 echo "== box moved =="
 BOX=$(timeout 10 ros2 topic echo /openarm_ik/scene_box --once 2>/dev/null | grep -A1 "position:" | grep "x:" | awk '{print $2}')
@@ -78,8 +105,26 @@ echo "== E-stop =="
 check "engage"  "$(curl -s --max-time 5 -X POST "${H[@]}" -d '{}' http://127.0.0.1:8080/api/estop | grep -c '"estop":"engaged"')" "1"
 check "motion refused while latched" "$(curl -s --max-time 8 -X POST "${H[@]}" -d '{"side":"left","unit":"m","x":0.30,"y":0.22,"z":0.30,"motion_limit_scale":0.8}' http://127.0.0.1:8080/api/v3/move | grep -c 'emergency stop is engaged')" "1"
 check "release" "$(curl -s --max-time 5 -X POST "${H[@]}" -d '{}' http://127.0.0.1:8080/api/estop/release | grep -c '"estop":"released"')" "1"
+wait_idle
 cli home >/dev/null 2>&1
+wait_idle
 check "motion works after release" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -X POST "${H[@]}" -d '{"side":"left","unit":"m","x":0.28,"y":0.20,"z":0.36,"motion_limit_scale":0.8}' http://127.0.0.1:8080/api/v3/move)" "202"
+
+echo "== both arms at once =="
+wait_idle
+cli home >/dev/null 2>&1
+wait_idle
+check "dual move accepted" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST "${H[@]}" -d '{"unit":"m","left_x":0.28,"left_y":0.20,"left_z":0.36,"right_x":0.33,"right_y":-0.24,"right_z":0.50,"motion_limit_scale":0.9}' http://127.0.0.1:8080/api/v3/move-both)" "202"
+wait_idle
+check "both arms reached their own targets" "$(curl -s --max-time 5 http://127.0.0.1:8080/api/state | python3 -c "
+import json,sys,math
+v=json.load(sys.stdin)
+ok = math.dist(v['left'],[0.28,0.20,0.36])<0.01 and math.dist(v['right'],[0.33,-0.24,0.50])<0.01
+print('yes' if ok else 'no L=%s R=%s'%(v['left'],v['right']))")" "yes"
+wait_idle
+check "dual collision rejected" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST "${H[@]}" -d '{"unit":"m","left_x":0.30,"left_y":0.01,"left_z":0.40,"right_x":0.30,"right_y":-0.01,"right_z":0.40,"motion_limit_scale":0.8}' http://127.0.0.1:8080/api/v3/move-both)" "422"
+wait_idle
+check "dual missing field rejected" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST "${H[@]}" -d '{"unit":"m","left_x":0.28,"left_y":0.20,"left_z":0.36,"right_x":0.33,"right_y":-0.24,"motion_limit_scale":0.9}' http://127.0.0.1:8080/api/v3/move-both)" "400"
 
 echo
 echo "SWEEP: $pass passed, $fail failed"

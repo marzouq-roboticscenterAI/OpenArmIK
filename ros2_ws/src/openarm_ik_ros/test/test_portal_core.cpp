@@ -328,6 +328,79 @@ TEST(PortalPage, UsesSameOriginExternalAssetsAndSerializedCanonicalTargets)
   EXPECT_NE(page.find("name=\"portal-csrf\" content=\"test-token\""), std::string::npos);
 }
 
+TEST(StrictJsonMoveBoth, RequiresEverySixCoordinateAndRejectsExtras)
+{
+  portal::UnitMoveRequest parsed;
+  portal::Point right{};
+  std::string reason;
+  const std::string good =
+    R"({"unit":"m","left_x":0.28,"left_y":0.20,"left_z":0.36,)"
+    R"("right_x":0.33,"right_y":-0.24,"right_z":0.50,"motion_limit_scale":0.9})";
+  ASSERT_TRUE(portal::StrictJson::parse_move_both(good, parsed, right, reason)) << reason;
+  EXPECT_DOUBLE_EQ(parsed.target.x, 0.28);
+  EXPECT_DOUBLE_EQ(parsed.target.y, 0.20);
+  EXPECT_DOUBLE_EQ(parsed.target.z, 0.36);
+  EXPECT_DOUBLE_EQ(right[0], 0.33);
+  EXPECT_DOUBLE_EQ(right[1], -0.24);
+  EXPECT_DOUBLE_EQ(right[2], 0.50);
+  EXPECT_DOUBLE_EQ(parsed.motion_limit_scale, 0.9);
+
+  // Every coordinate is mandatory; a partial pair must not silently hold an arm.
+  const char * const incomplete[] = {
+    R"({"unit":"m","left_x":0.28,"left_y":0.20,"left_z":0.36,"right_x":0.33,"right_y":-0.24,"motion_limit_scale":0.9})",
+    R"({"unit":"m","left_y":0.20,"left_z":0.36,"right_x":0.33,"right_y":-0.24,"right_z":0.5,"motion_limit_scale":0.9})",
+    R"({"left_x":0.28,"left_y":0.20,"left_z":0.36,"right_x":0.33,"right_y":-0.24,"right_z":0.5,"motion_limit_scale":0.9})",
+    R"({"unit":"m","left_x":0.28,"left_y":0.20,"left_z":0.36,"right_x":0.33,"right_y":-0.24,"right_z":0.5})",
+  };
+  for (const char * body : incomplete) {
+    EXPECT_FALSE(portal::StrictJson::parse_move_both(body, parsed, right, reason)) << body;
+  }
+  // Unknown, duplicate and non-finite fields are refused, not ignored.
+  const char * const malformed[] = {
+    R"({"unit":"m","left_x":0.28,"left_y":0.20,"left_z":0.36,"right_x":0.33,"right_y":-0.24,"right_z":0.5,"bogus":1,"motion_limit_scale":0.9})",
+    R"({"unit":"m","left_x":0.28,"left_x":0.29,"left_y":0.20,"left_z":0.36,"right_x":0.33,"right_y":-0.24,"right_z":0.5,"motion_limit_scale":0.9})",
+    R"({"unit":"m","left_x":nan,"left_y":0.20,"left_z":0.36,"right_x":0.33,"right_y":-0.24,"right_z":0.5,"motion_limit_scale":0.9})",
+    R"({"unit":"m","left_x":0.28,"left_y":0.20,"left_z":0.36,"right_x":0.33,"right_y":-0.24,"right_z":0.5,"motion_limit_scale":1.4})",
+  };
+  for (const char * body : malformed) {
+    EXPECT_FALSE(portal::StrictJson::parse_move_both(body, parsed, right, reason)) << body;
+  }
+}
+
+TEST(NominalPathGuard, DualRequestMovesBothArmsAndIsNeverProjected)
+{
+  portal::GuardInput input;
+  input.measured_q = {};   // canonical neutral
+  input.request.dual = true;
+  input.request.dual_target[0] = {0.30, 0.24, 0.40};
+  input.request.dual_target[1] = {0.30, -0.24, 0.40};
+  const portal::GuardResult accepted = portal::NominalPathGuard().validate_or_project(input);
+  ASSERT_TRUE(accepted.accepted) << accepted.reason;
+  // Both arms are commanded, not one held at its measured pose.
+  EXPECT_NEAR(accepted.commanded_tcp[0][1], 0.24, 1.0e-9);
+  EXPECT_NEAR(accepted.commanded_tcp[1][1], -0.24, 1.0e-9);
+  EXPECT_GE(accepted.minimum_nominal_clearance_m, 0.025);
+  EXPECT_FALSE(accepted.target_projected);
+
+  // A dual request that drives the arms together is rejected outright. It must
+  // never be shortened: stopping one arm early while the other continues would
+  // change the relative geometry the samples were validated against.
+  portal::GuardInput unsafe = input;
+  unsafe.request.dual_target[0] = {0.30, 0.01, 0.40};
+  unsafe.request.dual_target[1] = {0.30, -0.01, 0.40};
+  const portal::GuardResult rejected = portal::NominalPathGuard().validate_or_project(unsafe);
+  EXPECT_FALSE(rejected.accepted);
+  EXPECT_FALSE(rejected.target_projected);
+
+  // Non-finite coordinates on either arm are refused.
+  for (std::size_t side = 0; side < 2; ++side) {
+    portal::GuardInput poisoned = input;
+    poisoned.request.dual_target[side][2] =
+      std::numeric_limits<double>::quiet_NaN();
+    EXPECT_FALSE(portal::NominalPathGuard().validate_or_project(poisoned).accepted);
+  }
+}
+
 TEST(PortalPage, CarriesStrictInputAndSafetyContracts)
 {
   const std::string page = portal::portal_page("token");
@@ -336,6 +409,7 @@ TEST(PortalPage, CarriesStrictInputAndSafetyContracts)
   EXPECT_NE(page.find("Controller collision checked: <strong>NO</strong>"), std::string::npos);
   EXPECT_NE(page.find("not a hardwired E-stop"), std::string::npos);
   EXPECT_NE(page.find("/api/rviz/stream"), std::string::npos);
+  EXPECT_NE(page.find("id=\"both\""), std::string::npos);
   EXPECT_NE(page.find("real <strong>RViz</strong> pixels"), std::string::npos);
   EXPECT_NE(page.find("display-only"), std::string::npos);
   EXPECT_NE(page.find("not collision checking"), std::string::npos);

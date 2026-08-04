@@ -133,7 +133,7 @@
       if (!response.ok || value.coordinate_unit !== 'm') throw new Error('unexpected state response');
       $('status').textContent = value.command;
       const ok = value.state_fresh && !value.command_active;
-      $('left').disabled = !ok; $('right').disabled = !ok; $('age').textContent = value.summary;
+      $('left').disabled = !ok; $('right').disabled = !ok; $('both').disabled = !ok; $('age').textContent = value.summary;
       if (value.state_fresh) {
         measuredM = {left: value.left, right: value.right};
         if (!seeded) {
@@ -167,10 +167,38 @@
         'Submitted exact ' + side + ' target in ' + unitNames[unit] + ' at ' + (result.motion_limit_scale * 100).toFixed(0) + '% movement limits; the server normalized it once to metres.';
     }).catch(error => setError(error.message));
   }
+  // Both arms in one atomic paired command. The server never shortens a dual
+  // request, so there is no projected/achieved_fraction case to report here.
+  function moveBoth() {
+    for (const side of sides) {
+      for (let index = 0; index < 3; ++index) {
+        const id = fieldId(side, index);
+        if (!fieldState[id].valid || targetsM[side][index] === null) {
+          setError('Correct every XYZ field on both arms before submitting. Use a period (.) as the decimal separator.');
+          return;
+        }
+      }
+    }
+    const left = targetsM.left.map(value => value * unitsPerMetre[unit]);
+    const right = targetsM.right.map(value => value * unitsPerMetre[unit]);
+    const motion_limit_scale = motionLimitScale();
+    if (motion_limit_scale === null) {setError('Movement limits must remain between 50% and 100%.'); return;}
+    post('/api/v3/move-both', {
+      unit,
+      left_x: left[0], left_y: left[1], left_z: left[2],
+      right_x: right[0], right_y: right[1], right_z: right[2],
+      motion_limit_scale,
+    }).then(result => {
+      $('form-notice').textContent =
+        'Submitted both targets in ' + unitNames[unit] + ' as one paired command at ' +
+        (result.motion_limit_scale * 100).toFixed(0) + '% movement limits; the arms move together.';
+    }).catch(error => setError(error.message));
+  }
   for (const side of sides) for (let index = 0; index < 3; ++index) $(fieldId(side, index)).addEventListener('input', () => validateField(side, index));
   document.querySelectorAll('input[name="coordinate-unit"]').forEach(radio => radio.addEventListener('change', () => {if (radio.checked) selectUnit(radio.value);}));
   $('motion-limit-scale').addEventListener('input', updateMotionLimit);
   $('left').addEventListener('click', () => move('left')); $('right').addEventListener('click', () => move('right'));
+  $('both').addEventListener('click', moveBoth);
   $('stop').addEventListener('click', () => post('/api/stop').catch(error => {$('status').textContent = error.message;}));
   $('verify').addEventListener('click', () => post('/api/verify').catch(error => {$('status').textContent = error.message;}));
   renderPresets('left'); renderPresets('right'); renderDemoPresets(); updateUnitText(); updateMotionLimit(); syncUnitRadios(); state(); window.setInterval(state, 250);

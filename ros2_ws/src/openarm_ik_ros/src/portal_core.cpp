@@ -308,6 +308,92 @@ bool StrictJson::parse_move_v3(
   return true;
 }
 
+// Both arms at once: left_x/y/z and right_x/y/z, a shared unit, and one
+// motion_limit_scale. Same strictness as the single-arm parsers, so unknown,
+// duplicate, or non-finite fields are refused rather than ignored.
+bool StrictJson::parse_move_both(
+  std::string_view body, UnitMoveRequest & out, Point & right_target, std::string & reason)
+{
+  if (body.size() < 2 || body.size() > 512) {
+    reason = "JSON body length is invalid";
+    return false;
+  }
+  body = trim(body);
+  if (body.size() < 2 || body.front() != '{' || body.back() != '}') {
+    reason = "JSON object required";
+    return false;
+  }
+  body.remove_prefix(1);
+  body.remove_suffix(1);
+  UnitMoveRequest parsed;
+  Point right{};
+  bool have_unit = false;
+  bool have_motion_limit_scale = false;
+  std::array<bool, 3> have_left{};
+  std::array<bool, 3> have_right{};
+  for (std::string_view field : split_fields(body)) {
+    const std::size_t colon = field.find(':');
+    if (colon == std::string_view::npos || field.find(':', colon + 1) != std::string_view::npos) {
+      reason = "malformed JSON field";
+      return false;
+    }
+    const std::string_view key = trim(field.substr(0, colon));
+    const std::string_view value = trim(field.substr(colon + 1));
+    if (key == "\"unit\"") {
+      if (have_unit || !parse_length_unit(value, parsed.coordinate_unit)) {
+        reason = "unit must be unique and m, cm, or in";
+        return false;
+      }
+      have_unit = true;
+      continue;
+    }
+    if (key == "\"motion_limit_scale\"") {
+      if (have_motion_limit_scale || !parse_number(value, parsed.motion_limit_scale) ||
+        !valid_motion_limit_scale(parsed.motion_limit_scale))
+      {
+        reason = "motion_limit_scale must be unique, finite, and in [0.5, 1.0]";
+        return false;
+      }
+      have_motion_limit_scale = true;
+      continue;
+    }
+    std::size_t axis = 3;
+    bool is_left = false;
+    if (key == "\"left_x\"") {axis = 0; is_left = true;} else if (key == "\"left_y\"") {
+      axis = 1; is_left = true;
+    } else if (key == "\"left_z\"") {axis = 2; is_left = true;} else if (
+      key == "\"right_x\"") {axis = 0;} else if (key == "\"right_y\"") {axis = 1;} else if (
+      key == "\"right_z\"") {axis = 2;}
+    double coordinate = 0.0;
+    auto & seen = is_left ? have_left : have_right;
+    if (axis == 3 || seen[axis] || !parse_number(value, coordinate)) {
+      reason = "only unique finite numeric left_/right_ x, y, z fields are allowed";
+      return false;
+    }
+    if (is_left) {
+      if (axis == 0) {parsed.target.x = coordinate;} else if (axis == 1) {
+        parsed.target.y = coordinate;
+      } else {
+        parsed.target.z = coordinate;
+      }
+    } else {
+      right[axis] = coordinate;
+    }
+    seen[axis] = true;
+  }
+  if (!have_unit || !have_motion_limit_scale ||
+    !have_left[0] || !have_left[1] || !have_left[2] ||
+    !have_right[0] || !have_right[1] || !have_right[2])
+  {
+    reason = "unit, motion_limit_scale, and all six left_/right_ coordinates are required";
+    return false;
+  }
+  parsed.side = MoveRequest::Side::left;
+  out = parsed;
+  right_target = right;
+  return true;
+}
+
 bool StrictJson::empty_object(std::string_view body)
 {
   return trim(body) == "{}";
@@ -523,14 +609,28 @@ GuardResult NominalPathGuard::validate(const GuardInput & input) const
     result.commanded_tcp[side] = result.measured_tcp[side];
   }
   const std::size_t selected = input.request.side == MoveRequest::Side::left ? 0 : 1;
-  if (!std::all_of(
-      input.request.target.begin(), input.request.target.end(),
-      [](double value) {return std::isfinite(value);}))
-  {
-    result.reason = "target XYZ must contain only finite metres";
-    return result;
+  const bool dual = input.request.dual;
+  const auto finite_point = [](const Point & value) {
+      return std::all_of(
+        value.begin(), value.end(), [](double item) {return std::isfinite(item);});
+    };
+  if (dual) {
+    if (!finite_point(input.request.dual_target[0]) ||
+      !finite_point(input.request.dual_target[1]))
+    {
+      result.reason = "both target XYZ triples must contain only finite metres";
+      return result;
+    }
+    result.commanded_tcp[0] = input.request.dual_target[0];
+    result.commanded_tcp[1] = input.request.dual_target[1];
+    result.requested_tcp = input.request.dual_target[0];
+  } else {
+    if (!finite_point(input.request.target)) {
+      result.reason = "target XYZ must contain only finite metres";
+      return result;
+    }
+    result.commanded_tcp[selected] = input.request.target;
   }
-  result.commanded_tcp[selected] = input.request.target;
   std::array<JointVector, 2> q = input.measured_q;
   for (std::size_t sample = 0; sample < kSamples; ++sample) {
     const double u = static_cast<double>(sample) / static_cast<double>(kSamples - 1);
@@ -541,7 +641,18 @@ GuardResult NominalPathGuard::validate(const GuardInput & input) const
           u * (input.request.target[axis] - result.measured_tcp[selected][axis]);
       }
       for (std::size_t side = 0; side < 2; ++side) {
-        const Point side_waypoint = side == selected ? waypoint : result.measured_tcp[side];
+        Point dual_waypoint{};
+        if (dual) {
+          for (std::size_t axis = 0; axis < 3; ++axis) {
+            dual_waypoint[axis] = result.measured_tcp[side][axis] +
+              u * (input.request.dual_target[side][axis] - result.measured_tcp[side][axis]);
+          }
+        }
+        // Both arms sweep their own straight line together, so the sampled
+        // clearance below is evaluated on the pair actually in motion rather
+        // than on one arm against a stationary partner.
+        const Point side_waypoint = dual ? dual_waypoint :
+          (side == selected ? waypoint : result.measured_tcp[side]);
         JointVector next{};
         if (!inverse(side, side_waypoint, q[side], next, result.reason)) {
           result.failure_path_fraction = u;
@@ -579,6 +690,14 @@ GuardResult NominalPathGuard::validate(const GuardInput & input) const
 
 GuardResult NominalPathGuard::validate_or_project(const GuardInput & input) const
 {
+  // Best-effort projection shortens a single straight-line ray. With both arms
+  // moving there are two rays and no single fraction to shorten, and stopping
+  // one arm early while the other continues would change the relative geometry
+  // the samples were validated against. A dual request is therefore accepted
+  // exactly or rejected with its reason, never silently shortened.
+  if (input.request.dual) {
+    return validate(input);
+  }
   GuardResult requested = validate(input);
   if (requested.accepted) {
     return requested;

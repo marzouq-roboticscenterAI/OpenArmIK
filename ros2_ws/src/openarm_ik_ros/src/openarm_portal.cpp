@@ -582,6 +582,15 @@ public:
       return false;
     }
     state_lock.unlock();
+    if (request.dual) {
+      reason = "Both arms commanded together to Left [" +
+        number(guard.commanded_tcp[0][0]) + ", " + number(guard.commanded_tcp[0][1]) +
+        ", " + number(guard.commanded_tcp[0][2]) + "] m and Right [" +
+        number(guard.commanded_tcp[1][0]) + ", " + number(guard.commanded_tcp[1][1]) +
+        ", " + number(guard.commanded_tcp[1][2]) +
+        "] m as one atomic paired command; neither target was projected";
+      return true;
+    }
     const std::size_t selected = request.side == MoveRequest::Side::left ? 0U : 1U;
     const std::string side_name = selected == 0U ? "Left" : "Right";
     reason = side_name + (guard.target_projected ?
@@ -1167,7 +1176,7 @@ private:
     if (request.method() != http::verb::post ||
       (target != "/api/move" && target != "/api/v2/move" && target != "/api/v3/move" &&
       target != "/api/stop" && target != "/api/verify" && target != "/api/estop" &&
-      target != "/api/estop/release"))
+      target != "/api/estop/release" && target != "/api/v3/move-both"))
     {
       write_json(stream, http::status::not_found, "{\"error\":\"route not found\"}");
       return;
@@ -1227,7 +1236,33 @@ private:
       return;
     }
     MoveRequest move;
-    if (target == "/api/v2/move" || target == "/api/v3/move") {
+    if (target == "/api/v3/move-both") {
+      // Both arms to their own targets, in one atomic paired command.
+      UnitMoveRequest unit_move;
+      Point right_target{};
+      if (!StrictJson::parse_move_both(request.body(), unit_move, right_target, reason) ||
+        !normalise_move_to_metres(unit_move, move, reason))
+      {
+        write_json(stream, http::status::bad_request,
+          "{\"error\":\"" + json_escape(reason) + "\"}");
+        return;
+      }
+      // normalise_move_to_metres converted the left triple; convert the right
+      // one through the same path so both share exactly one unit conversion.
+      UnitMoveRequest right_unit = unit_move;
+      right_unit.target.x = right_target[0];
+      right_unit.target.y = right_target[1];
+      right_unit.target.z = right_target[2];
+      MoveRequest right_move;
+      if (!normalise_move_to_metres(right_unit, right_move, reason)) {
+        write_json(stream, http::status::bad_request,
+          "{\"error\":\"" + json_escape(reason) + "\"}");
+        return;
+      }
+      move.dual = true;
+      move.dual_target[0] = move.target;
+      move.dual_target[1] = right_move.target;
+    } else if (target == "/api/v2/move" || target == "/api/v3/move") {
       UnitMoveRequest unit_move;
       const bool parsed = target == "/api/v3/move" ?
         StrictJson::parse_move_v3(request.body(), unit_move, reason) :
@@ -1270,6 +1305,20 @@ private:
     if (!node_->move(move, input, guarded, guard_token, reason)) {
       write_json(stream, http::status::conflict,
         "{\"error\":\"" + json_escape(reason) + "\"}");
+      return;
+    }
+    if (move.dual) {
+      write_json(stream, http::status::accepted,
+        "{\"message\":\"" + json_escape(reason +
+        "; sampled nominal virtual protection only; controller collision_checked=false") +
+        "\",\"projected\":false,\"achieved_fraction\":1" +
+        ",\"motion_limit_scale\":" + json_number(move.motion_limit_scale) +
+        ",\"left_commanded_m\":[" + json_number(guarded.commanded_tcp[0][0]) + "," +
+        json_number(guarded.commanded_tcp[0][1]) + "," +
+        json_number(guarded.commanded_tcp[0][2]) +
+        "],\"right_commanded_m\":[" + json_number(guarded.commanded_tcp[1][0]) + "," +
+        json_number(guarded.commanded_tcp[1][1]) + "," +
+        json_number(guarded.commanded_tcp[1][2]) + "]}");
       return;
     }
     const std::size_t selected = move.side == MoveRequest::Side::left ? 0U : 1U;
