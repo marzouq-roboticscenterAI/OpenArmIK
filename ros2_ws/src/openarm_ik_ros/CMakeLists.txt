@@ -250,6 +250,11 @@ if(BUILD_TESTING)
     tf2_ros::tf2_ros
     PkgConfig::JSONC)
 
+  add_executable(test_rviz_capture_cpp test/c/test_rviz_capture.cpp)
+  target_compile_options(test_rviz_capture_cpp PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_link_libraries(test_rviz_capture_cpp PRIVATE openarm_rviz_capture X11::X11)
+  add_test(NAME test_rviz_capture COMMAND test_rviz_capture_cpp)
+
   add_executable(test_active_sigint_cpp test/c/test_active_sigint.cpp)
   target_compile_options(test_active_sigint_cpp PRIVATE -Wall -Wextra -Wpedantic -Werror)
   target_link_libraries(test_active_sigint_cpp PRIVATE

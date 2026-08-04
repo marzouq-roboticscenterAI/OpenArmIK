@@ -250,10 +250,9 @@ openarm_build_all_body() {
     ros_test_listing=$(ctest --test-dir "$ros_build/openarm_ik_ros" -N)
     printf '%s\n' "$ros_test_listing"
     registered_ros_tests=$(awk '/Total Tests:/ {print $3}' <<<"$ros_test_listing")
-    # 14 since the Firefox viewer oracle was retired with the in-browser WebGL
-    # proxy; the portal's 3D view is now a real RViz window.
-    if [[ "$registered_ros_tests" != 14 ]]; then
-      printf 'Expected 14 openarm_ik_ros tests, found %s\n' \
+    # 15: 14 plus the X BadWindow survival regression for the RViz capture.
+    if [[ "$registered_ros_tests" != 15 ]]; then
+      printf 'Expected 15 openarm_ik_ros tests, found %s\n' \
         "${registered_ros_tests:-none}" >&2
       return 1
     fi

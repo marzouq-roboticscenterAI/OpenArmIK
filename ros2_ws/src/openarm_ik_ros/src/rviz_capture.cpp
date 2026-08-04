@@ -17,6 +17,7 @@
 #include <jpeglib.h>
 
 #include <algorithm>
+#include <atomic>
 
 namespace openarm_ik_ros
 {
@@ -25,6 +26,25 @@ namespace
 // Matches the WM_CLASS the rviz2 executable sets on both its top-level and its
 // Ogre render child.
 constexpr const char * kRvizClass = "rviz2";
+
+// Xlib's default error handler calls exit(). Walking the window tree races
+// every other X client by construction: a window returned by XQueryTree can be
+// destroyed before the very next XGetWindowAttributes, which raises BadWindow
+// and would take the whole portal down with it. Observed exactly that while
+// RViz was still creating and tearing down its startup windows:
+//
+//   X Error of failed request:  BadWindow (invalid Window parameter)
+//   Major opcode of failed request:  3 (X_GetWindowAttributes)
+//
+// Counting and continuing is correct here. A vanished window is not an error
+// condition for a capture that re-locates its target every cycle anyway, and
+// the web server must outlive anything that happens to one X window.
+std::atomic<unsigned long> g_x_error_count{0};
+
+int handle_x_error(Display *, XErrorEvent *) {
+    g_x_error_count.fetch_add(1U, std::memory_order_relaxed);
+    return 0;
+}
 
 bool window_class_is(Display * display, Window window, const char * expected)
 {
@@ -172,6 +192,10 @@ bool RvizCapture::connect()
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   if (impl_->display != nullptr) {return true;}
+  // Installed before the first request so no window-tree race can abort the
+  // process. XSetErrorHandler is process-global by Xlib's design.
+  static std::once_flag error_handler_once;
+  std::call_once(error_handler_once, []() {XSetErrorHandler(&handle_x_error);});
   impl_->display = XOpenDisplay(nullptr);
   if (impl_->display == nullptr) {
     impl_->detail = "cannot open the X display";
@@ -347,7 +371,7 @@ RvizCapture::Status RvizCapture::status() const
   report.width = impl_->crop_width;
   report.height = impl_->crop_height;
   report.frames = impl_->frames;
-  report.failures = impl_->failures;
+  report.failures = impl_->failures + g_x_error_count.load(std::memory_order_relaxed);
   report.detail = impl_->detail;
   return report;
 }
