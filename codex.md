@@ -178,12 +178,46 @@ Not yet isolated to a cause, and not established whether the RViz addition made
 it worse. `test_ros_contract` does not cover this path; it bounds the bare
 `ros2 launch` teardown, not `launch_web_portal.sh`.
 
+## Delivered since the bimanual core (99362c0 .. c53a1cb)
+
+- RViz streams **into the portal page** as MJPEG on `/api/rviz/stream`, captured
+  from the live rviz2 window with XComposite and libjpeg
+  (`src/rviz_capture.cpp`). Two traps: the Ogre content is in the *top-level*
+  window, not the render child (the child reads back uniform), and `XGetImage`
+  on a Pixmap returns **zero RGB masks**, which silently yields black frames if
+  used unchecked. The child's geometry is reused as the crop rectangle to drop
+  the Qt chrome.
+- Ctrl+C fixed. The launcher's single-instance lock on fd 9 leaked into every
+  child, so a surviving grandchild (robot_state_publisher) kept it held and the
+  next launch failed with "already running". All spawns now close it. Measured
+  through a real controlling PTY: 0.90-0.95 s, no leftovers.
+- CLI demos: `clap`, `cross`, `pick-place`, `mirror`, `estop`, `estop-release`.
+- E-stop on the portal urgent lane (`/api/estop`, `/api/estop/release`), and
+  motion is refused at the portal boundary while latched.
+- Graspable scene box marker plus web demo-pose buttons that fill both targets.
+
+### Cross-arms: what is actually achievable
+
+A genuine crossing is **not** possible on this robot under the audited keepout.
+Each tool is a 75 mm capsule, so two tools need 175 mm of centre separation.
+About twenty geometries were tested (x-stagger, z-stagger, high/low, and
+multi-step via sequences); every one that carries a claw past the centreline
+brings the two tool *segments* inside that and trips the monitor at ~9.6 mm.
+Some variants fail earlier as unreachable. The demo therefore reaches to 4 cm
+either side of the centreline at separated heights, measured at ~22 mm
+clearance. Clap closes to 24 cm apart at ~31 mm clearance.
+
+Do not "fix" this by lowering the gate without saying so: it is the collision
+model doing its job.
+
 ## Outstanding requests not yet implemented
 
-- Expose centroid/mirrored/converge and the E-stop through the ROS actions,
-  portal HTTP API, and CLI. They exist and are tested only at the C ABI level.
-- Web page buttons that auto-populate the XYZ boxes for every demo.
-- A box object in RViz plus pick / lift / place demos.
+- Centroid and converge are still C-ABI only. Mirrored is exposed through the
+  CLI (`mirror`), which computes the sagittal mirror and submits an ordinary
+  paired move. Centroid needs measured TCPs, and converge needs a new
+  SessionCommand kind to reach `oa_runtime_plan_converge_tcp_body`; a single
+  `MoveBimanual` action with a mode field would cover all three with far less
+  scaffolding than three separate actions.
 - Clap and cross-arms demos. The arms need only come close, not touch. Measured
   clearance stays above the 25 mm planning gate down to roughly 0.30 m between
   claws at x=0.30, z=0.35; below that the planner starts refusing. Crossing was
