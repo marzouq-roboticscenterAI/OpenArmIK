@@ -230,6 +230,33 @@ Clap closes to 24 cm apart at ~31 mm clearance.
 
 Do not "fix" a failure here by lowering the gate without saying so.
 
+## Full-surface verification
+
+`scripts/functional_sweep.sh` runs 25 checks against a live stack: portal
+routes, the MJPEG stream, every CLI motion and demo, the box, the rejection
+paths, and the E-stop. Run it after any change that touches motion; it found
+three defects the unit and ROS suites did not, because each only appears when
+surfaces are exercised in sequence.
+
+Ordering matters in that script. `converge` ends with the claws inside the
+keepout intervention floor on purpose, and the demos after it only pass because
+the monitor permits a retreat from there.
+
+### Three rules that are easy to break again
+
+1. **A monitor stop is a success only for converge.** Mapping STOPPED to
+   COMPLETED for everything makes an ordinary move that was halted short of its
+   target exit zero. That hid a pick-place where all seven steps "completed"
+   with the arms 10 cm from the commanded pose and the box untouched.
+2. **The keepout monitor must intervene only while clearance is worsening**,
+   never on the absolute value. Vetoing on the absolute value makes any pose
+   inside the floor inescapable, including by a command that moves the arms
+   apart. The comparison is "not worsening", not "strictly improving": for the
+   first cycles of a retreat the arms have barely moved and clearance is equal.
+3. **The box grasp radius is 0.05 m for a reason.** The clap midpoint passes
+   0.064 m from the box and clap closes inside the grasp separation, so a
+   larger radius makes the clap demo pick the box up and carry it away.
+
 ## Outstanding requests not yet implemented
 
 - Nothing from the original request list. Centroid, mirrored and converge are
