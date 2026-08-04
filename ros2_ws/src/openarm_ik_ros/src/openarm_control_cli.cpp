@@ -363,17 +363,26 @@ int demo_clap(const rclcpp::Node::SharedPtr & node, const int cycles)
   return 0;
 }
 
-// The arms reach across one another at separated heights, left high and right
-// low. A true crossing is not reachable on this robot: each tool is modelled as
-// a 75 mm capsule, so the two tools need 175 mm of centre separation, and every
-// geometry that carries a claw past the centreline brings the two tool segments
-// inside that. The deepest approach that clears is 4 cm either side of the
-// centreline, measured at about 22 mm of clearance.
+// A genuine crossing: the left claw ends in the right half of the workspace and
+// the right claw in the left half, commanded simultaneously.
+//
+// The two arms pass stacked in Z rather than side by side. A capsule cannot be
+// shrunk to allow a side-by-side pass: the gripper measures 57 x 168 x 16 mm,
+// so its true radial extent about the tool axis is 88.8 mm and the two tool
+// capsules need 175 mm of centre separation however the approach is staggered
+// in x. Separating them vertically instead clears comfortably, measured at
+// 26.5 mm at the crossed waypoint.
+//
+// The window is narrow. Crossing deeper than about 4 cm either side is either
+// unreachable or brings the leading tool inside the trailing forearm; pulling
+// either arm back in x instead brings its tool near the central shaft.
 int demo_cross(const rclcpp::Node::SharedPtr & node, const int cycles)
 {
   static const Waypoint open_pose{"open", {0.30, 0.26, 0.45}, {0.30, -0.26, 0.45}};
-  static const Waypoint split{"split height", {0.30, 0.26, 0.58}, {0.30, -0.26, 0.32}};
-  static const Waypoint crossed{"reach across", {0.30, 0.04, 0.58}, {0.30, -0.04, 0.32}};
+  static const Waypoint split{"stack: left high, right low",
+    {0.30, 0.26, 0.62}, {0.30, -0.26, 0.22}};
+  static const Waypoint crossed{"cross: left claw right, right claw left",
+    {0.30, -0.04, 0.62}, {0.30, 0.04, 0.22}};
   int result = run_sequence(node, &open_pose, 1, 1.0);
   if (result != 0) {return result;}
   for (int cycle = 0; cycle < cycles; ++cycle) {
@@ -384,12 +393,6 @@ int demo_cross(const rclcpp::Node::SharedPtr & node, const int cycles)
   return run_sequence(node, &open_pose, 1, 1.0);
 }
 
-// Pick the scene box up, carry it, and set it down.
-//
-// The node grasps the box when the claws close to under 26 cm around it and
-// releases when they open past 34 cm, both judged from measured forward
-// kinematics. The waypoints below therefore approach wide, close on the box at
-// its resting pose, lift, traverse, lower, and open.
 int demo_pick_place(const rclcpp::Node::SharedPtr & node)
 {
   static const Waypoint steps[] = {
