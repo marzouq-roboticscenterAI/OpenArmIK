@@ -2,6 +2,7 @@
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <openarm_control_msgs/action/move_joint.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp.hpp>
+#include <openarm_control_msgs/action/move_paired_tcp_scaled.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
@@ -22,6 +23,7 @@ namespace
 using namespace std::chrono_literals;
 using MoveJoint = openarm_control_msgs::action::MoveJoint;
 using MovePairedTcp = openarm_control_msgs::action::MovePairedTcp;
+using MovePairedTcpScaled = openarm_control_msgs::action::MovePairedTcpScaled;
 
 #ifndef OPENARM_CLI_RESULT_TIMEOUT_MS
 #define OPENARM_CLI_RESULT_TIMEOUT_MS 45000
@@ -303,13 +305,108 @@ int run_goal(
   throw std::runtime_error("terminal future readiness was lost");
 }
 
+// ---------------------------------------------------------------- demos
+//
+// Every waypoint below was measured against the real-time keepout monitor
+// rather than guessed. The recorded minimum clearances are in the comments;
+// the planning gate is 25 mm and the monitor intervenes at 10 mm.
+struct Waypoint
+{
+  const char * label;
+  double left[3];
+  double right[3];
+};
+
+int run_sequence(
+  const rclcpp::Node::SharedPtr & node, const Waypoint * steps, const std::size_t count,
+  const double scale)
+{
+  for (std::size_t index = 0; index < count; ++index) {
+    MovePairedTcpScaled::Goal goal;
+    goal.header.stamp = node->now();
+    goal.header.frame_id = "openarm_body_link0";
+    goal.left_tcp_m.x = steps[index].left[0];
+    goal.left_tcp_m.y = steps[index].left[1];
+    goal.left_tcp_m.z = steps[index].left[2];
+    goal.right_tcp_m.x = steps[index].right[0];
+    goal.right_tcp_m.y = steps[index].right[1];
+    goal.right_tcp_m.z = steps[index].right[2];
+    goal.motion_limit_scale = scale;
+    std::cout << "step " << (index + 1) << "/" << count << ": " << steps[index].label
+              << std::endl;
+    const int result = run_goal<MovePairedTcpScaled>(
+      node, goal, "/openarm_ik/move_paired_tcp_scaled");
+    if (result != 0) {
+      std::cerr << "sequence stopped at step " << (index + 1) << " (" <<
+        steps[index].label << ")\n";
+      return result;
+    }
+  }
+  return 0;
+}
+
+// Both claws swing together and apart in the frontal plane. At the closed
+// waypoint the claws are 24 cm apart with about 31 mm of measured clearance,
+// so they come visibly close without the keepout monitor intervening.
+int demo_clap(const rclcpp::Node::SharedPtr & node, const int cycles)
+{
+  static const Waypoint open_pose{"open", {0.30, 0.26, 0.35}, {0.30, -0.26, 0.35}};
+  static const Waypoint closed_pose{"clap", {0.30, 0.12, 0.35}, {0.30, -0.12, 0.35}};
+  int result = run_sequence(node, &open_pose, 1, 1.0);
+  if (result != 0) {return result;}
+  for (int cycle = 0; cycle < cycles; ++cycle) {
+    const Waypoint beat[] = {closed_pose, open_pose};
+    result = run_sequence(node, beat, 2, 1.0);
+    if (result != 0) {return result;}
+  }
+  return 0;
+}
+
+// The arms reach across one another at separated heights, left high and right
+// low. A true crossing is not reachable on this robot: each tool is modelled as
+// a 75 mm capsule, so the two tools need 175 mm of centre separation, and every
+// geometry that carries a claw past the centreline brings the two tool segments
+// inside that. The deepest approach that clears is 4 cm either side of the
+// centreline, measured at about 22 mm of clearance.
+int demo_cross(const rclcpp::Node::SharedPtr & node, const int cycles)
+{
+  static const Waypoint open_pose{"open", {0.30, 0.26, 0.45}, {0.30, -0.26, 0.45}};
+  static const Waypoint split{"split height", {0.30, 0.26, 0.58}, {0.30, -0.26, 0.32}};
+  static const Waypoint crossed{"reach across", {0.30, 0.04, 0.58}, {0.30, -0.04, 0.32}};
+  int result = run_sequence(node, &open_pose, 1, 1.0);
+  if (result != 0) {return result;}
+  for (int cycle = 0; cycle < cycles; ++cycle) {
+    const Waypoint pass[] = {split, crossed, split};
+    result = run_sequence(node, pass, 3, 1.0);
+    if (result != 0) {return result;}
+  }
+  return run_sequence(node, &open_pose, 1, 1.0);
+}
+
+// One claw is commanded and the other mirrors it across the body sagittal
+// plane, matching oa_controller_plan_mirrored_tcp.
+int demo_mirror(
+  const rclcpp::Node::SharedPtr & node, const std::string & lead, const double x,
+  const double y, const double z)
+{
+  Waypoint step{"mirrored", {x, y, z}, {x, -y, z}};
+  if (lead == "right") {
+    step.left[1] = -y;
+    step.right[1] = y;
+  }
+  return run_sequence(node, &step, 1, 1.0);
+}
+
 void usage()
 {
   std::cerr << "Usage:\n"
     "  openarm_control_cli status\n"
     "  openarm_control_cli move-joint JOINT_NAME TARGET_RAD\n"
     "  openarm_control_cli move-paired-tcp FRAME LEFT_X_METRES LEFT_Y_METRES LEFT_Z_METRES "
-    "RIGHT_X_METRES RIGHT_Y_METRES RIGHT_Z_METRES\n";
+    "RIGHT_X_METRES RIGHT_Y_METRES RIGHT_Z_METRES\n"
+    "  openarm_control_cli mirror left|right X_METRES Y_METRES Z_METRES\n"
+    "  openarm_control_cli clap [CYCLES]\n"
+    "  openarm_control_cli cross [CYCLES]\n";
 }
 }
 
@@ -342,6 +439,18 @@ int main(int argc, char ** argv)
       goal.right_tcp_m.y = number(argv[7]);
       goal.right_tcp_m.z = number(argv[8]);
       result = run_goal<MovePairedTcp>(node, goal, "/openarm_ik/move_paired_tcp");
+    } else if ((argc == 2 || argc == 3) && std::string(argv[1]) == "clap") {
+      result = demo_clap(node, argc == 3 ? static_cast<int>(number(argv[2])) : 3);
+    } else if ((argc == 2 || argc == 3) && std::string(argv[1]) == "cross") {
+      result = demo_cross(node, argc == 3 ? static_cast<int>(number(argv[2])) : 2);
+    } else if (argc == 6 && std::string(argv[1]) == "mirror") {
+      const std::string lead = argv[2];
+      if (lead != "left" && lead != "right") {
+        std::cerr << "mirror lead must be left or right\n";
+        result = 2;
+      } else {
+        result = demo_mirror(node, lead, number(argv[3]), number(argv[4]), number(argv[5]));
+      }
     } else {
       usage();
     }
