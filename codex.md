@@ -252,6 +252,21 @@ change the relative geometry the guard's samples were validated against. The
 guard interpolates both arms along their own lines when `MoveRequest::dual` is
 set, so clearance is sampled on the pair actually in motion.
 
+### Verify the viewer with a client attached
+
+Every check before 7c2d481 ran `run.sh --no-browser`, so nothing attached to
+`/api/rviz/stream`, the capture never ran, and a crash on that path went
+unseen until a real browser opened. When touching the capture, attach a client
+during startup, which is when rviz2 is creating and destroying windows:
+
+    setsid bash run.sh --no-build --no-browser &
+    for i in $(seq 1 60); do curl -s --max-time 2 \
+      http://127.0.0.1:8080/api/rviz/stream -o /dev/null & sleep 0.5; done
+
+Xlib's default error handler calls `exit()`, so any unguarded X call in the
+portal is a process-killer, not a logged warning. `RvizCapture` installs a
+counting handler; `test_rviz_capture` guards it.
+
 ### Three rules that are easy to break again
 
 1. **A monitor stop is a success only for converge.** Mapping STOPPED to
