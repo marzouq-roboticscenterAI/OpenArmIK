@@ -18,6 +18,7 @@ find_package(openarm_runtime CONFIG REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -82,6 +83,8 @@ target_include_directories(openarm_ik_ros_node PRIVATE include)
 target_compile_options(openarm_ik_ros_node PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_ik_ros_node PRIVATE
   openarm_virtual_control_session
+  openarm_model::openarm_model
+  visualization_msgs::visualization_msgs
   diagnostic_msgs::diagnostic_msgs
   geometry_msgs::geometry_msgs
   openarm_control_msgs::openarm_control_msgs

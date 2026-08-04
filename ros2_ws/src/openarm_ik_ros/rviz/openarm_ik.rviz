@@ -12,6 +12,14 @@ Visualization Manager:
       Name: OpenArm RobotModel
       Visual Enabled: true
       Collision Enabled: false
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Scene box
+      Topic:
+        Value: /openarm_ik/scene_box
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: world

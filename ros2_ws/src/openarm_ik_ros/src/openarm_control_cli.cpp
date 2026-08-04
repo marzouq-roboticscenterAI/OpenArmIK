@@ -384,6 +384,26 @@ int demo_cross(const rclcpp::Node::SharedPtr & node, const int cycles)
   return run_sequence(node, &open_pose, 1, 1.0);
 }
 
+// Pick the scene box up, carry it, and set it down.
+//
+// The node grasps the box when the claws close to under 26 cm around it and
+// releases when they open past 34 cm, both judged from measured forward
+// kinematics. The waypoints below therefore approach wide, close on the box at
+// its resting pose, lift, traverse, lower, and open.
+int demo_pick_place(const rclcpp::Node::SharedPtr & node)
+{
+  static const Waypoint steps[] = {
+    {"approach the box, claws wide", {0.34, 0.24, 0.30}, {0.34, -0.24, 0.30}},
+    {"close on the box", {0.34, 0.11, 0.30}, {0.34, -0.11, 0.30}},
+    {"lift", {0.34, 0.11, 0.48}, {0.34, -0.11, 0.48}},
+    {"carry across", {0.26, 0.11, 0.50}, {0.26, -0.11, 0.50}},
+    {"lower to place", {0.26, 0.11, 0.32}, {0.26, -0.11, 0.32}},
+    {"release", {0.26, 0.24, 0.32}, {0.26, -0.24, 0.32}},
+    {"withdraw", {0.24, 0.26, 0.42}, {0.24, -0.26, 0.42}},
+  };
+  return run_sequence(node, steps, sizeof(steps) / sizeof(steps[0]), 1.0);
+}
+
 // One claw is commanded and the other mirrors it across the body sagittal
 // plane, matching oa_controller_plan_mirrored_tcp.
 int demo_mirror(
@@ -408,7 +428,8 @@ void usage()
     "  openarm_control_cli mirror left|right X_METRES Y_METRES Z_METRES\n"
     "  openarm_control_cli clap [CYCLES]\n"
     "  openarm_control_cli estop | estop-release\n"
-    "  openarm_control_cli cross [CYCLES]\n";
+    "  openarm_control_cli cross [CYCLES]\n"
+    "  openarm_control_cli pick-place\n";
 }
 }
 
@@ -457,6 +478,8 @@ int main(int argc, char ** argv)
       result = demo_clap(node, argc == 3 ? static_cast<int>(number(argv[2])) : 3);
     } else if ((argc == 2 || argc == 3) && std::string(argv[1]) == "cross") {
       result = demo_cross(node, argc == 3 ? static_cast<int>(number(argv[2])) : 2);
+    } else if (argc == 2 && std::string(argv[1]) == "pick-place") {
+      result = demo_pick_place(node);
     } else if (argc == 6 && std::string(argv[1]) == "mirror") {
       const std::string lead = argv[2];
       if (lead != "left" && lead != "right") {

@@ -13,6 +13,10 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+
+#define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1
+#include <openarm_model.h>
 #include <sys/file.h>
 #include <tf2/time.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -175,6 +179,8 @@ public:
     joint_publisher_ = create_publisher<sensor_msgs::msg::JointState>("/joint_states", qos);
     diagnostics_publisher_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
       "/openarm_ik/diagnostics", qos);
+    box_publisher_ = create_publisher<visualization_msgs::msg::Marker>(
+      "/openarm_ik/scene_box", rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, *this, false);
 
@@ -643,7 +649,77 @@ private:
       }
     }
     joint_publisher_->publish(std::move(state));
+    publish_scene_box(measured);
     return true;
+  }
+
+  // A graspable box for the pick / lift / place demo.
+  //
+  // The box is carried when both claws close around it and is released when
+  // they open again. Both tests run on measured forward kinematics, so the box
+  // follows what the arms actually did rather than what was commanded. This is
+  // a visualization aid: it is not part of the keepout model and the arms will
+  // pass through it if driven to.
+  void publish_scene_box(const MeasuredState & measured)
+  {
+    std::array<std::array<double, 3>, 2> tcp{};
+    for (std::size_t side = 0; side < 2U; ++side) {
+      const oa_model * const model = side == 0U ? oa_model_left_v10_bimanual()
+                                                : oa_model_right_v10_bimanual();
+      oa_fk_result fk{};
+      if (oa_fk(model, measured.snapshot.arm[side].q_model_rad, &fk) != OA_MODEL_OK) {
+        return;
+      }
+      tcp[side] = {fk.hand_tcp.m[3], fk.hand_tcp.m[7], fk.hand_tcp.m[11]};
+    }
+    double separation = 0.0;
+    std::array<double, 3> midpoint{};
+    for (std::size_t axis = 0; axis < 3U; ++axis) {
+      const double delta = tcp[0][axis] - tcp[1][axis];
+      separation += delta * delta;
+      midpoint[axis] = 0.5 * (tcp[0][axis] + tcp[1][axis]);
+    }
+    separation = std::sqrt(separation);
+
+    if (box_held_) {
+      if (separation > kBoxReleaseSeparation) {
+        box_held_ = false;
+        // Placed: keep the carried x and y, and settle back to the shelf height.
+        box_position_[2] = kBoxRestHeight;
+      } else {
+        box_position_ = midpoint;
+      }
+    } else if (separation < kBoxGraspSeparation) {
+      double reach = 0.0;
+      for (std::size_t axis = 0; axis < 3U; ++axis) {
+        const double delta = midpoint[axis] - box_position_[axis];
+        reach += delta * delta;
+      }
+      if (std::sqrt(reach) < kBoxGraspRadius) {
+        box_held_ = true;
+        box_position_ = midpoint;
+      }
+    }
+
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = "openarm_body_link0";
+    marker.header.stamp = now();
+    marker.ns = "openarm_scene";
+    marker.id = 0;
+    marker.type = visualization_msgs::msg::Marker::CUBE;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.pose.position.x = box_position_[0];
+    marker.pose.position.y = box_position_[1];
+    marker.pose.position.z = box_position_[2];
+    marker.pose.orientation.w = 1.0;
+    marker.scale.x = 0.08;
+    marker.scale.y = 0.16;
+    marker.scale.z = 0.10;
+    marker.color.a = 0.9F;
+    marker.color.r = box_held_ ? 0.20F : 0.85F;
+    marker.color.g = box_held_ ? 0.80F : 0.45F;
+    marker.color.b = 0.20F;
+    box_publisher_->publish(marker);
   }
 
   void record_request(const std::string & action, const std::string & owner, std::int64_t stamp)
@@ -854,6 +930,15 @@ private:
   rclcpp_action::Server<MoveJoint>::SharedPtr joint_server_;
   rclcpp_action::Server<MovePairedTcp>::SharedPtr paired_server_;
   rclcpp_action::Server<MovePairedTcpScaled>::SharedPtr scaled_paired_server_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr box_publisher_;
+  // Claw separation at which the box is taken and let go. The clap demo closes
+  // to 0.24 m, so the grasp threshold sits just above the box width.
+  static constexpr double kBoxGraspSeparation = 0.26;
+  static constexpr double kBoxReleaseSeparation = 0.34;
+  static constexpr double kBoxGraspRadius = 0.12;
+  static constexpr double kBoxRestHeight = 0.30;
+  std::array<double, 3> box_position_{0.34, 0.00, kBoxRestHeight};
+  bool box_held_{false};
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr legacy_subscription_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
