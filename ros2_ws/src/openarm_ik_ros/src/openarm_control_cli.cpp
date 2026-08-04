@@ -395,6 +395,18 @@ int demo_cross(const rclcpp::Node::SharedPtr & node, const int cycles)
   return run_sequence(node, &open_pose, 1, 1.0);
 }
 
+// Retreat to a wide, guard-clear pose.
+//
+// converge ends with the claws deliberately close, which is nearer than the
+// portal's pre-flight guard will plan out of, so the portal refuses further
+// best-effort moves until the arms are separated again. The action path used
+// here does not go through that guard, so this always works.
+int demo_home(const rclcpp::Node::SharedPtr & node)
+{
+  static const Waypoint open_pose{"home: claws wide", {0.30, 0.26, 0.45}, {0.30, -0.26, 0.45}};
+  return run_sequence(node, &open_pose, 1, 1.0);
+}
+
 // Bimanual modes that need measured state or the contact monitor, routed
 // through the node's MoveBimanual action rather than resolved here.
 int run_bimanual(
@@ -415,7 +427,13 @@ int run_bimanual(
   } else {
     goal.target_m.x = x; goal.target_m.y = y; goal.target_m.z = z;
   }
-  return run_goal<MoveBimanual>(node, goal, "/openarm_ik/move_bimanual");
+  const int result = run_goal<MoveBimanual>(node, goal, "/openarm_ik/move_bimanual");
+  if (result == 0 && mode == MoveBimanual::Goal::MODE_CONVERGE) {
+    std::cout << "converge left the claws close; run 'home' before using the "
+                 "portal, whose pre-flight guard will not plan from here"
+              << std::endl;
+  }
+  return result;
 }
 
 // Pick the scene box up, carry it, and set it down.
@@ -464,7 +482,8 @@ void usage()
     "  openarm_control_cli cross [CYCLES]\n"
     "  openarm_control_cli pick-place\n"
     "  openarm_control_cli centroid X_METRES Y_METRES Z_METRES\n"
-    "  openarm_control_cli converge X_METRES Y_METRES Z_METRES [STOP_DISTANCE_METRES]\n";
+    "  openarm_control_cli converge X_METRES Y_METRES Z_METRES [STOP_DISTANCE_METRES]\n"
+    "  openarm_control_cli home\n";
 }
 }
 
@@ -521,6 +540,8 @@ int main(int argc, char ** argv)
       result = run_bimanual(
         node, MoveBimanual::Goal::MODE_CONVERGE, number(argv[2]), number(argv[3]),
         number(argv[4]), argc == 6 ? number(argv[5]) : 0.05);
+    } else if (argc == 2 && std::string(argv[1]) == "home") {
+      result = demo_home(node);
     } else if (argc == 2 && std::string(argv[1]) == "pick-place") {
       result = demo_pick_place(node);
     } else if (argc == 6 && std::string(argv[1]) == "mirror") {

@@ -300,6 +300,9 @@ private:
     std::uint64_t instance_id_{};
     oa_contact_report contact_report_{};
     std::uint32_t contact_streak_{};
+    /* Previous cycle's measured clearance, so the keepout monitor can tell an
+     * approach from a retreat. */
+    double last_clearance_m_{};
     std::array<oa_sim_contact, 2> sim_contact_{};
     bool estop_latched_{};
     std::optional<MotionPlan> executing_{};

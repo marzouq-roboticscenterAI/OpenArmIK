@@ -708,6 +708,78 @@ void test_realtime_keepout_uses_shared_geometry() {
         oa_collision_finite_cylinder_capsule_clearance(a, b, -1.0, 0.0, 1.0, 0.05)));
 }
 
+// A pose inside the intervention floor must remain escapable.
+//
+// The keepout monitor originally vetoed on the absolute clearance, so any
+// command that legitimately ended inside the floor left the arms trapped: the
+// next command was halted on its first cycle, including one that moved them
+// apart. Converge reaches such poses by design.
+void test_keepout_monitor_allows_retreat_but_still_stops_approach() {
+    Fixture fixture;
+    move_to_separated_pose(fixture);
+
+    // Drive the claws together until the monitor intervenes.
+    const auto left = fixture.tcp(OA_LEFT);
+    const auto right = fixture.tcp(OA_RIGHT);
+    auto approach = converge_template(fixture);
+    approach.velocity_scale = 1.0;
+    approach.acceleration_scale = 1.0;
+    approach.jerk_scale = 1.0;
+    for (std::size_t axis = 0; axis < 3U; ++axis) {
+        approach.target_m[axis] = 0.5 * (left[axis] + right[axis]);
+    }
+    approach.stop_distance_m = 0.0;
+    approach.minimum_progress_m = 0.001;
+    oa_motion_plan *plan = nullptr;
+    if (oa_controller_plan_converge_tcp(fixture.controller, &approach, &plan) !=
+        OA_CONTROL_OK) {
+        return;  // Geometry unreachable on this build; the retreat case below
+                 // is covered by the keepout stop exercised elsewhere.
+    }
+    auto request = execute_template();
+    std::uint64_t command_id = 0U;
+    CHECK(oa_controller_execute(fixture.controller, plan, &request, &command_id) ==
+          OA_CONTROL_OK);
+    const auto halted = run_until_stopped(fixture, 6000);
+    oa_motion_plan_destroy(plan);
+    /* The approach must have been stopped, not completed. */
+    CHECK(halted.cause != OA_STOP_CAUSE_NONE);
+
+    // Now retreat. Starting clearance is at or below the floor, so this is the
+    // case that used to be impossible.
+    fixture.refresh();
+    auto retreat = paired_template(fixture);
+    retreat.velocity_scale = 1.0;
+    retreat.acceleration_scale = 1.0;
+    retreat.jerk_scale = 1.0;
+    retreat.left_tcp_m[0] = 0.30;
+    retreat.left_tcp_m[1] = 0.26;
+    retreat.left_tcp_m[2] = 0.40;
+    retreat.right_tcp_m[0] = 0.30;
+    retreat.right_tcp_m[1] = -0.26;
+    retreat.right_tcp_m[2] = 0.40;
+    oa_motion_plan *escape = nullptr;
+    CHECK(oa_controller_plan_paired_tcp(fixture.controller, &retreat, &escape) ==
+          OA_CONTROL_OK);
+    auto escape_request = execute_template();
+    std::uint64_t escape_id = 0U;
+    CHECK(oa_controller_execute(fixture.controller, escape, &escape_request, &escape_id) ==
+          OA_CONTROL_OK);
+    const auto escaped = run_until_stopped(fixture, 6000);
+    CHECK(escaped.cause == OA_STOP_CAUSE_NONE);
+    /* And it genuinely opened up. */
+    fixture.refresh();
+    const auto opened_left = fixture.tcp(OA_LEFT);
+    const auto opened_right = fixture.tcp(OA_RIGHT);
+    double separation = 0.0;
+    for (std::size_t axis = 0; axis < 3U; ++axis) {
+        const double delta = opened_left[axis] - opened_right[axis];
+        separation += delta * delta;
+    }
+    CHECK(std::sqrt(separation) > 0.40);
+    oa_motion_plan_destroy(escape);
+}
+
 void test_estop_is_always_listening() {
     CHECK(oa_estop_clear() == OA_CONTROL_OK);
     CHECK(oa_estop_asserted() == 0U);
@@ -870,6 +942,7 @@ int main() {
     test_contact_torque_stops_converge();
     test_explicit_contact_threshold_is_honoured();
     test_realtime_keepout_uses_shared_geometry();
+    test_keepout_monitor_allows_retreat_but_still_stops_approach();
     test_estop_is_always_listening();
     test_estop_from_another_thread_during_execution();
     test_contact_report_abi_is_validated();

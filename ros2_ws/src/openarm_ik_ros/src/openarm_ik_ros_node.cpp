@@ -1031,7 +1031,11 @@ private:
   // to 0.24 m, so the grasp threshold sits just above the box width.
   static constexpr double kBoxGraspSeparation = 0.26;
   static constexpr double kBoxReleaseSeparation = 0.34;
-  static constexpr double kBoxGraspRadius = 0.12;
+  // Tight enough that only a pose aimed at the box takes it. The clap demo
+  // closes its claws to 0.24 m, inside the grasp separation, but its midpoint
+  // sits 0.064 m from the box; at 0.12 m it used to pick the box up and carry
+  // it away mid-clap.
+  static constexpr double kBoxGraspRadius = 0.05;
   static constexpr double kBoxRestHeight = 0.30;
   std::array<double, 3> box_position_{0.34, 0.00, kBoxRestHeight};
   bool box_held_{false};

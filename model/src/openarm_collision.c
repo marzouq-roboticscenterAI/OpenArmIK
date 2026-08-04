@@ -7,6 +7,25 @@
 /* Nominal link envelope. These are the audited pre-flight guard constants; the
  * real-time monitor reuses the same geometry so the two gates cannot diverge,
  * but intervenes at a tighter clearance (see kInterventionClearance). */
+/* These are tuned envelope radii, NOT strict covering bounds, and raising them
+ * to covering values is not an improvement. Measured from the pinned collision
+ * meshes, the furthest vertex from its own link centreline is 59.84 mm across
+ * the arm links (link1) and 84.21 mm across the tool group (hand.stl), so a
+ * symmetric capsule of 0.050 / 0.075 does under-cover the real geometry by
+ * roughly 10 mm in the worst direction.
+ *
+ * Setting 0.060 / 0.085 was tried and is worse: the robot's own neutral pose
+ * then fails, with the left arm's segment 2 measuring 19.6 mm to the central
+ * shaft against the 25 mm gate. The reason is that the bulge is not centred on
+ * the joint centreline. link1's widest extent points away from the shaft, but a
+ * symmetric radius applies it toward the shaft as well, so the model cannot
+ * both cover the hardware and admit poses the hardware actually holds.
+ *
+ * Fixing this properly means changing the envelope shape, per-link oriented
+ * boxes or convex hulls, not its size. Until then these values are deliberate:
+ * 0.050 is the largest arm radius that still admits the neutral pose with
+ * margin, and the guard is documented throughout as nominal rather than a
+ * certified collision proof. */
 static const double kArmRadius = 0.050;
 static const double kToolRadius = 0.075;
 static const double kRequiredClearance = 0.025;

@@ -874,7 +874,15 @@ private:
       }
       command = active_->command;
       result = make_result_unlocked(OA_RUNTIME_OK);
-      result.outcome = CommandResult::Outcome::completed;
+      // A real-time monitor stop is only a success for converge, whose whole
+      // purpose is to advance until something stops it. For every other kind
+      // the arms halted short of the commanded target, and reporting that as
+      // plain completion hides a keepout abort behind an exit code of zero.
+      const bool halted_by_monitor = event.kind == OA_RUNTIME_EVENT_STOPPED;
+      const bool stop_is_the_goal =
+        command.kind == SessionCommand::Kind::converge_tcp;
+      result.outcome = (!halted_by_monitor || stop_is_the_goal) ?
+        CommandResult::Outcome::completed : CommandResult::Outcome::aborted;
       result.command_id = event.command_id;
       result.seed_feedback_seq[0] = active_->report.seed_feedback_seq[0];
       result.seed_feedback_seq[1] = active_->report.seed_feedback_seq[1];
@@ -886,7 +894,9 @@ private:
       result.cause = event.source_status;
       result.collision_checked = active_->report.collision_checked != 0U;
       result.motion_authorized = active_->report.motion_authorized != 0U;
-      result.reason = "completed_measured_feedback";
+      result.reason = !halted_by_monitor ? "completed_measured_feedback" :
+        (stop_is_the_goal ? "converge_halted_on_measured_resistance" :
+        "halted_short_of_target_by_realtime_monitor");
       terminalizing_owner_ = command.owner;
     }
     const bool terminal_ok = invoke_terminal_callback(command, result);

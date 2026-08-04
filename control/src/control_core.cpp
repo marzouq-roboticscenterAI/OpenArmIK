@@ -1156,6 +1156,10 @@ bool Controller::keepout_clear(const std::array<JointVector, 2> &q,
     return status.clear;
 }
 
+/* Clearance must fall by more than this within one cycle to count as an
+ * approach. Feedback is quantized, so exact equality is not reliable. */
+constexpr double kClearanceWorseningEpsilon = 1.0e-6;
+
 bool Controller::monitor_keepout() noexcept {
     /* Evaluated every cycle from measured feedback, not from the plan. A plan
      * validated at submission time can still be carried into a violation by
@@ -1163,7 +1167,29 @@ bool Controller::monitor_keepout() noexcept {
      * continuously while the arms are moving. */
     const std::array<JointVector, 2> measured{arm_[0].measured_q(), arm_[1].measured_q()};
     KeepoutStatus status{};
+    const double previous = last_clearance_m_;
+    last_clearance_m_ = status.minimum_clearance_m;
     if (keepout_clear(measured, status)) {
+        contact_report_.minimum_clearance_m = status.minimum_clearance_m;
+        last_clearance_m_ = status.minimum_clearance_m;
+        return true;
+    }
+    last_clearance_m_ = status.minimum_clearance_m;
+    /* Below the floor but opening up: let it run.
+     *
+     * A command that legitimately ends inside the floor, converge above all,
+     * leaves the next command starting there too. Vetoing purely on the
+     * absolute value trapped the arms: every retreat was halted on its first
+     * cycle and the pose became inescapable. Intervening only while clearance
+     * is actively worsening still stops any approach, which is what the monitor
+     * is for, while allowing the arms to back out of where they already are.
+     *
+     * The test is "not worsening" rather than "strictly improving": for the
+     * first cycles of a retreat the arms have barely moved, so clearance is
+     * equal rather than greater, and a strict test halted every escape on
+     * cycle one. */
+    if (std::isfinite(previous) && std::isfinite(status.minimum_clearance_m) &&
+        status.minimum_clearance_m >= previous - kClearanceWorseningEpsilon) {
         contact_report_.minimum_clearance_m = status.minimum_clearance_m;
         return true;
     }
@@ -1271,6 +1297,11 @@ void Controller::reset_contact_report() noexcept {
     contact_report_.cause = OA_STOP_CAUSE_NONE;
     contact_report_.minimum_clearance_m = std::numeric_limits<double>::quiet_NaN();
     contact_streak_ = 0U;
+    /* Seed from the pose the command actually starts in, so a command that
+     * begins inside the floor is judged on whether it improves from there. */
+    KeepoutStatus start{};
+    (void)keepout_clear({arm_[0].measured_q(), arm_[1].measured_q()}, start);
+    last_clearance_m_ = start.minimum_clearance_m;
 }
 
 oa_control_status Controller::complete_on_contact() noexcept {
