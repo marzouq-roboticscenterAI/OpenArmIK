@@ -539,9 +539,15 @@ and motion frames to physical actuators. Every read-only claim in the section
 above was verified by measurement; nothing in this section can be, so it must be
 treated as unverified until someone runs it on hardware.
 
-**There is no hardware e-stop on this rig** (confirmed 2026-08-05). A software
-e-stop cannot stop a motor once it has latched a position target, and cannot act
-at all if the process dies, the adapter is unplugged, or the bus saturates.
+**A hardware e-stop exists and a second person can press it** (confirmed
+2026-08-05). That is the real backstop and the powered phase should not run
+without someone on it, because a software e-stop cannot stop a motor that has
+latched a position target, and cannot act at all if the process dies, the
+adapter is unplugged, or the bus saturates.
+
+The motor timeout below is what covers the gap between "the software noticed"
+and "a human reacted", so it is still required rather than made redundant by
+the hardware stop.
 
 ### Build the motor timeout FIRST
 
