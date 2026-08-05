@@ -74,6 +74,7 @@ public:
     zero_path_ = declare_parameter<std::string>(
       "zero_file", std::string(home != nullptr ? home : "/tmp") + "/.openarm_real_zero");
     invert_gripper_ = !declare_parameter<bool>("gripper_opens_with_increasing_angle", false);
+    capture_zero_on_connect_ = declare_parameter<bool>("capture_zero_on_connect", true);
     load_zero();
 
     observer_ = std::make_unique<RealObserver>(config);
@@ -90,6 +91,22 @@ public:
       {
         std::string detail;
         const bool ok = observer_->connect(detail);
+        // Capture the startup pose as the reference automatically. The arms
+        // rest in a consistent physical position at power-on, so treating that
+        // as neutral makes RViz agree with the robot without a manual step.
+        //
+        // Worth being clear about what this assumes: whatever pose the arms
+        // happen to be in at Connect becomes the definition of neutral. If they
+        // are not resting when you connect, the reference is wrong and nothing
+        // will say so -- press Clear zero and reconnect with the arms at rest.
+        if (ok && capture_zero_on_connect_) {
+          std::string zero_message;
+          if (capture_zero(zero_message)) {
+            detail += " Startup pose captured as neutral.";
+          } else {
+            detail += " Could not capture a startup zero: " + zero_message;
+          }
+        }
         response->success = ok;
         response->message = detail;
         publish_status();
@@ -356,6 +373,7 @@ private:
   std::array<std::array<double, 7>, 2> zero_offset_{};
   std::string zero_path_;
   bool invert_gripper_{true};
+  bool capture_zero_on_connect_{true};
 
   void publish_status()
   {
