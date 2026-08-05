@@ -34,6 +34,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
+#include <fstream>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -67,6 +69,12 @@ public:
     // separate the two buses. Empty leaves it automatic.
     config.forced_side_for_interface_a =
       declare_parameter<std::string>("interface_a_side", "");
+
+    const char * home = std::getenv("HOME");
+    zero_path_ = declare_parameter<std::string>(
+      "zero_file", std::string(home != nullptr ? home : "/tmp") + "/.openarm_real_zero");
+    invert_gripper_ = !declare_parameter<bool>("gripper_opens_with_increasing_angle", false);
+    load_zero();
 
     observer_ = std::make_unique<RealObserver>(config);
 
@@ -109,6 +117,26 @@ public:
         response->message = observer_->assignment().reason;
         publish_status();
         RCLCPP_INFO(get_logger(), "%s", response->message.c_str());
+      });
+
+    capture_zero_service_ = create_service<std_srvs::srv::Trigger>(
+      "/openarm_real/capture_zero",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response)
+      {
+        std::string message;
+        response->success = capture_zero(message);
+        response->message = message;
+        RCLCPP_INFO(get_logger(), "%s", message.c_str());
+      });
+    clear_zero_service_ = create_service<std_srvs::srv::Trigger>(
+      "/openarm_real/clear_zero",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response)
+      {
+        clear_zero();
+        response->success = true;
+        response->message = "cleared the captured zero; showing raw motor angles again";
       });
 
     timer_ = create_wall_timer(10ms, [this]() {poll();});
@@ -181,7 +209,7 @@ private:
         const std::size_t side = assignment.side_of_interface[bus];
         for (std::size_t joint = 0; joint < 7U; ++joint) {
           const std::size_t index = side * 7U + joint;
-          state.position[index] = readings[bus].position_rad[joint];
+          state.position[index] = readings[bus].position_rad[joint] - zero_offset_[side][joint];
           state.velocity[index] = readings[bus].velocity_rad_s[joint];
           state.effort[index] = readings[bus].torque_nm[joint];
         }
@@ -226,7 +254,13 @@ private:
     if (span_rad < kMinimumUsableSpanRad) {
       return 0.0;
     }
-    const double fraction = (angle - span.minimum) / span_rad;
+    // The jaws open as the motor angle DECREASES: measured on the hardware,
+    // where opening the claw showed as closed on screen and vice versa. This is
+    // a fixed property of how the gripper's drive is mounted rather than a
+    // per-unit calibration, so the default is inverted and gripper_opens_with
+    // exists only for a unit built the other way round.
+    const double fraction = invert_gripper_ ?
+      (span.maximum - angle) / span_rad : (angle - span.minimum) / span_rad;
     return std::max(0.0, std::min(kFingerTravelM, fraction * kFingerTravelM));
   }
 
@@ -237,6 +271,91 @@ private:
     double maximum{0.0};
   };
   std::array<GripperSpan, 2> gripper_span_{};
+
+  /// Record the pose the arms are in right now as the URDF zero pose.
+  ///
+  /// This is what makes RViz agree with the real robot. The motors report an
+  /// angle measured from wherever their own encoder zero happens to sit, which
+  /// has no relationship to the URDF zero: that is why a resting arm renders
+  /// lifted, and why joint 4 reads about -0.94 rad when its URDF range starts
+  /// at 0. Subtracting a captured reference removes that constant.
+  ///
+  /// The operator has to put the arms into the URDF zero pose first. Convenient
+  /// property of this design: while passive, the observer publishes exactly
+  /// that pose, so the shape shown in RViz before connecting IS the shape to
+  /// match the hardware to.
+  bool capture_zero(std::string & out_message)
+  {
+    std::array<BusReading, 2> readings{};
+    if (!observer_->connected() || !observer_->read_once(readings)) {
+      out_message = "cannot capture a zero without a live reading; press Connect first";
+      return false;
+    }
+    const ArmAssignment assignment = observer_->assignment();
+    if (!assignment.resolved) {
+      out_message = "cannot capture a zero while the arms are unidentified: the offsets "
+        "would be stored against the wrong sides";
+      return false;
+    }
+    std::size_t captured = 0;
+    for (std::size_t bus = 0; bus < 2U; ++bus) {
+      if (!readings[bus].complete) {
+        continue;
+      }
+      const std::size_t side = assignment.side_of_interface[bus];
+      for (std::size_t joint = 0; joint < 7U; ++joint) {
+        zero_offset_[side][joint] = readings[bus].position_rad[joint];
+      }
+      ++captured;
+    }
+    save_zero();
+    out_message = "captured the current pose as zero for " + std::to_string(captured) +
+      " arm(s); RViz now shows movement relative to it. Saved to " + zero_path_;
+    return true;
+  }
+
+  void clear_zero()
+  {
+    zero_offset_ = {};
+    save_zero();
+  }
+
+  void save_zero() const
+  {
+    std::ofstream file(zero_path_);
+    if (!file) {
+      RCLCPP_WARN(get_logger(), "could not write %s; the zero will not survive a restart",
+        zero_path_.c_str());
+      return;
+    }
+    for (const auto & side : zero_offset_) {
+      for (const double value : side) {
+        file << value << ' ';
+      }
+      file << '\n';
+    }
+  }
+
+  void load_zero()
+  {
+    std::ifstream file(zero_path_);
+    if (!file) {
+      return;
+    }
+    for (auto & side : zero_offset_) {
+      for (double & value : side) {
+        if (!(file >> value)) {
+          zero_offset_ = {};   // A truncated file is worse than none.
+          return;
+        }
+      }
+    }
+    RCLCPP_INFO(get_logger(), "loaded a saved zero from %s", zero_path_.c_str());
+  }
+
+  std::array<std::array<double, 7>, 2> zero_offset_{};
+  std::string zero_path_;
+  bool invert_gripper_{true};
 
   void publish_status()
   {
@@ -251,6 +370,8 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr connect_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr disconnect_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr swap_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr capture_zero_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_zero_service_;
   rclcpp::TimerBase::SharedPtr timer_;
   unsigned consecutive_failures_{0};
   unsigned status_divider_{0};

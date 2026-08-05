@@ -300,7 +300,13 @@
       '<p id="real-detail">Passive. Nothing has been sent to the CAN bus.</p>' +
       '<p><button id="real-connect" type="button">Connect</button> ' +
       '<button id="real-disconnect" type="button" disabled>Disconnect</button> ' +
-      '<button id="real-swap" type="button" disabled>Swap arms</button></p>' +
+      '<button id="real-swap" type="button" disabled>Swap arms</button> ' +
+      '<button id="real-zero" type="button" disabled>Capture zero here</button> ' +
+      '<button id="real-unzero" type="button" disabled>Clear zero</button></p>' +
+      '<p class="caption">The motors measure from their own encoder zero, which is not '
+      + 'the URDF zero, so a resting arm renders lifted. To fix it: note the pose shown '
+      + 'before connecting (that IS the URDF zero pose), put the real arms into it, then '
+      + 'press Capture zero here. The offset is saved and reloaded next launch.</p>' +
       '<p id="real-confidence"></p>' +
       '<p id="real-inventory"></p>' +
       '<p class="notice">This build is read-only: it polls motor status and mirrors the ' +
@@ -341,6 +347,8 @@
     $('real-connect').disabled = observer.connected;
     $('real-disconnect').disabled = !observer.connected;
     $('real-swap').disabled = !observer.resolved;
+    $('real-zero').disabled = !observer.resolved;
+    $('real-unzero').disabled = !observer.connected;
     // The angle heuristic has been measured getting a real arm backwards, so
     // say so rather than presenting a guess as a determination.
     $('real-confidence').textContent = !observer.resolved ? '' :
@@ -381,6 +389,16 @@
       }
       pollRealStatus();
     });
+    for (const [id, path] of [['real-zero', '/api/real/capture-zero'],
+                              ['real-unzero', '/api/real/clear-zero']]) {
+      $(id).addEventListener('click', async () => {
+        try {
+          const result = await post(path);
+          $('real-detail').textContent = result.message;
+        } catch (error) {$('real-detail').textContent = error.message;}
+        pollRealStatus();
+      });
+    }
     $('real-swap').addEventListener('click', async () => {
       try {
         const result = await post('/api/real/swap');
