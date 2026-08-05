@@ -137,6 +137,16 @@ pkg_check_modules(XCOMPOSITE REQUIRED IMPORTED_TARGET xcomposite)
 pkg_check_modules(LIBJPEG REQUIRED IMPORTED_TARGET libjpeg)
 # XTEST drives the real X pointer; it is how the browser view orbits RViz.
 pkg_check_modules(XTST REQUIRED IMPORTED_TARGET xtst)
+pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0)
+pkg_check_modules(JSONC_CALIB REQUIRED IMPORTED_TARGET json-c)
+
+# Hand-guided calibration GUI. C, as requested, and it only ever transmits
+# DaMiao refresh-status so the arms stay unpowered while their ranges are
+# recorded by hand.
+add_executable(openarm_calibrate_gui src/openarm_calibrate_gui.c)
+target_compile_options(openarm_calibrate_gui PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_calibrate_gui PRIVATE
+  OpenArm::Can PkgConfig::GTK3 PkgConfig::JSONC_CALIB m)
 
 add_library(openarm_rviz_capture STATIC src/rviz_capture.cpp)
 target_include_directories(openarm_rviz_capture PUBLIC
@@ -172,7 +182,7 @@ if(OPENARM_IK_ROS_COVERAGE)
 endif()
 
 install(TARGETS openarm_ik_ros_node openarm_control_cli close_rviz_window openarm_portal
-  openarm_real_observer
+  openarm_real_observer openarm_calibrate_gui
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch rviz DESTINATION share/${PROJECT_NAME})
 install(FILES package.xml README.md DESTINATION share/${PROJECT_NAME})
