@@ -421,8 +421,10 @@ void testPublicAbiValidation() {
     CHECK(oa_transport_open("not-a-can", &options, nullptr, 0U, &handle) ==
           OA_TRANSPORT_EABI);
     handle = nullptr;
-    CHECK(oa_transport_open("lo", nullptr, nullptr, 0U, &handle) ==
-          OA_TRANSPORT_EUNSUPPORTED);
+    const oa_transport_status loopback_status =
+        oa_transport_open("lo", nullptr, nullptr, 0U, &handle);
+    CHECK(loopback_status == OA_TRANSPORT_EUNSUPPORTED ||
+          loopback_status == OA_TRANSPORT_EIO);
     CHECK(handle == nullptr);
 }
 

@@ -158,6 +158,8 @@ target_link_libraries(openarm_portal PRIVATE
   rclcpp::rclcpp
   rclcpp_action::rclcpp_action
   sensor_msgs::sensor_msgs
+  std_msgs::std_msgs
+  std_srvs::std_srvs
   Threads::Threads)
 
 if(OPENARM_IK_ROS_COVERAGE)

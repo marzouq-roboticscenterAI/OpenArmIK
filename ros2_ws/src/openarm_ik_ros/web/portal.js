@@ -287,5 +287,76 @@
   $('both').addEventListener('click', moveBoth);
   $('stop').addEventListener('click', () => post('/api/stop').catch(error => {$('status').textContent = error.message;}));
   $('verify').addEventListener('click', () => post('/api/verify').catch(error => {$('status').textContent = error.message;}));
+  // Real-arm mode. The portal serves /api/real/status in both modes, so one
+  // request tells the page which stack it is attached to. In virtual mode this
+  // returns {enabled:false} and nothing below runs, which is why the same page
+  // works for run.sh and run-real.sh without a build-time switch.
+  function renderRealPanel() {
+    const panel = document.createElement('section');
+    panel.id = 'real-panel';
+    panel.className = 'controls';
+    panel.innerHTML =
+      '<h2>Physical arm</h2>' +
+      '<p id="real-detail">Passive. Nothing has been sent to the CAN bus.</p>' +
+      '<p><button id="real-connect" type="button">Connect</button> ' +
+      '<button id="real-disconnect" type="button" disabled>Disconnect</button></p>' +
+      '<p id="real-inventory"></p>' +
+      '<p class="notice">This build is read-only: it polls motor status and mirrors the ' +
+      'measured pose in the 3D view. It cannot enable, zero, or move a motor.</p>';
+    document.querySelector('main').prepend(panel);
+    return panel;
+  }
+  function describeBus(bus) {
+    if (!bus.motor_count) return bus.interface + ': silent (no motors answered)';
+    const ids = bus.motors.map(m => '0x' + m.send_id.toString(16).padStart(2, '0')).join(' ');
+    return bus.interface + ': ' + bus.motor_count + ' motors as the ' + bus.side +
+      ' arm [' + ids + ']';
+  }
+  function applyRealStatus(observer) {
+    if (!observer) return;
+    $('real-detail').textContent = observer.detail || '';
+    $('real-connect').disabled = observer.connected;
+    $('real-disconnect').disabled = !observer.connected;
+    $('real-inventory').textContent = (observer.buses || []).map(describeBus).join('  |  ');
+  }
+  async function pollRealStatus() {
+    try {
+      const response = await fetch('/api/real/status', {credentials: 'same-origin'});
+      applyRealStatus((await response.json()).observer);
+    } catch (_) { /* transient; the next tick retries */ }
+  }
+  async function initRealMode() {
+    let status;
+    try {
+      status = await (await fetch('/api/real/status', {credentials: 'same-origin'})).json();
+    } catch (_) {return;}
+    if (!status.enabled) return;
+    renderRealPanel();
+    // No planner or simulated controller is running behind a real arm, so the
+    // motion controls would post into a void. Disable them rather than let
+    // them fail obscurely.
+    for (const id of ['left', 'right', 'both', 'verify', 'stop']) {
+      const control = $(id);
+      if (control) {control.disabled = true; control.title = 'Read-only observation mode';}
+    }
+    $('real-connect').addEventListener('click', async () => {
+      $('real-connect').disabled = true;
+      $('real-detail').textContent = 'Sweeping both buses for motors...';
+      try {
+        const result = await post('/api/real/connect');
+        $('real-detail').textContent = result.message;
+      } catch (error) {
+        $('real-detail').textContent = error.message;
+      }
+      pollRealStatus();
+    });
+    $('real-disconnect').addEventListener('click', async () => {
+      try {await post('/api/real/disconnect');} catch (error) {$('real-detail').textContent = error.message;}
+      pollRealStatus();
+    });
+    applyRealStatus(status.observer);
+    window.setInterval(pollRealStatus, 1000);
+  }
   renderPresets('left'); renderPresets('right'); renderDemoPresets(); renderDemoSequences(); updateUnitText(); updateMotionLimit(); syncUnitRadios(); state(); window.setInterval(state, 250);
+  initRealMode();
 })();

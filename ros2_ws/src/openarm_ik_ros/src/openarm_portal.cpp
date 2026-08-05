@@ -13,6 +13,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include <array>
 #include <algorithm>
@@ -350,10 +352,24 @@ private:
 class PortalNode : public rclcpp::Node
 {
 public:
-  PortalNode()
-  : Node("openarm_portal")
+  explicit PortalNode(const bool real_mode = false)
+  : Node("openarm_portal"), real_mode_(real_mode)
   {
     action_ = rclcpp_action::create_client<Action>(this, "/openarm_ik/move_paired_tcp_scaled");
+    if (real_mode_) {
+      // Real mode drives a physical arm, so the portal owns no motion path of
+      // its own here: it only relays connect/disconnect to the read-only
+      // observer and mirrors what the observer reports.
+      real_connect_ = create_client<std_srvs::srv::Trigger>("/openarm_real/connect");
+      real_disconnect_ = create_client<std_srvs::srv::Trigger>("/openarm_real/disconnect");
+      real_status_subscription_ = create_subscription<std_msgs::msg::String>(
+        "/openarm_real/status",
+        rclcpp::QoS(1).reliable().transient_local(),
+        [this](const std_msgs::msg::String::SharedPtr message) {
+          std::lock_guard<std::mutex> lock(real_mutex_);
+          real_status_ = message->data;
+        });
+    }
     state_subscription_ = create_subscription<sensor_msgs::msg::JointState>(
       "/joint_states", rclcpp::QoS(10).reliable(),
       [this](const sensor_msgs::msg::JointState::SharedPtr message) {update_state(*message);});
@@ -362,6 +378,41 @@ public:
       [this](const diagnostic_msgs::msg::DiagnosticArray::SharedPtr message) {
         update_diagnostics(*message);
       });
+  }
+
+  bool real_mode() const {return real_mode_;}
+
+  /// Latest observer status, or a placeholder before the first publication.
+  std::string real_status() const
+  {
+    std::lock_guard<std::mutex> lock(real_mutex_);
+    return real_status_.empty() ?
+           std::string("{\"connected\":false,\"detail\":\"observer has not reported yet\"}") :
+           real_status_;
+  }
+
+  /// Relay to the observer's connect or disconnect service. Blocking, because
+  /// a sweep of both buses takes hundreds of milliseconds and the operator is
+  /// waiting on the answer; this runs on an HTTP worker, not the ROS thread.
+  bool real_command(const bool connect, std::string & out_message)
+  {
+    const auto client = connect ? real_connect_ : real_disconnect_;
+    if (!client) {
+      out_message = "portal is not in real mode";
+      return false;
+    }
+    if (!client->wait_for_service(std::chrono::seconds(2))) {
+      out_message = "the real-arm observer is not running";
+      return false;
+    }
+    auto future = client->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>());
+    if (future.wait_for(std::chrono::seconds(20)) != std::future_status::ready) {
+      out_message = "the observer did not answer within 20 s";
+      return false;
+    }
+    const auto response = future.get();
+    out_message = response->message;
+    return response->success;
   }
 
   bool state(GuardInput & input, std::array<Point, 2> & tcp, std::string & reason) const
@@ -762,6 +813,12 @@ private:
   GoalHandle::SharedPtr active_goal_;
   rclcpp_action::Client<Action>::SharedPtr action_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr state_subscription_;
+  const bool real_mode_{false};
+  mutable std::mutex real_mutex_;
+  std::string real_status_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_connect_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_disconnect_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr real_status_subscription_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostic_subscription_;
 };
 
@@ -1181,6 +1238,14 @@ private:
       write_json(stream, http::status::ok, node_->state_json());
       return;
     }
+    if (request.method() == http::verb::get && target == "/api/real/status") {
+      // Always answers, even outside real mode, so the page can discover which
+      // mode the portal is in with one request and render accordingly.
+      write_json(stream, http::status::ok,
+        std::string("{\"enabled\":") + (node_->real_mode() ? "true" : "false") +
+        ",\"observer\":" + (node_->real_mode() ? node_->real_status() : "null") + "}");
+      return;
+    }
     if (request.method() == http::verb::get && target == "/api/view-state") {
       write_json(stream, http::status::ok, viewer_state_json(node_->viewer_snapshot(), steady_now_ns()));
       return;
@@ -1188,7 +1253,8 @@ private:
     if (request.method() != http::verb::post ||
       (target != "/api/move" && target != "/api/v2/move" && target != "/api/v3/move" &&
       target != "/api/stop" && target != "/api/verify" && target != "/api/estop" &&
-      target != "/api/estop/release" && target != "/api/v3/move-both"))
+      target != "/api/estop/release" && target != "/api/v3/move-both" &&
+      target != "/api/real/connect" && target != "/api/real/disconnect"))
     {
       write_json(stream, http::status::not_found, "{\"error\":\"route not found\"}");
       return;
@@ -1217,6 +1283,22 @@ private:
     if (!policy_.validate(headers, reason)) {
       write_json(stream, http::status::forbidden,
         "{\"error\":\"" + json_escape(reason) + "\"}");
+      return;
+    }
+    if (target == "/api/real/connect" || target == "/api/real/disconnect") {
+      if (!node_->real_mode()) {
+        write_json(stream, http::status::not_found,
+          "{\"error\":\"portal is not in real-arm mode\"}");
+        return;
+      }
+      std::string message;
+      const bool ok = node_->real_command(target == "/api/real/connect", message);
+      // On failure the page's shared post() helper reads "error", so emit both
+      // rather than leaving it to report a generic "request rejected".
+      const std::string escaped = json_escape(message);
+      write_json(stream, ok ? http::status::ok : http::status::conflict,
+        ok ? "{\"ok\":true,\"message\":\"" + escaped + "\"}" :
+        "{\"ok\":false,\"message\":\"" + escaped + "\",\"error\":\"" + escaped + "\"}");
       return;
     }
     if (target == "/api/estop" || target == "/api/estop/release") {
@@ -1394,11 +1476,13 @@ std::uint64_t unsigned_number(const char * value, const char * name)
 int main(int argc, char ** argv)
 {
   try {
-    if (argc != 3 || std::string(argv[1]) != "--port")
+    if (argc < 3 || argc > 4 || std::string(argv[1]) != "--port" ||
+      (argc == 4 && std::string(argv[3]) != "--real"))
     {
-      std::fprintf(stderr, "Usage: openarm_portal --port PORT\n");
+      std::fprintf(stderr, "Usage: openarm_portal --port PORT [--real]\n");
       return 2;
     }
+    const bool real_mode = argc == 4;
     const std::uint64_t port_value = unsigned_number(argv[2], "port");
     if (port_value < 1024 || port_value > 65535)
     {
@@ -1407,7 +1491,7 @@ int main(int argc, char ** argv)
     rclcpp::init(argc, argv);
     std::signal(SIGINT, openarm_ik_ros::portal::signal_handler);
     std::signal(SIGTERM, openarm_ik_ros::portal::signal_handler);
-    auto node = std::make_shared<openarm_ik_ros::portal::PortalNode>();
+    auto node = std::make_shared<openarm_ik_ros::portal::PortalNode>(real_mode);
     std::thread ros_thread([node]() {rclcpp::spin(node);});
     try {
       openarm_ik_ros::portal::PortalServer server(static_cast<unsigned short>(port_value), node);

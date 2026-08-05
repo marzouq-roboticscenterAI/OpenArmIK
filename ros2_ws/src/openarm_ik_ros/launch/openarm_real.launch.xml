@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<!--
+  Real-hardware counterpart to openarm_ik_rviz.launch.xml.
+
+  Two deliberate differences from the virtual launch:
+
+  - openarm_ik_ros_node is absent. That node runs the simulated controller and
+    publishes its own /joint_states; running it here would fight the observer
+    for the same topic and RViz would show a blend of a real arm and a
+    simulated one.
+  - openarm_real_observer takes its place. It is read-only and starts passive,
+    so bringing this launch up touches nothing on the CAN bus until the portal's
+    Connect button is pressed.
+
+  robot_state_publisher is shared with the virtual launch and is still the sole
+  TF authority.
+-->
+<launch>
+  <arg name="rviz" default="true"/>
+  <!-- Empty leaves the left/right assignment to the observer's automatic
+       identification. Set to "left" or "right" to pin which arm sits on
+       interface_a when the measured pose cannot separate them. -->
+  <arg name="interface_a_side" default=""/>
+  <arg name="interface_a" default="can0"/>
+  <arg name="interface_b" default="can1"/>
+
+  <node pkg="robot_state_publisher" exec="robot_state_publisher"
+        name="robot_state_publisher" output="screen">
+    <param name="robot_description" type="str"
+           value="$(command 'cat $(find-pkg-share openarm_ik_ros)/urdf/openarm_v10_bimanual_stage_a_visualization.urdf')"/>
+  </node>
+
+  <node pkg="openarm_ik_ros" exec="openarm_real_observer"
+        name="openarm_real_observer" output="screen">
+    <param name="interface_a" value="$(var interface_a)"/>
+    <param name="interface_b" value="$(var interface_b)"/>
+    <param name="interface_a_side" value="$(var interface_a_side)"/>
+  </node>
+
+  <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen"
+        if="$(var rviz)"
+        args="-d $(find-pkg-share openarm_ik_ros)/rviz/openarm_ik.rviz"/>
+</launch>

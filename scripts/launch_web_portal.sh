@@ -13,6 +13,7 @@ browser_command=xdg-open
 build_mode=auto
 jobs=
 show_rviz=1
+real_mode=0
 
 usage() {
   cat <<'EOF'
@@ -30,6 +31,9 @@ Options:
   --no-browser       Print the URL without opening the browser
   --firefox          Open the portal specifically with Firefox
   --no-rviz          Do not open the RViz 3D window
+  --real             Attach to the physical arms through the read-only
+                     observer instead of the simulated controller. Requires
+                     can0/can1 to be up; see scripts/setup_can_interfaces.sh.
   -h, --help         Show this help
 
 The 3D view is a real RViz window loaded with a panel-free layout, so it shows
@@ -79,6 +83,9 @@ while (($#)); do
       ;;
     --no-rviz)
       show_rviz=0
+      ;;
+    --real)
+      real_mode=1
       shift
       ;;
     --firefox)
@@ -275,12 +282,23 @@ trap 'shutdown 129' HUP
 trap 'shutdown 143' TERM
 trap 'shutdown $?' EXIT
 
+# Real mode swaps the simulated controller for the read-only observer. The two
+# must never run together: both publish /joint_states, and RViz would render a
+# blend of a real arm and a simulated one.
+if ((real_mode)); then
+  launch_file=openarm_real.launch.xml
+  portal_arguments=(--port "$port" --real)
+else
+  launch_file=openarm_ik_rviz.launch.xml
+  portal_arguments=(--port "$port")
+fi
+
 (exec 9>&-; openarm_close_shared_lock_fds
-  exec setsid ros2 launch openarm_ik_ros openarm_ik_rviz.launch.xml rviz:=false) &
+  exec setsid ros2 launch openarm_ik_ros "$launch_file" rviz:=false) &
 core_pid=$!
 
 (exec 9>&-; openarm_close_shared_lock_fds
-  exec setsid "$portal_binary" --port "$port") &
+  exec setsid "$portal_binary" "${portal_arguments[@]}") &
 portal_pid=$!
 
 if ((show_rviz)); then
