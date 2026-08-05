@@ -795,8 +795,13 @@ private:
   // MJPEG viewers are long-lived, so they get their own small lane. Capping
   // them keeps a browser reload storm from starving the API and stop lanes.
   static constexpr unsigned kMaximumStream = 3U;
-  static constexpr int kStreamQuality = 72;
-  static constexpr auto kStreamInterval = std::chrono::milliseconds(66);
+  static constexpr int kStreamQuality = 68;
+  // Headroom above the 30 fps target rather than exactly 30: capture and encode
+  // take a few milliseconds that vary with scene complexity, and pacing at
+  // exactly 33 ms measured 28.5 fps while the arms were moving. The cap is a
+  // ceiling, not a promise; the stream cannot outrun what rviz2 renders, which
+  // is why the portal asks for GPU rendering.
+  static constexpr auto kStreamInterval = std::chrono::milliseconds(28);
 
   class IntakeSession : public std::enable_shared_from_this<IntakeSession>
   {
@@ -1063,7 +1068,14 @@ private:
         if (error) {return;}
       }
       next += kStreamInterval;
-      std::this_thread::sleep_until(next);
+      // If a frame overran its slot, resynchronise instead of trying to catch
+      // up: an accumulated deficit would otherwise spin the loop flat out.
+      const auto now = std::chrono::steady_clock::now();
+      if (next < now) {
+        next = now;
+      } else {
+        std::this_thread::sleep_until(next);
+      }
     }
   }
 

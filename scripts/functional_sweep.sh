@@ -52,11 +52,12 @@ echo "== portal routes =="
 check "GET /api/health"   "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/health)" "200"
 check "GET /"             "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/)" "200"
 check "GET /api/state"    "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/state)" "200"
-check "page has demo buttons" "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -c 'id="demo-presets"')" "1"
-check "page embeds stream"    "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -c '/api/rviz/stream')" "1"
-check "page has box preset"   "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -c 'box_grasp')" "1"
-check "page has cross preset" "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -c 'cross_over')" "1"
-check "page has Move Both"    "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -c 'id=\"both\"')" "1"
+check "page has demo buttons" "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -q 'id="demo-presets"' && echo yes || echo no)" "yes"
+check "page has sequence buttons" "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -q 'id="demo-sequences"' && echo yes || echo no)" "yes"
+check "page embeds stream"    "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -q '/api/rviz/stream' && echo yes || echo no)" "yes"
+check "page has box preset"   "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -q 'box_grasp' && echo yes || echo no)" "yes"
+check "page has cross preset" "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -q 'cross_over' && echo yes || echo no)" "yes"
+check "page has Move Both"    "$(curl -s --max-time 5 http://127.0.0.1:8080/ | grep -q 'id=\"both\"' && echo yes || echo no)" "yes"
 
 echo "== MJPEG stream =="
 python3 - <<'PY'
@@ -80,7 +81,42 @@ except Exception as e:
     print("  FAIL  stream:",e)
 PY
 
+echo "== stream frame rate =="
+check "stream delivers at least 30 fps" "$(python3 - <<'PYEOF'
+import socket,re,time
+try:
+    s=socket.create_connection(("127.0.0.1",8080),timeout=15)
+    s.sendall(b"GET /api/rviz/stream HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n")
+    buf=b""
+    while b"\r\n\r\n" not in buf: buf+=s.recv(4096)
+    _,rest=buf.split(b"\r\n\r\n",1)
+    frames=0; start=time.time(); s.settimeout(5)
+    while time.time()-start < 5.0:
+        while b"\r\n\r\n" not in rest:
+            c=s.recv(65536)
+            if not c: break
+            rest+=c
+        if b"\r\n\r\n" not in rest: break
+        part,body=rest.split(b"\r\n\r\n",1)
+        m=re.search(rb"Content-Length: (\d+)",part)
+        if not m: break
+        n=int(m.group(1))
+        while len(body)<n+2:
+            c=s.recv(65536)
+            if not c: break
+            body+=c
+        frames+=1; rest=body[n+2:]
+    s.close()
+    print("yes" if frames/(time.time()-start) >= 30.0 else "no %.1f fps"%(frames/(time.time()-start)))
+except Exception as e:
+    print("no",e)
+PYEOF
+)" "yes"
+
 echo "== CLI motion =="
+# Start from a known pose: the sweep is order dependent and a previous demo can
+# leave the arms somewhere the first check cannot plan from.
+climove home >/dev/null 2>&1
 check "status"          "$(cli status >/dev/null 2>&1; echo $?)" "0"
 check "move-joint"      "$(climove move-joint openarm_left_joint4 0.3 >/dev/null 2>&1; echo $?)" "0"
 check "move-paired-tcp" "$(climove move-paired-tcp openarm_body_link0 0.30 0.24 0.40 0.30 -0.24 0.40 >/dev/null 2>&1; echo $?)" "0"

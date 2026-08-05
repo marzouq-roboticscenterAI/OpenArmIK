@@ -5,6 +5,9 @@
   const csrf = document.querySelector('meta[name="portal-csrf"]').content;
   const targets = JSON.parse($('portal-targets').textContent);
   const demos = JSON.parse($('portal-demos').textContent);
+  const sequences = JSON.parse($('portal-sequences').textContent);
+  const demoById = Object.fromEntries(demos.map(entry => [entry.id, entry]));
+  let sequenceRunning = false;
   const axes = ['x', 'y', 'z'];
   const sides = ['left', 'right'];
   const metresPerUnit = {m: 1.0, cm: 0.01, in: 0.0254};
@@ -101,6 +104,89 @@
     clearError();
     $('form-notice').textContent =
       'Filled both targets from "' + entry.label + '"; review values and press Move to submit.';
+  }
+  // Posts one dual move and resolves once the portal reports itself idle again.
+  // Sending the next waypoint before then is refused with 409, because the
+  // session holds its reservation until the goal is terminal.
+  async function runWaypoint(entry) {
+    const scale = motionLimitScale();
+    if (scale === null) throw new Error('Movement limits must remain between 50% and 100%.');
+    const body = {
+      unit: 'm',
+      left_x: entry.left[0], left_y: entry.left[1], left_z: entry.left[2],
+      right_x: entry.right[0], right_y: entry.right[1], right_z: entry.right[2],
+      motion_limit_scale: scale,
+    };
+    // The guard rejects a submission whose measured state moved while it was
+    // being evaluated and says so with "retry". That is a race detector doing
+    // its job, not a bad request, so honour it instead of failing the sequence.
+    let lastError = null;
+    const backoffMs = [300, 600, 1000, 1500, 2000, 3000];
+    for (let attempt = 0; attempt <= backoffMs.length; ++attempt) {
+      try {
+        await post('/api/v3/move-both', body);
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (!/retry|another portal goal is active/i.test(error.message)) throw error;
+        if (attempt === backoffMs.length) break;
+        await new Promise(resolve => window.setTimeout(resolve, backoffMs[attempt]));
+      }
+    }
+    if (lastError) throw lastError;
+    const deadline = Date.now() + 60000;
+    let settled = 0;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => window.setTimeout(resolve, 200));
+      const response = await fetch('/api/state', {cache: 'no-store', credentials: 'same-origin'});
+      const value = await response.json();
+      settled = (value.state_fresh && !value.command_active) ? settled + 1 : 0;
+      if (settled >= 3) return;
+    }
+    throw new Error('Waypoint did not finish within 60 s.');
+  }
+  async function runSequence(sequence) {
+    if (sequenceRunning) return;
+    sequenceRunning = true;
+    setSequenceButtons(true);
+    clearError();
+    try {
+      for (let index = 0; index < sequence.steps.length; ++index) {
+        const entry = demoById[sequence.steps[index]];
+        $('demo-progress').textContent =
+          sequence.label + ': step ' + (index + 1) + ' of ' + sequence.steps.length +
+          ' (' + entry.label + ')';
+        applyDemo(entry);
+        await runWaypoint(entry);
+      }
+      $('demo-progress').textContent = sequence.label + ': finished.';
+    } catch (error) {
+      $('demo-progress').textContent = sequence.label + ': stopped.';
+      setError(error.message);
+    } finally {
+      sequenceRunning = false;
+      setSequenceButtons(false);
+    }
+  }
+  function setSequenceButtons(disabled) {
+    for (const sequence of sequences) {
+      const button = $('demo-seq-' + sequence.id);
+      if (button) button.disabled = disabled;
+    }
+  }
+  function renderDemoSequences() {
+    const container = $('demo-sequences');
+    if (!container) return;
+    for (const sequence of sequences) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'preset';
+      button.id = 'demo-seq-' + sequence.id;
+      button.textContent = sequence.label;
+      button.addEventListener('click', () => runSequence(sequence));
+      container.append(button);
+    }
   }
   function renderDemoPresets() {
     const container = $('demo-presets');
@@ -201,5 +287,5 @@
   $('both').addEventListener('click', moveBoth);
   $('stop').addEventListener('click', () => post('/api/stop').catch(error => {$('status').textContent = error.message;}));
   $('verify').addEventListener('click', () => post('/api/verify').catch(error => {$('status').textContent = error.message;}));
-  renderPresets('left'); renderPresets('right'); renderDemoPresets(); updateUnitText(); updateMotionLimit(); syncUnitRadios(); state(); window.setInterval(state, 250);
+  renderPresets('left'); renderPresets('right'); renderDemoPresets(); renderDemoSequences(); updateUnitText(); updateMotionLimit(); syncUnitRadios(); state(); window.setInterval(state, 250);
 })();

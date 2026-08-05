@@ -354,7 +354,7 @@ int run_sequence(
 int demo_clap(const rclcpp::Node::SharedPtr & node, const int cycles)
 {
   static const Waypoint open_pose{"open", {0.30, 0.26, 0.35}, {0.30, -0.26, 0.35}};
-  static const Waypoint closed_pose{"clap", {0.30, 0.12, 0.35}, {0.30, -0.12, 0.35}};
+  static const Waypoint closed_pose{"clap", {0.30, 0.15, 0.35}, {0.30, -0.15, 0.35}};
   int result = run_sequence(node, &open_pose, 1, 1.0);
   if (result != 0) {return result;}
   for (int cycle = 0; cycle < cycles; ++cycle) {
@@ -381,18 +381,27 @@ int demo_clap(const rclcpp::Node::SharedPtr & node, const int cycles)
 int demo_cross(const rclcpp::Node::SharedPtr & node, const int cycles)
 {
   static const Waypoint open_pose{"open", {0.30, 0.26, 0.45}, {0.30, -0.26, 0.45}};
+  // Reaching the stacked pose in one move drops the right arm 0.23 m, which is
+  // marginal for the portal guard's branch continuity check, so it is halved.
+  static const Waypoint half{"part heights", {0.30, 0.26, 0.55}, {0.30, -0.26, 0.30}};
   static const Waypoint split{"stack: left high, right low",
     {0.30, 0.26, 0.62}, {0.30, -0.26, 0.22}};
   static const Waypoint crossed{"cross: left claw right, right claw left",
     {0.30, -0.04, 0.62}, {0.30, 0.04, 0.22}};
-  int result = run_sequence(node, &open_pose, 1, 1.0);
+  // The lead-in matters: the guard refuses a single straight line from neutral
+  // to the open pose on IK branch continuity, though it accepts it one step at
+  // a time.
+  static const Waypoint lead_in{"lead-in", {0.30, 0.26, 0.35}, {0.30, -0.26, 0.35}};
+  const Waypoint entry[] = {lead_in, open_pose};
+  int result = run_sequence(node, entry, 2, 1.0);
   if (result != 0) {return result;}
   for (int cycle = 0; cycle < cycles; ++cycle) {
-    const Waypoint pass[] = {split, crossed, split};
-    result = run_sequence(node, pass, 3, 1.0);
+    const Waypoint pass[] = {half, split, crossed, split, half};
+    result = run_sequence(node, pass, 5, 1.0);
     if (result != 0) {return result;}
   }
-  return run_sequence(node, &open_pose, 1, 1.0);
+  const Waypoint exit_steps[] = {open_pose, lead_in};
+  return run_sequence(node, exit_steps, 2, 1.0);
 }
 
 // Retreat to a wide, guard-clear pose.
@@ -438,17 +447,17 @@ int run_bimanual(
 
 // Pick the scene box up, carry it, and set it down.
 //
-// The node grasps the box when the claws close to under 26 cm around it and
-// releases when they open past 34 cm, both judged from measured forward
+// The node grasps the box when the claws close to under 32 cm around it and
+// releases when they open past 40 cm, both judged from measured forward
 // kinematics.
 int demo_pick_place(const rclcpp::Node::SharedPtr & node)
 {
   static const Waypoint steps[] = {
     {"approach the box, claws wide", {0.34, 0.24, 0.30}, {0.34, -0.24, 0.30}},
-    {"close on the box", {0.34, 0.11, 0.30}, {0.34, -0.11, 0.30}},
-    {"lift", {0.34, 0.11, 0.48}, {0.34, -0.11, 0.48}},
-    {"carry across", {0.26, 0.11, 0.50}, {0.26, -0.11, 0.50}},
-    {"lower to place", {0.26, 0.11, 0.32}, {0.26, -0.11, 0.32}},
+    {"close on the box", {0.34, 0.15, 0.30}, {0.34, -0.15, 0.30}},
+    {"lift", {0.34, 0.15, 0.48}, {0.34, -0.15, 0.48}},
+    {"carry across", {0.26, 0.15, 0.50}, {0.26, -0.15, 0.50}},
+    {"lower to place", {0.26, 0.15, 0.32}, {0.26, -0.15, 0.32}},
     {"release", {0.26, 0.24, 0.32}, {0.26, -0.24, 0.32}},
     {"withdraw", {0.24, 0.26, 0.42}, {0.24, -0.26, 0.42}},
   };

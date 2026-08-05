@@ -190,7 +190,11 @@ private:
   static bool inverse(
     std::size_t side, const Point & target, const JointVector & seed,
     JointVector & q, std::string & reason);
-  static bool validate_q(std::size_t side, const JointVector & q, std::string & reason);
+  // tolerance_rad is for measured state only. Planned waypoints are checked
+  // strictly, at zero tolerance.
+  static bool validate_q(
+    std::size_t side, const JointVector & q, std::string & reason,
+    double tolerance_rad = 0.0);
   static bool scene_clear(
     const std::array<oa_fk_result, 2> & fk, double & clearance, std::string & reason);
 };

@@ -196,6 +196,11 @@ if ((show_rviz)); then
     printf 'Missing panel-free RViz layout in %s.\n' "$share_dir" >&2
     exit 2
   }
+  # The resize flicker that made software rendering the default applies to a
+  # window being dragged by hand. This one is captured and streamed, never
+  # resized, and llvmpipe only manages a few frames a second at this size, so
+  # prefer the GPU here. Override with OPENARM_RVIZ_RENDERER as usual.
+  export OPENARM_RVIZ_RENDERER="${OPENARM_RVIZ_RENDERER:-nvidia}"
   openarm_configure_rviz_environment || exit $?
 fi
 

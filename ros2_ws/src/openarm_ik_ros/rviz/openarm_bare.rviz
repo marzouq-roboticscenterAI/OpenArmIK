@@ -28,7 +28,9 @@ Visualization Manager:
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: world
-    Frame Rate: 30
+    # 60 rather than 30: the portal samples this window at ~36 fps, and a 30 fps
+    # render cap made RViz itself the binding constraint at a measured 29 fps.
+    Frame Rate: 60
   Name: root
   Tools:
     - Class: rviz_default_plugins/MoveCamera

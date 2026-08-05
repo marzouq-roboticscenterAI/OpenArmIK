@@ -31,6 +31,8 @@ constexpr double kProjectionMaximumRayM = 2.0;
 // handoff equivalence far below one encoder code while covering floating-point
 // publication/serialization noise; an actual adjacent-code change still fails.
 constexpr double kGuardJointEquivalenceTolerance = 1.0e-6;
+// One DaMiao position code, 25/65535 rad, rounded up.
+constexpr double kMeasuredLimitTolerance = 3.9e-4;
 
 Point origin(const oa_transform & transform)
 {
@@ -512,7 +514,8 @@ bool NominalPathGuard::forward(std::size_t side, const JointVector & q, oa_fk_re
   return oa_fk(model, q.data(), &result) == OA_MODEL_OK;
 }
 
-bool NominalPathGuard::validate_q(std::size_t side, const JointVector & q, std::string & reason)
+bool NominalPathGuard::validate_q(
+  std::size_t side, const JointVector & q, std::string & reason, const double tolerance_rad)
 {
   const oa_model * model = side == 0 ? oa_model_left_v10_bimanual() :
     oa_model_right_v10_bimanual();
@@ -520,7 +523,7 @@ bool NominalPathGuard::validate_q(std::size_t side, const JointVector & q, std::
     double lower = 0.0;
     double upper = 0.0;
     if (!std::isfinite(q[joint]) || oa_model_limits(model, joint, &lower, &upper) != OA_MODEL_OK ||
-      q[joint] < lower || q[joint] > upper)
+      q[joint] < lower - tolerance_rad || q[joint] > upper + tolerance_rad)
     {
       reason = "measured or planned joint state is outside finite model bounds";
       return false;
@@ -599,7 +602,14 @@ GuardResult NominalPathGuard::validate(const GuardInput & input) const
   result.minimum_nominal_clearance_m = std::numeric_limits<double>::infinity();
   std::array<oa_fk_result, 2> measured_fk{};
   for (std::size_t side = 0; side < 2; ++side) {
-    if (!validate_q(side, input.measured_q[side], result.reason) ||
+    // Measured state is allowed one encoder code outside the limit.
+    //
+    // DaMiao position feedback quantizes to 25/65535 rad, so a plan that lands
+    // a joint on its limit can read back a fraction beyond it. Refusing that
+    // state outright makes a pose the robot legitimately holds impossible to
+    // plan out of, which stranded the portal mid-sequence. Planned waypoints
+    // below are still checked strictly.
+    if (!validate_q(side, input.measured_q[side], result.reason, kMeasuredLimitTolerance) ||
       !forward(side, input.measured_q[side], measured_fk[side]))
     {
       if (result.reason.empty()) {result.reason = "public FK rejected measured state";}

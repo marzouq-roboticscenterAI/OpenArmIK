@@ -808,7 +808,9 @@ private:
     marker.pose.position.z = box_position_[2];
     marker.pose.orientation.w = 1.0;
     marker.scale.x = 0.08;
-    marker.scale.y = 0.16;
+    // Wide enough that the claws close just outside its faces at the guard-clear
+    // grasp pose, keeping the same 3 cm approach margin as before.
+    marker.scale.y = 0.24;
     marker.scale.z = 0.10;
     marker.color.a = 0.9F;
     marker.color.r = box_held_ ? 0.20F : 0.85F;
@@ -1027,10 +1029,11 @@ private:
   rclcpp_action::Server<MovePairedTcpScaled>::SharedPtr scaled_paired_server_;
   rclcpp_action::Server<MoveBimanual>::SharedPtr bimanual_server_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr box_publisher_;
-  // Claw separation at which the box is taken and let go. The clap demo closes
-  // to 0.24 m, so the grasp threshold sits just above the box width.
-  static constexpr double kBoxGraspSeparation = 0.26;
-  static constexpr double kBoxReleaseSeparation = 0.34;
+  // Claw separation at which the box is taken and let go. The grasp pose sits
+  // at +/-0.15, i.e. 0.30 m apart, because anything tighter is refused by the
+  // portal's pre-flight guard for passing inside the central shaft gate.
+  static constexpr double kBoxGraspSeparation = 0.32;
+  static constexpr double kBoxReleaseSeparation = 0.40;
   // Tight enough that only a pose aimed at the box takes it. The clap demo
   // closes its claws to 0.24 m, inside the grasp separation, but its midpoint
   // sits 0.064 m from the box; at 0.12 m it used to pick the box up and carry
