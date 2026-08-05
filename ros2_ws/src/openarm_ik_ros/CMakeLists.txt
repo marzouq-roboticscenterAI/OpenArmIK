@@ -15,11 +15,13 @@ find_package(openarm_control_msgs REQUIRED)
 find_package(openarm_description REQUIRED)
 find_package(openarm_model CONFIG REQUIRED)
 find_package(openarm_runtime CONFIG REQUIRED)
+find_package(openarm_can CONFIG REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -105,6 +107,22 @@ target_link_libraries(openarm_control_cli PRIVATE
   rclcpp::rclcpp
   rclcpp_action::rclcpp_action)
 
+add_library(openarm_real_observer_core STATIC src/real_observer_core.cpp)
+target_include_directories(openarm_real_observer_core PUBLIC include)
+target_compile_options(openarm_real_observer_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_real_observer_core PUBLIC
+  OpenArm::Runtime OpenArm::Can)
+
+add_executable(openarm_real_observer src/openarm_real_observer.cpp)
+target_include_directories(openarm_real_observer PRIVATE include)
+target_compile_options(openarm_real_observer PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_real_observer PRIVATE
+  openarm_real_observer_core
+  rclcpp::rclcpp
+  sensor_msgs::sensor_msgs
+  std_msgs::std_msgs
+  std_srvs::std_srvs)
+
 add_executable(close_rviz_window src/close_rviz_window.cpp)
 target_compile_options(close_rviz_window PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(close_rviz_window PRIVATE X11::X11)
@@ -150,6 +168,7 @@ if(OPENARM_IK_ROS_COVERAGE)
 endif()
 
 install(TARGETS openarm_ik_ros_node openarm_control_cli close_rviz_window openarm_portal
+  openarm_real_observer
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch rviz DESTINATION share/${PROJECT_NAME})
 install(FILES package.xml README.md DESTINATION share/${PROJECT_NAME})
@@ -174,6 +193,11 @@ if(BUILD_TESTING)
   target_include_directories(test_virtual_control_session PRIVATE include)
   target_compile_options(test_virtual_control_session PRIVATE -Wall -Wextra -Wpedantic -Werror)
   set_tests_properties(test_virtual_control_session PROPERTIES TIMEOUT 300)
+  ament_add_gtest(test_real_observer_core test/test_real_observer_core.cpp)
+  target_link_libraries(test_real_observer_core openarm_real_observer_core)
+  target_include_directories(test_real_observer_core PRIVATE include)
+  target_compile_options(test_real_observer_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
   ament_add_gtest(test_portal_core test/test_portal_core.cpp)
   target_link_libraries(test_portal_core
     openarm_portal_core
