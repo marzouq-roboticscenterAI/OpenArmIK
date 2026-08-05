@@ -303,6 +303,12 @@
       '<button id="real-swap" type="button" disabled>Swap arms</button> ' +
       '<button id="real-zero" type="button" disabled>Capture zero here</button> ' +
       '<button id="real-unzero" type="button" disabled>Clear zero</button></p>' +
+      '<p><button id="real-flip-left" type="button" disabled>Flip LEFT arm direction</button> ' +
+      '<button id="real-flip-right" type="button" disabled>Flip RIGHT arm direction</button></p>' +
+      '<p class="caption">If moving an arm outward makes it swing inward on screen, flip '
+      + 'that arm. The motor mounting orientation is not reported anywhere on the bus and '
+      + 'the model manifest does not match this hardware, so this is set by looking at the '
+      + 'robot. It is saved and reloaded next launch.</p>' +
       '<p class="caption">The motors measure from their own encoder zero, which is not '
       + 'the URDF zero, so a resting arm renders lifted. To fix it: note the pose shown '
       + 'before connecting (that IS the URDF zero pose), put the real arms into it, then '
@@ -349,6 +355,8 @@
     $('real-swap').disabled = !observer.resolved;
     $('real-zero').disabled = !observer.resolved;
     $('real-unzero').disabled = !observer.connected;
+    $('real-flip-left').disabled = !observer.connected;
+    $('real-flip-right').disabled = !observer.connected;
     // The angle heuristic has been measured getting a real arm backwards, so
     // say so rather than presenting a guess as a determination.
     $('real-confidence').textContent = !observer.resolved ? '' :
@@ -390,7 +398,9 @@
       pollRealStatus();
     });
     for (const [id, path] of [['real-zero', '/api/real/capture-zero'],
-                              ['real-unzero', '/api/real/clear-zero']]) {
+                              ['real-unzero', '/api/real/clear-zero'],
+                              ['real-flip-left', '/api/real/flip-left'],
+                              ['real-flip-right', '/api/real/flip-right']]) {
       $(id).addEventListener('click', async () => {
         try {
           const result = await post(path);

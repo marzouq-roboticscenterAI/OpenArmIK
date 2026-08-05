@@ -39,6 +39,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -157,6 +158,26 @@ public:
         response->message = "cleared the captured zero; showing raw motor angles again";
       });
 
+    for (const auto & entry : {std::pair<const char *, std::size_t>{"left", 0U},
+        std::pair<const char *, std::size_t>{"right", 1U}})
+    {
+      const std::size_t side = entry.second;
+      flip_services_.push_back(create_service<std_srvs::srv::Trigger>(
+          std::string("/openarm_real/flip_") + entry.first,
+          [this, side, name = std::string(entry.first)](
+            const std_srvs::srv::Trigger::Request::SharedPtr,
+            std_srvs::srv::Trigger::Response::SharedPtr response)
+          {
+            arm_sign_[side] = -arm_sign_[side];
+            save_zero();
+            response->success = true;
+            response->message = "the " + name + " arm now moves " +
+            (arm_sign_[side] < 0.0 ? "inverted" : "normally") +
+            " on screen; saved, so it persists across restarts";
+            RCLCPP_INFO(get_logger(), "%s", response->message.c_str());
+          }));
+    }
+
     timer_ = create_wall_timer(10ms, [this]() {poll();});
     if (connect_on_start) {
       // One shot, slightly delayed. Connecting from the constructor would sweep
@@ -244,15 +265,20 @@ private:
         for (std::size_t joint = 0; joint < 7U; ++joint) {
           const std::size_t index = side * 7U + joint;
           // Motor space to URDF space: subtract the captured reference, then
-          // apply the joint's sign. Order matters -- the reference was captured
-          // in motor space, so it must come off before the sign is applied.
-          state.position[index] =
-            openarm_ik_ros::real::joint_scale(side, joint) *
+          // apply this arm's direction sign. Order matters -- the reference was
+          // captured in motor space, so it must come off before the sign.
+          //
+          // The sign is operator-set, not derived. The virtual manifest's
+          // q_scale was tried and did not match this hardware, which is not
+          // surprising: that manifest carries a uniform 0.125 q_offset for
+          // every joint, so its per-joint values are placeholders rather than
+          // measurements. Nothing on the bus reports mounting orientation
+          // either. So this is settled by looking at the robot and pressing a
+          // button, and the result is persisted.
+          state.position[index] = arm_sign_[side] *
             (readings[bus].position_rad[joint] - zero_offset_[side][joint]);
-            state.velocity[index] = openarm_ik_ros::real::joint_scale(side, joint) *
-            readings[bus].velocity_rad_s[joint];
-          state.effort[index] = openarm_ik_ros::real::joint_scale(side, joint) *
-            readings[bus].torque_nm[joint];
+            state.velocity[index] = arm_sign_[side] * readings[bus].velocity_rad_s[joint];
+          state.effort[index] = arm_sign_[side] * readings[bus].torque_nm[joint];
         }
         if (readings[bus].has_gripper) {
           const double metres = gripper_metres(bus, readings[bus].gripper_rad);
@@ -375,6 +401,7 @@ private:
       }
       file << '\n';
     }
+    file << arm_sign_[0] << ' ' << arm_sign_[1] << '\n';
   }
 
   void load_zero()
@@ -391,10 +418,20 @@ private:
         }
       }
     }
+    // Signs were added after the first release of this file, so a file without
+    // them must still load rather than being discarded.
+    double left_sign = 1.0;
+    double right_sign = 1.0;
+    if (file >> left_sign >> right_sign) {
+      arm_sign_[0] = left_sign < 0.0 ? -1.0 : 1.0;
+      arm_sign_[1] = right_sign < 0.0 ? -1.0 : 1.0;
+    }
     RCLCPP_INFO(get_logger(), "loaded a saved zero from %s", zero_path_.c_str());
   }
 
   std::array<std::array<double, 7>, 2> zero_offset_{};
+  /// Direction of each arm, +1 or -1, applied to every joint on that arm.
+  std::array<double, 2> arm_sign_{1.0, 1.0};
   std::string zero_path_;
   bool invert_gripper_{true};
   bool capture_zero_on_connect_{true};
@@ -416,6 +453,7 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_zero_service_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr startup_timer_;
+  std::vector<rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr> flip_services_;
   unsigned consecutive_failures_{0};
   unsigned status_divider_{0};
 };

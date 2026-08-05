@@ -365,6 +365,8 @@ public:
       real_swap_ = create_client<std_srvs::srv::Trigger>("/openarm_real/swap_sides");
       real_capture_zero_ = create_client<std_srvs::srv::Trigger>("/openarm_real/capture_zero");
       real_clear_zero_ = create_client<std_srvs::srv::Trigger>("/openarm_real/clear_zero");
+      real_flip_left_ = create_client<std_srvs::srv::Trigger>("/openarm_real/flip_left");
+      real_flip_right_ = create_client<std_srvs::srv::Trigger>("/openarm_real/flip_right");
       real_status_subscription_ = create_subscription<std_msgs::msg::String>(
         "/openarm_real/status",
         rclcpp::QoS(1).reliable().transient_local(),
@@ -402,7 +404,9 @@ public:
     const auto client = which == "connect" ? real_connect_ :
       (which == "disconnect" ? real_disconnect_ :
       (which == "swap" ? real_swap_ :
-      (which == "capture-zero" ? real_capture_zero_ : real_clear_zero_)));
+      (which == "capture-zero" ? real_capture_zero_ :
+      (which == "clear-zero" ? real_clear_zero_ :
+      (which == "flip-left" ? real_flip_left_ : real_flip_right_)))));
     if (!client) {
       out_message = "portal is not in real mode";
       return false;
@@ -827,6 +831,8 @@ private:
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_swap_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_capture_zero_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_clear_zero_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_flip_left_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_flip_right_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr real_status_subscription_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostic_subscription_;
 };
@@ -1361,7 +1367,8 @@ private:
       target != "/api/estop/release" && target != "/api/v3/move-both" &&
       target != "/api/real/connect" && target != "/api/real/disconnect" &&
       target != "/api/real/swap" && target != "/api/rviz/input" &&
-      target != "/api/real/capture-zero" && target != "/api/real/clear-zero"))
+      target != "/api/real/capture-zero" && target != "/api/real/clear-zero" &&
+      target != "/api/real/flip-left" && target != "/api/real/flip-right"))
     {
       write_json(stream, http::status::not_found, "{\"error\":\"route not found\"}");
       return;
@@ -1418,7 +1425,8 @@ private:
     }
     if (target == "/api/real/connect" || target == "/api/real/disconnect" ||
       target == "/api/real/swap" || target == "/api/real/capture-zero" ||
-      target == "/api/real/clear-zero")
+      target == "/api/real/clear-zero" || target == "/api/real/flip-left" ||
+      target == "/api/real/flip-right")
     {
       if (!node_->real_mode()) {
         write_json(stream, http::status::not_found,
@@ -1429,7 +1437,9 @@ private:
       const std::string which = target == "/api/real/connect" ? "connect" :
         (target == "/api/real/disconnect" ? "disconnect" :
         (target == "/api/real/swap" ? "swap" :
-        (target == "/api/real/capture-zero" ? "capture-zero" : "clear-zero")));
+        (target == "/api/real/capture-zero" ? "capture-zero" :
+        (target == "/api/real/clear-zero" ? "clear-zero" :
+        (target == "/api/real/flip-left" ? "flip-left" : "flip-right")))));
       const bool ok = node_->real_command(which, message);
       // On failure the page's shared post() helper reads "error", so emit both
       // rather than leaving it to report a generic "request rejected".
