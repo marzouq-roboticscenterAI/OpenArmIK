@@ -375,5 +375,99 @@
     window.setInterval(pollRealStatus, 1000);
   }
   renderPresets('left'); renderPresets('right'); renderDemoPresets(); renderDemoSequences(); updateUnitText(); updateMotionLimit(); syncUnitRadios(); state(); window.setInterval(state, 250);
+  // Mouse-driven RViz. The stream is one-way pixels, so orbiting works by
+  // replaying pointer events back into the real RViz window server-side.
+  function initRvizInput() {
+    const image = $('rviz-stream');
+    if (!image) return;
+    let dragging = 0;
+    let pending = null;
+    let inFlight = false;
+
+    // object-fit:contain letterboxes the frame inside the element, so the
+    // element box is not the picture. Map through the drawn content rectangle
+    // or every coordinate is offset and scaled wrongly.
+    function normalise(event) {
+      const box = image.getBoundingClientRect();
+      const naturalW = image.naturalWidth || box.width;
+      const naturalH = image.naturalHeight || box.height;
+      const scale = Math.min(box.width / naturalW, box.height / naturalH);
+      const drawnW = naturalW * scale;
+      const drawnH = naturalH * scale;
+      const originX = box.left + (box.width - drawnW) / 2;
+      const originY = box.top + (box.height - drawnH) / 2;
+      return {
+        x: Math.min(1, Math.max(0, (event.clientX - originX) / drawnW)),
+        y: Math.min(1, Math.max(0, (event.clientY - originY) / drawnH)),
+      };
+    }
+
+    // One request in flight at a time, keeping only the newest move. A drag
+    // generates events far faster than the round trip, and queueing them all
+    // would make the view lag seconds behind the cursor.
+    async function flush() {
+      if (inFlight || !pending) return;
+      const body = pending;
+      pending = null;
+      inFlight = true;
+      try {
+        const response = await fetch('/api/rviz/input', {
+          method: 'POST', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+          const value = await response.json().catch(() => ({}));
+          if (value.error) $('status').textContent = value.error;
+        }
+      } catch (_) { /* dropped frame of input; the next event supersedes it */ }
+      inFlight = false;
+      if (pending) flush();
+    }
+    function send(body, coalesce) {
+      // Presses and releases must never be dropped or reordered, or RViz is
+      // left believing a button is still held.
+      if (coalesce) {pending = body; flush(); return;}
+      const previous = pending;
+      pending = body;
+      if (previous && previous.kind === 'move') { /* superseded, fine */ }
+      flush();
+    }
+
+    image.addEventListener('pointerdown', event => {
+      const point = normalise(event);
+      dragging = event.button + 1;
+      image.classList.add('dragging');
+      image.setPointerCapture(event.pointerId);
+      send({kind: 'press', x: point.x, y: point.y, button: dragging}, false);
+      event.preventDefault();
+    });
+    image.addEventListener('pointermove', event => {
+      if (!dragging) return;
+      const point = normalise(event);
+      send({kind: 'move', x: point.x, y: point.y, button: dragging}, true);
+      event.preventDefault();
+    });
+    const endDrag = event => {
+      if (!dragging) return;
+      const point = normalise(event);
+      send({kind: 'release', x: point.x, y: point.y, button: dragging}, false);
+      dragging = 0;
+      image.classList.remove('dragging');
+      event.preventDefault();
+    };
+    image.addEventListener('pointerup', endDrag);
+    image.addEventListener('pointercancel', endDrag);
+    image.addEventListener('wheel', event => {
+      const point = normalise(event);
+      send({kind: 'wheel', x: point.x, y: point.y,
+            notches: event.deltaY < 0 ? 1 : -1}, false);
+      event.preventDefault();
+    }, {passive: false});
+    // RViz uses right-drag to zoom, so the browser menu has to stay out of it.
+    image.addEventListener('contextmenu', event => event.preventDefault());
+  }
+
   initRealMode();
+  initRvizInput();
 })();

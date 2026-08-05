@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Bring up the two OpenArm CAN-FD interfaces. Requires root.
 #
-#   sudo ./scripts/setup_can_interfaces.sh            # bring up
-#   sudo ./scripts/setup_can_interfaces.sh --down     # take down
-#   ./scripts/setup_can_interfaces.sh --status        # inspect, no root needed
+#   ./scripts/setup_can_interfaces.sh            # bring up (prompts for sudo)
+#   ./scripts/setup_can_interfaces.sh --down     # take down (prompts for sudo)
+#   ./scripts/setup_can_interfaces.sh --status   # inspect, no root needed
 #
 # This is the only privileged step. run-real.sh runs entirely unprivileged and
 # refuses to start unless the interfaces are already up, so nothing that talks
@@ -50,9 +50,16 @@ if [[ "$action" == status ]]; then
   exit 0
 fi
 
+# Re-exec under sudo rather than making the caller remember. This happens after
+# argument parsing so --status and --help stay unprivileged, and it is an exec
+# so there is no lingering parent and the exit status is the real one.
 if [[ ${EUID} -ne 0 ]]; then
-  printf 'This script must run as root: sudo %s %s\n' "$0" "$*" >&2
-  exit 1
+  command -v sudo >/dev/null 2>&1 || {
+    printf 'Needs root and sudo is not installed. Re-run as root.\n' >&2
+    exit 1
+  }
+  printf 'Elevating with sudo to configure the CAN interfaces...\n'
+  exec sudo -- "$0" "$@"
 fi
 
 for interface in "${interfaces[@]}"; do

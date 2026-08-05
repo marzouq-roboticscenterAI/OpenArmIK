@@ -135,13 +135,15 @@ target_link_libraries(openarm_portal_core PUBLIC openarm_model::openarm_model)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(XCOMPOSITE REQUIRED IMPORTED_TARGET xcomposite)
 pkg_check_modules(LIBJPEG REQUIRED IMPORTED_TARGET libjpeg)
+# XTEST drives the real X pointer; it is how the browser view orbits RViz.
+pkg_check_modules(XTST REQUIRED IMPORTED_TARGET xtst)
 
 add_library(openarm_rviz_capture STATIC src/rviz_capture.cpp)
 target_include_directories(openarm_rviz_capture PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_compile_options(openarm_rviz_capture PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_rviz_capture PUBLIC
-  X11::X11 PkgConfig::XCOMPOSITE PkgConfig::LIBJPEG)
+  X11::X11 PkgConfig::XCOMPOSITE PkgConfig::LIBJPEG PkgConfig::XTST)
 
 add_executable(openarm_portal src/openarm_portal.cpp)
 add_dependencies(openarm_portal openarm_viewer_assets openarm_viewer_integrity)

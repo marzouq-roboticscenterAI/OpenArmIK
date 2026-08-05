@@ -52,6 +52,33 @@ public:
   // caller should keep serving the previous frame rather than tearing down.
   bool grab(std::vector<unsigned char> & jpeg, int quality);
 
+  /// A pointer event to replay into the RViz window, in coordinates normalised
+  /// to the cropped render area: (0,0) top-left, (1,1) bottom-right.
+  struct PointerEvent
+  {
+    enum class Kind {move, press, release, wheel};
+    Kind kind{Kind::move};
+    double x{0.0};
+    double y{0.0};
+    /// X button number for press/release: 1 left, 2 middle, 3 right.
+    int button{1};
+    /// Wheel notches; positive scrolls up (button 4), negative down (button 5).
+    int notches{0};
+  };
+
+  /// Replay a pointer event into the RViz window so the browser view can be
+  /// orbited, panned and zoomed.
+  ///
+  /// This uses the XTEST extension, which drives the real X pointer rather than
+  /// delivering a synthetic event to one window. Two consequences the caller
+  /// must live with: the on-screen cursor visibly moves during a drag, and
+  /// whatever window happens to be topmost at the target point would receive
+  /// the click. The second is a hazard, not a cosmetic issue -- a click could
+  /// land in an unrelated application -- so this refuses to inject unless the
+  /// topmost window at the target point really is the RViz window. Returns
+  /// false and sets out_reason when it declines.
+  bool inject_pointer(const PointerEvent & event, std::string & out_reason);
+
   Status status() const;
 
 private:

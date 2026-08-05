@@ -33,6 +33,7 @@
 #include <std_srvs/srv/trigger.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -161,9 +162,17 @@ private:
     state.header.stamp = now();
     const auto & names = openarm_ik_ros::real::canonical_joint_names();
     state.name.assign(names.begin(), names.end());
-    state.position.assign(names.size(), 0.0);
-    state.velocity.assign(names.size(), 0.0);
-    state.effort.assign(names.size(), 0.0);
+    // The gripper motor drives prismatic finger joints that are not part of the
+    // 14-joint arm manifest, so they are appended here rather than baked into
+    // the manifest, which describes the arm.
+    for (const char * finger : {"openarm_left_finger_joint1", "openarm_left_finger_joint2",
+        "openarm_right_finger_joint1", "openarm_right_finger_joint2"})
+    {
+      state.name.emplace_back(finger);
+    }
+    state.position.assign(state.name.size(), 0.0);
+    state.velocity.assign(state.name.size(), 0.0);
+    state.effort.assign(state.name.size(), 0.0);
     if (usable) {
       for (std::size_t bus = 0; bus < 2U; ++bus) {
         if (!readings[bus].complete) {
@@ -176,10 +185,58 @@ private:
           state.velocity[index] = readings[bus].velocity_rad_s[joint];
           state.effort[index] = readings[bus].torque_nm[joint];
         }
+        if (readings[bus].has_gripper) {
+          const double metres = gripper_metres(bus, readings[bus].gripper_rad);
+          const std::size_t base = names.size() + (side == 0U ? 0U : 2U);
+          state.position[base] = metres;
+          state.position[base + 1U] = metres;
+        }
       }
     }
     joint_publisher_->publish(std::move(state));
   }
+
+  /// Map the gripper motor angle onto the finger joints' 0..0.044 m travel.
+  ///
+  /// The conversion factor is not known: nothing has commissioned the gripper's
+  /// zero or its gear ratio, and the motor angle alone does not say how far the
+  /// jaws are apart. So this self-calibrates on the range it has actually seen
+  /// since connecting -- open and close the claw once and it tracks correctly
+  /// from then on.
+  ///
+  /// The consequence to understand: before a full open-close cycle the reading
+  /// is relative, so a half-open claw will render fully open simply because
+  /// that is the widest position observed so far. It is a faithful indicator of
+  /// movement, not yet a calibrated measurement.
+  double gripper_metres(const std::size_t bus, const double angle)
+  {
+    auto & span = gripper_span_[bus];
+    if (!span.seen) {
+      span.seen = true;
+      span.minimum = angle;
+      span.maximum = angle;
+    }
+    span.minimum = std::min(span.minimum, angle);
+    span.maximum = std::max(span.maximum, angle);
+    constexpr double kFingerTravelM = 0.044;
+    // Until the jaws have actually been moved there is no span to scale
+    // against; reporting closed is better than dividing by ~0 and jumping.
+    constexpr double kMinimumUsableSpanRad = 0.05;
+    const double span_rad = span.maximum - span.minimum;
+    if (span_rad < kMinimumUsableSpanRad) {
+      return 0.0;
+    }
+    const double fraction = (angle - span.minimum) / span_rad;
+    return std::max(0.0, std::min(kFingerTravelM, fraction * kFingerTravelM));
+  }
+
+  struct GripperSpan
+  {
+    bool seen{false};
+    double minimum{0.0};
+    double maximum{0.0};
+  };
+  std::array<GripperSpan, 2> gripper_span_{};
 
   void publish_status()
   {

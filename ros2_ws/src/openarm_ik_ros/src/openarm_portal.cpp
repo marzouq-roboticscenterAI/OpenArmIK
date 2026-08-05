@@ -1032,6 +1032,100 @@ private:
     }
   }
 
+  struct PointerInput
+  {
+    RvizCapture::PointerEvent::Kind kind{RvizCapture::PointerEvent::Kind::move};
+    double x{0.0};
+    double y{0.0};
+    int button{1};
+    int notches{0};
+  };
+
+  // Pointer events arrive at drag rate, so this stays deliberately small: find
+  // the field, read the number. Anything unparseable is rejected rather than
+  // defaulted, so a malformed body cannot silently inject a click at (0,0).
+  static bool parse_pointer_input(const std::string & body, PointerInput & out)
+  {
+    const auto text_field = [&body](const char * name, std::string & value) {
+        const std::string key = std::string("\"") + name + "\"";
+        const auto at = body.find(key);
+        if (at == std::string::npos) {
+          return false;
+        }
+        const auto open = body.find('"', body.find(':', at + key.size()));
+        if (open == std::string::npos) {
+          return false;
+        }
+        const auto close = body.find('"', open + 1);
+        if (close == std::string::npos) {
+          return false;
+        }
+        value = body.substr(open + 1, close - open - 1);
+        return true;
+      };
+    const auto number_field = [&body](const char * name, double & value) {
+        const std::string key = std::string("\"") + name + "\"";
+        const auto at = body.find(key);
+        if (at == std::string::npos) {
+          return false;
+        }
+        const auto colon = body.find(':', at + key.size());
+        if (colon == std::string::npos) {
+          return false;
+        }
+        try {
+          std::size_t consumed = 0;
+          value = std::stod(body.substr(colon + 1), &consumed);
+          return consumed > 0;
+        } catch (...) {
+          return false;
+        }
+      };
+
+    std::string kind;
+    if (!text_field("kind", kind)) {
+      return false;
+    }
+    if (kind == "move") {
+      out.kind = RvizCapture::PointerEvent::Kind::move;
+    } else if (kind == "press") {
+      out.kind = RvizCapture::PointerEvent::Kind::press;
+    } else if (kind == "release") {
+      out.kind = RvizCapture::PointerEvent::Kind::release;
+    } else if (kind == "wheel") {
+      out.kind = RvizCapture::PointerEvent::Kind::wheel;
+    } else {
+      return false;
+    }
+
+    if (!number_field("x", out.x) || !number_field("y", out.y)) {
+      return false;
+    }
+    if (!std::isfinite(out.x) || !std::isfinite(out.y)) {
+      return false;
+    }
+
+    double button = 1.0;
+    if (number_field("button", button)) {
+      const int value = static_cast<int>(button);
+      // Only the three real buttons. Never 4 or 5 from this field: the wheel
+      // has its own event kind, and accepting them here would let a crafted
+      // body scroll through a "press".
+      if (value < 1 || value > 3) {
+        return false;
+      }
+      out.button = value;
+    }
+    double notches = 0.0;
+    if (number_field("notches", notches)) {
+      out.notches = std::max(-10, std::min(10, static_cast<int>(notches)));
+    }
+    if (out.kind == RvizCapture::PointerEvent::Kind::wheel && out.notches == 0) {
+      return false;
+    }
+    return true;
+  }
+
   void dispatch_urgent(beast::tcp_stream stream, Request request)
   {
     if (urgent_admitted_.fetch_add(1) >= kMaximumUrgent) {
@@ -1181,6 +1275,8 @@ private:
       (target == "/" || (assets_.ready() && assets_.find(target) != nullptr));
     if (static_route) {
       dispatch_static(std::move(stream), std::move(request));
+    } else if (request.method() == http::verb::post && target == "/api/rviz/input") {
+      dispatch_urgent(std::move(stream), std::move(request));
     } else if (request.method() == http::verb::get && target == "/api/rviz/stream") {
       dispatch_stream(std::move(stream), std::move(request));
     } else if (request.method() == http::verb::post &&
@@ -1258,7 +1354,7 @@ private:
       target != "/api/stop" && target != "/api/verify" && target != "/api/estop" &&
       target != "/api/estop/release" && target != "/api/v3/move-both" &&
       target != "/api/real/connect" && target != "/api/real/disconnect" &&
-      target != "/api/real/swap"))
+      target != "/api/real/swap" && target != "/api/rviz/input"))
     {
       write_json(stream, http::status::not_found, "{\"error\":\"route not found\"}");
       return;
@@ -1287,6 +1383,30 @@ private:
     if (!policy_.validate(headers, reason)) {
       write_json(stream, http::status::forbidden,
         "{\"error\":\"" + json_escape(reason) + "\"}");
+      return;
+    }
+    if (target == "/api/rviz/input") {
+      PointerInput input;
+      if (!parse_pointer_input(request.body(), input)) {
+        write_json(stream, http::status::bad_request,
+          "{\"error\":\"malformed pointer event\"}");
+        return;
+      }
+      RvizCapture::PointerEvent event;
+      event.kind = input.kind;
+      event.x = input.x;
+      event.y = input.y;
+      event.button = input.button;
+      event.notches = input.notches;
+      std::string reason;
+      bool ok = false;
+      {
+        std::lock_guard<std::mutex> lock(capture_mutex_);
+        ok = capture_.inject_pointer(event, reason);
+      }
+      write_json(stream, ok ? http::status::ok : http::status::conflict,
+        ok ? std::string("{\"ok\":true}") :
+        "{\"ok\":false,\"error\":\"" + json_escape(reason) + "\"}");
       return;
     }
     if (target == "/api/real/connect" || target == "/api/real/disconnect" ||

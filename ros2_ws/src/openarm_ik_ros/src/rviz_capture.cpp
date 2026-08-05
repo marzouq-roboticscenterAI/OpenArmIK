@@ -5,6 +5,9 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/Xcomposite.h>
+#include <X11/extensions/XTest.h>
+
+#include <cstdlib>
 
 // Xlib defines Status as a bare `int` macro, which would rewrite every mention
 // of RvizCapture::Status below. Nothing here uses Xlib's Status return type.
@@ -70,6 +73,7 @@ public:
   int height{0};
   // Crop rectangle inside the top-level, taken from the render child so the Qt
   // chrome is excluded.
+  Window render_child{0};
   int crop_x{0};
   int crop_y{0};
   int crop_width{0};
@@ -141,6 +145,98 @@ public:
     return found;
   }
 
+  enum class InputMode {send_event, xtest};
+
+  // How pointer input reaches RViz.
+  //
+  // send_event is the default because of how this is actually used: the
+  // operator is looking at the browser, so the browser is stacked above the
+  // RViz window, and XTEST -- which clicks wherever the shared pointer is --
+  // would either be refused by the safety gate or land the click in the
+  // browser. XSendEvent addresses the render widget by window ID, so it works
+  // while RViz is completely covered and never moves the operator's cursor.
+  //
+  // The tradeoff is that a toolkit may ignore events carrying send_event=True.
+  // Qt's XCB backend does dispatch synthetic button and motion events, so this
+  // is expected to work, but OPENARM_RVIZ_INPUT=xtest is available if a given
+  // build of RViz turns out to discard them.
+  InputMode input_mode{
+    []() {
+      const char * choice = std::getenv("OPENARM_RVIZ_INPUT");
+      return (choice != nullptr && std::string(choice) == "xtest") ?
+             InputMode::xtest : InputMode::send_event;
+    }()};
+
+  // Buttons currently held, in X modifier-mask form. Motion events must carry
+  // this or the widget sees a hover rather than a drag and the view never
+  // rotates.
+  unsigned button_state{0};
+
+  void send_synthetic(
+    const RvizCapture::PointerEvent::Kind kind, const unsigned button,
+    const int local_x, const int local_y, const int root_x, const int root_y)
+  {
+    const Window target = render_child != 0 ? render_child : window;
+    // Coordinates are relative to the target window. The crop offsets are
+    // measured from the top-level, so subtract them when addressing the child.
+    const int target_x = render_child != 0 ? local_x - crop_x : local_x;
+    const int target_y = render_child != 0 ? local_y - crop_y : local_y;
+    const unsigned mask_for = button == 1U ? Button1Mask :
+      (button == 2U ? Button2Mask : (button == 3U ? Button3Mask : 0U));
+
+    XEvent event;
+    std::memset(&event, 0, sizeof(event));
+    long select_mask = 0;
+    if (kind == RvizCapture::PointerEvent::Kind::move) {
+      event.type = MotionNotify;
+      event.xmotion.display = display;
+      event.xmotion.window = target;
+      event.xmotion.root = DefaultRootWindow(display);
+      event.xmotion.subwindow = None;
+      event.xmotion.time = CurrentTime;
+      event.xmotion.x = target_x;
+      event.xmotion.y = target_y;
+      event.xmotion.x_root = root_x;
+      event.xmotion.y_root = root_y;
+      event.xmotion.state = button_state;
+      event.xmotion.is_hint = NotifyNormal;
+      event.xmotion.same_screen = True;
+      select_mask = button_state != 0U ? ButtonMotionMask : PointerMotionMask;
+    } else {
+      const bool pressing = kind == RvizCapture::PointerEvent::Kind::press ||
+        kind == RvizCapture::PointerEvent::Kind::wheel;
+      event.type = pressing ? ButtonPress : ButtonRelease;
+      event.xbutton.display = display;
+      event.xbutton.window = target;
+      event.xbutton.root = DefaultRootWindow(display);
+      event.xbutton.subwindow = None;
+      event.xbutton.time = CurrentTime;
+      event.xbutton.x = target_x;
+      event.xbutton.y = target_y;
+      event.xbutton.x_root = root_x;
+      event.xbutton.y_root = root_y;
+      event.xbutton.button = button;
+      // The state field describes the buttons held *before* this event, which
+      // is why it is updated after the send rather than before.
+      event.xbutton.state = button_state;
+      event.xbutton.same_screen = True;
+      select_mask = pressing ? ButtonPressMask : ButtonReleaseMask;
+    }
+    XSendEvent(display, target, True, select_mask, &event);
+
+    if (kind == RvizCapture::PointerEvent::Kind::press) {
+      button_state |= mask_for;
+    } else if (kind == RvizCapture::PointerEvent::Kind::release) {
+      button_state &= ~mask_for;
+    } else if (kind == RvizCapture::PointerEvent::Kind::wheel) {
+      // A wheel notch is a press/release pair; emit the matching release so no
+      // phantom button is left held.
+      XEvent release = event;
+      release.type = ButtonRelease;
+      XSendEvent(display, target, True, ButtonReleaseMask, &release);
+    }
+  }
+
   // The largest same-class child is the Ogre render widget. Its geometry is the
   // crop rectangle; if there is no such child the whole window is used.
   void compute_crop()
@@ -149,6 +245,7 @@ public:
     crop_y = 0;
     crop_width = width;
     crop_height = height;
+    render_child = 0;
     Window returned_root = 0;
     Window parent = 0;
     Window * children = nullptr;
@@ -164,6 +261,7 @@ public:
       const long area = static_cast<long>(attributes.width) * attributes.height;
       if (area <= best_area) {continue;}
       best_area = area;
+      render_child = children[index];
       crop_x = attributes.x;
       crop_y = attributes.y;
       crop_width = attributes.width;
@@ -358,6 +456,115 @@ bool RvizCapture::grab(std::vector<unsigned char> & jpeg, const int quality)
 
   ++impl_->frames;
   impl_->detail = "streaming";
+  return true;
+}
+
+bool RvizCapture::inject_pointer(const PointerEvent & event, std::string & out_reason)
+{
+  if (!connect() || !locate()) {
+    out_reason = "no rviz2 window is available";
+    return false;
+  }
+
+  int test_event_base = 0;
+  int test_error_base = 0;
+  int test_major = 0;
+  int test_minor = 0;
+  if (!XTestQueryExtension(
+      impl_->display, &test_event_base, &test_error_base, &test_major, &test_minor))
+  {
+    out_reason = "the X server has no XTEST extension, so the view cannot be driven";
+    return false;
+  }
+
+  // Clamp rather than reject: a drag that leaves the frame should keep orbiting
+  // at the edge, which is what every 3D viewer does.
+  const double nx = std::max(0.0, std::min(1.0, event.x));
+  const double ny = std::max(0.0, std::min(1.0, event.y));
+  const int local_x = impl_->crop_x + static_cast<int>(nx * (impl_->crop_width - 1));
+  const int local_y = impl_->crop_y + static_cast<int>(ny * (impl_->crop_height - 1));
+
+  const Window root = DefaultRootWindow(impl_->display);
+  int root_x = 0;
+  int root_y = 0;
+  Window ignored_child = 0;
+  if (!XTranslateCoordinates(
+      impl_->display, impl_->window, root, local_x, local_y, &root_x, &root_y, &ignored_child))
+  {
+    out_reason = "the rviz2 window is on a different screen";
+    return false;
+  }
+
+  // The safety gate, and it applies only to XTEST. XTEST clicks wherever the
+  // pointer happens to be, so anything stacked above RViz would receive the
+  // click instead -- and in normal use the browser IS stacked above RViz,
+  // which is why send_event is the default. XSendEvent addresses a window by
+  // ID, so obscuring is irrelevant to it and the gate is skipped.
+  if (impl_->input_mode == Impl::InputMode::xtest) {
+  int discard_x = 0;
+  int discard_y = 0;
+  Window topmost = 0;
+  XTranslateCoordinates(
+    impl_->display, root, root, root_x, root_y, &discard_x, &discard_y, &topmost);
+  if (topmost != 0 && topmost != impl_->window) {
+    // impl_->window may be a child of the reparenting window manager's frame,
+    // so walk up from it and accept any ancestor match before giving up.
+    bool related = false;
+    Window walk = impl_->window;
+    for (int depth = 0; depth < 8 && walk != 0 && walk != root; ++depth) {
+      if (walk == topmost) {
+        related = true;
+        break;
+      }
+      Window parent = 0;
+      Window query_root = 0;
+      Window * children = nullptr;
+      unsigned count = 0;
+      if (!XQueryTree(impl_->display, walk, &query_root, &parent, &children, &count)) {
+        break;
+      }
+      if (children != nullptr) {
+        XFree(children);
+      }
+      walk = parent;
+    }
+    if (!related) {
+      out_reason =
+        "another window is stacked over the RViz view, so input was not injected; "
+        "raise or unobscure the RViz window, or unset OPENARM_RVIZ_INPUT to use "
+        "the default windowed input path";
+      return false;
+    }
+    }
+  }
+
+  const unsigned button = event.kind == PointerEvent::Kind::wheel ?
+    (event.notches > 0 ? 4U : 5U) : static_cast<unsigned>(event.button);
+  const int repeats = event.kind == PointerEvent::Kind::wheel ?
+    std::min(10, std::abs(event.notches)) : 1;
+
+  for (int repeat = 0; repeat < repeats; ++repeat) {
+    switch (impl_->input_mode) {
+      case Impl::InputMode::send_event:
+        impl_->send_synthetic(event.kind, button, local_x, local_y, root_x, root_y);
+        break;
+      case Impl::InputMode::xtest:
+        XTestFakeMotionEvent(impl_->display, -1, root_x, root_y, CurrentTime);
+        if (event.kind == PointerEvent::Kind::press ||
+          event.kind == PointerEvent::Kind::wheel)
+        {
+          XTestFakeButtonEvent(impl_->display, button, True, CurrentTime);
+        }
+        if (event.kind == PointerEvent::Kind::release ||
+          event.kind == PointerEvent::Kind::wheel)
+        {
+          XTestFakeButtonEvent(impl_->display, button, False, CurrentTime);
+        }
+        break;
+    }
+  }
+  XFlush(impl_->display);
+  out_reason.clear();
   return true;
 }
 

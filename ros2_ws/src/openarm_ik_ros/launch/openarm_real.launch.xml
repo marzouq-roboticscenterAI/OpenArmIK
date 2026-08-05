@@ -26,8 +26,13 @@
 
   <node pkg="robot_state_publisher" exec="robot_state_publisher"
         name="robot_state_publisher" output="screen">
+    <!-- The full URDF, not the Stage-A visualization one. Stage-A deliberately
+         welds the finger joints to fixed because the virtual stack has no
+         gripper control, and a fixed joint cannot move no matter what is
+         published, so the claws would never open on screen. The full model
+         keeps them prismatic. -->
     <param name="robot_description" type="str"
-           value="$(command 'cat $(find-pkg-share openarm_ik_ros)/urdf/openarm_v10_bimanual_stage_a_visualization.urdf')"/>
+           value="$(command 'cat $(find-pkg-share openarm_ik_ros)/urdf/openarm_v10_bimanual.urdf')"/>
   </node>
 
   <node pkg="openarm_ik_ros" exec="openarm_real_observer"
