@@ -338,12 +338,23 @@ if ((open_browser)); then
     printf 'Browser executable not found: %s\n' "$browser_command" >&2
     exit 1
   }
+  # Background it. Without the &, exec replaces the subshell with the browser
+  # and this script blocks until the browser exits, so the launcher appears to
+  # hang and never reaches its wait. Firefox only returns promptly when an
+  # instance is already running, which made this look intermittent.
   (
     exec 9>&-
     openarm_close_shared_lock_fds
     exec "$browser_command" "$url"
-  ) >/dev/null 2>&1 || \
-      printf 'Could not open a browser automatically; visit %s\n' "$url" >&2
+  ) >/dev/null 2>&1 &
+  browser_pid=$!
+  # A browser that dies immediately is worth reporting; one that keeps running
+  # is the normal case and must not be waited on.
+  sleep 1
+  if ! kill -0 "$browser_pid" 2>/dev/null; then
+    wait "$browser_pid" 2>/dev/null || \
+      printf 'The browser exited immediately; open %s manually.\n' "$url" >&2
+  fi
 fi
 
 set +e

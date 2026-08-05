@@ -314,8 +314,29 @@
     return bus.interface + ': ' + bus.motor_count + ' motors as the ' + bus.side +
       ' arm [' + ids + ']';
   }
+  function setRealOverlay(text) {
+    const frame = document.querySelector('.viewer .frame');
+    if (!frame) return;
+    let overlay = document.getElementById('real-overlay');
+    if (!text) {
+      if (overlay) overlay.remove();
+      return;
+    }
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'real-overlay';
+      overlay.className = 'viewer-overlay';
+      frame.appendChild(overlay);
+    }
+    overlay.textContent = text;
+  }
   function applyRealStatus(observer) {
     if (!observer) return;
+    // A motionless robot looks identical whether the stack is passive or the
+    // arms are simply still, so say which it is on the view itself.
+    setRealOverlay(!observer.connected ?
+      'PASSIVE \u2014 press Connect to read the arms' :
+      (!observer.resolved ? 'CONNECTED, but the arms are not identified' : ''));
     $('real-detail').textContent = observer.detail || '';
     $('real-connect').disabled = observer.connected;
     $('real-disconnect').disabled = !observer.connected;
@@ -372,6 +393,7 @@
       pollRealStatus();
     });
     applyRealStatus(status.observer);
+    $('real-connect').focus();
     window.setInterval(pollRealStatus, 1000);
   }
   renderPresets('left'); renderPresets('right'); renderDemoPresets(); renderDemoSequences(); updateUnitText(); updateMotionLimit(); syncUnitRadios(); state(); window.setInterval(state, 250);
