@@ -299,7 +299,9 @@
       '<h2>Physical arm</h2>' +
       '<p id="real-detail">Passive. Nothing has been sent to the CAN bus.</p>' +
       '<p><button id="real-connect" type="button">Connect</button> ' +
-      '<button id="real-disconnect" type="button" disabled>Disconnect</button></p>' +
+      '<button id="real-disconnect" type="button" disabled>Disconnect</button> ' +
+      '<button id="real-swap" type="button" disabled>Swap arms</button></p>' +
+      '<p id="real-confidence"></p>' +
       '<p id="real-inventory"></p>' +
       '<p class="notice">This build is read-only: it polls motor status and mirrors the ' +
       'measured pose in the 3D view. It cannot enable, zero, or move a motor.</p>';
@@ -317,6 +319,14 @@
     $('real-detail').textContent = observer.detail || '';
     $('real-connect').disabled = observer.connected;
     $('real-disconnect').disabled = !observer.connected;
+    $('real-swap').disabled = !observer.resolved;
+    // The angle heuristic has been measured getting a real arm backwards, so
+    // say so rather than presenting a guess as a determination.
+    $('real-confidence').textContent = !observer.resolved ? '' :
+      (observer.confidence === 'high' ?
+        'Arm assignment confirmed.' :
+        'Arm assignment is an UNVERIFIED GUESS. Move one arm by hand and watch which ' +
+        'side moves on screen. If it is the wrong side, press Swap arms.');
     $('real-inventory').textContent = (observer.buses || []).map(describeBus).join('  |  ');
   }
   async function pollRealStatus() {
@@ -348,6 +358,13 @@
       } catch (error) {
         $('real-detail').textContent = error.message;
       }
+      pollRealStatus();
+    });
+    $('real-swap').addEventListener('click', async () => {
+      try {
+        const result = await post('/api/real/swap');
+        $('real-detail').textContent = result.message;
+      } catch (error) {$('real-detail').textContent = error.message;}
       pollRealStatus();
     });
     $('real-disconnect').addEventListener('click', async () => {

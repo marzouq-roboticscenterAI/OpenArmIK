@@ -362,6 +362,7 @@ public:
       // observer and mirrors what the observer reports.
       real_connect_ = create_client<std_srvs::srv::Trigger>("/openarm_real/connect");
       real_disconnect_ = create_client<std_srvs::srv::Trigger>("/openarm_real/disconnect");
+      real_swap_ = create_client<std_srvs::srv::Trigger>("/openarm_real/swap_sides");
       real_status_subscription_ = create_subscription<std_msgs::msg::String>(
         "/openarm_real/status",
         rclcpp::QoS(1).reliable().transient_local(),
@@ -394,9 +395,10 @@ public:
   /// Relay to the observer's connect or disconnect service. Blocking, because
   /// a sweep of both buses takes hundreds of milliseconds and the operator is
   /// waiting on the answer; this runs on an HTTP worker, not the ROS thread.
-  bool real_command(const bool connect, std::string & out_message)
+  bool real_command(const std::string & which, std::string & out_message)
   {
-    const auto client = connect ? real_connect_ : real_disconnect_;
+    const auto client = which == "connect" ? real_connect_ :
+      (which == "disconnect" ? real_disconnect_ : real_swap_);
     if (!client) {
       out_message = "portal is not in real mode";
       return false;
@@ -818,6 +820,7 @@ private:
   std::string real_status_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_connect_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_disconnect_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_swap_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr real_status_subscription_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostic_subscription_;
 };
@@ -1254,7 +1257,8 @@ private:
       (target != "/api/move" && target != "/api/v2/move" && target != "/api/v3/move" &&
       target != "/api/stop" && target != "/api/verify" && target != "/api/estop" &&
       target != "/api/estop/release" && target != "/api/v3/move-both" &&
-      target != "/api/real/connect" && target != "/api/real/disconnect"))
+      target != "/api/real/connect" && target != "/api/real/disconnect" &&
+      target != "/api/real/swap"))
     {
       write_json(stream, http::status::not_found, "{\"error\":\"route not found\"}");
       return;
@@ -1285,14 +1289,18 @@ private:
         "{\"error\":\"" + json_escape(reason) + "\"}");
       return;
     }
-    if (target == "/api/real/connect" || target == "/api/real/disconnect") {
+    if (target == "/api/real/connect" || target == "/api/real/disconnect" ||
+      target == "/api/real/swap")
+    {
       if (!node_->real_mode()) {
         write_json(stream, http::status::not_found,
           "{\"error\":\"portal is not in real-arm mode\"}");
         return;
       }
       std::string message;
-      const bool ok = node_->real_command(target == "/api/real/connect", message);
+      const std::string which = target == "/api/real/connect" ? "connect" :
+        (target == "/api/real/disconnect" ? "disconnect" : "swap");
+      const bool ok = node_->real_command(which, message);
       // On failure the page's shared post() helper reads "error", so emit both
       // rather than leaving it to report a generic "request rejected".
       const std::string escaped = json_escape(message);

@@ -23,9 +23,12 @@ using openarm_ik_ros::real::kRightSide;
 
 using Pose = std::array<double, kJointsPerArm>;
 
-/// The pose actually measured on can1 from the connected arm, 2026-08-04.
+/// The pose actually measured on can1 from the connected arm, 2026-08-04. That
+/// bus is the RIGHT arm; this was confirmed physically by energizing a motor and
+/// watching which arm's LED turned green.
+///
 /// Joint 4 sits outside [0, 2.443] because the motor zeros are not commissioned
-/// to the URDF zeros; that is deliberate, and the test below pins the fact that
+/// to the URDF zeros; that is deliberate, and a test below pins the fact that
 /// it cancels out of the comparison rather than biasing it.
 constexpr Pose kMeasured{-1.0454, -0.9939, -0.1135, -0.9783, 0.2295, -0.1042, -0.0138};
 
@@ -39,15 +42,33 @@ Pose mirrored(const Pose & pose)
   return out;
 }
 
-TEST(RealObserverIdentification, MeasuredArmFitsTheLeftSide)
+TEST(RealObserverIdentification, TheHeuristicIsKnownToGetRealHardwareWrong)
 {
-  EXPECT_LT(joint_limit_misfit(kMeasured, kLeftSide), joint_limit_misfit(kMeasured, kRightSide));
+  // Ground truth, established by enabling a motor and looking at which arm's
+  // LED lit: the bus carrying this pose is the RIGHT arm. The scorer says left.
+  //
+  // This test pins the falsification rather than the answer. The heuristic is
+  // not broken arithmetic -- the checks below show it is exactly mirror
+  // symmetric -- it is being fed absolute angles from motors whose zeros are
+  // not commissioned to the URDF zeros, so the input carries no dependable side
+  // information. Applying the manifest's q_scale/q_offset/direction was tried
+  // and does not rescue it: every sign convention still answers "left".
+  //
+  // Hence the observer reports this as confidence "low" and the portal presents
+  // it as an unverified guess with a Swap arms control. If someone later makes
+  // this heuristic authoritative again, this test fails and says why.
+  EXPECT_LT(joint_limit_misfit(kMeasured, kLeftSide), joint_limit_misfit(kMeasured, kRightSide))
+    << "the scorer no longer prefers the left side for the measured pose; if the "
+       "input space changed (commissioned zeros, applied mapping), re-verify "
+       "against hardware before trusting the result";
 }
 
 TEST(RealObserverIdentification, MirroringTheSamePoseFlipsTheAnswer)
 {
-  // The load-bearing check. If this passed while the previous one also passed
-  // for a constant scorer, the scorer would have to be self-contradictory.
+  // Establishes that the scorer is directional rather than constant. Note what
+  // this does and does not buy: it proves the arithmetic responds to its input,
+  // not that the input means what we want. The scorer was directional and still
+  // got the real arm backwards.
   const Pose reflected = mirrored(kMeasured);
   EXPECT_GT(joint_limit_misfit(reflected, kLeftSide), joint_limit_misfit(reflected, kRightSide));
 }

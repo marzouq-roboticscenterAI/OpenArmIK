@@ -437,14 +437,17 @@ void RealObserver::identify_arms()
       assignment_.side_of_interface[0] = vote < 0 ? kLeftSide : kRightSide;
       assignment_.side_of_interface[1] = vote < 0 ? kRightSide : kLeftSide;
       assignment_.method = method;
+      assignment_.confidence = std::string(method) == "forced" ? "high" : "low";
       assignment_.reason = why;
     };
 
   if (limit_vote != 0) {
     adopt(limit_vote, "joint-limit-signature",
-      "identified from the mirrored joint-1/joint-2 limits in the measured pose. " +
-      evidence.str() + ". This holds only while the motor zeros agree with the URDF "
-      "zeros; if the arms appear swapped, set interface_a_side.");
+      "PROVISIONAL GUESS from the mirrored joint-1/joint-2 limits. " + evidence.str() +
+      ". Treat this as unverified: it depends on the motor zeros agreeing with the "
+      "URDF zeros, and on this hardware they do not, so the guess has been observed "
+      "to come out backwards. Confirm it by moving an arm and watching which side "
+      "moves on screen, then use Swap arms or set interface_a_side.");
   } else if (id_vote != 0) {
     adopt(id_vote, "motor-id-partition",
       "the measured pose was not decisive, so this falls back to the disjoint motor-ID "
@@ -534,6 +537,19 @@ bool RealObserver::read_once(std::array<BusReading, kBusCount> & out_readings)
   return all_complete && any_complete;
 }
 
+void RealObserver::swap_sides()
+{
+  std::swap(assignment_.side_of_interface[0], assignment_.side_of_interface[1]);
+  assignment_.resolved = true;
+  assignment_.method = "operator-confirmed";
+  assignment_.confidence = "high";
+  assignment_.reason = "assignment set by the operator: " + config_.interfaces[0] + " is the " +
+    (assignment_.side_of_interface[0] == kLeftSide ? "left" : "right") + " arm and " +
+    config_.interfaces[1] + " is the " +
+    (assignment_.side_of_interface[1] == kLeftSide ? "left" : "right") + " arm.";
+  detail_ = assignment_.reason;
+}
+
 std::string RealObserver::status_json() const
 {
   std::ostringstream out;
@@ -541,6 +557,7 @@ std::string RealObserver::status_json() const
       << ",\"detail\":" << quote(detail_)
       << ",\"resolved\":" << (assignment_.resolved ? "true" : "false")
       << ",\"method\":" << quote(assignment_.method)
+      << ",\"confidence\":" << quote(assignment_.confidence)
       << ",\"reason\":" << quote(assignment_.reason)
       << ",\"buses\":[";
   for (std::size_t bus = 0; bus < kBusCount; ++bus) {

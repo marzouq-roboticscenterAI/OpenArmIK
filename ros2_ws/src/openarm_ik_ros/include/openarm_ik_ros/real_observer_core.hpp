@@ -77,8 +77,13 @@ struct ArmAssignment
   /// side_of_interface[bus] is kLeftSide or kRightSide.
   std::array<std::size_t, kBusCount> side_of_interface{kLeftSide, kRightSide};
   /// How it was decided: "forced", "motor-id-partition", "joint-limit-signature",
-  /// "both-methods-agree", or empty when unresolved.
+  /// "operator-confirmed", or empty when unresolved.
   std::string method;
+  /// "high" only when a human or an explicit parameter settled it. The angle
+  /// heuristic is "low" and must be presented as provisional: it was measured
+  /// getting a real arm backwards, because the motor zeros are uncommissioned
+  /// and absolute angles therefore carry no dependable side information.
+  std::string confidence{"none"};
   std::string reason;
 };
 
@@ -110,6 +115,10 @@ public:
   bool read_once(std::array<BusReading, kBusCount> & out_readings);
 
   ArmAssignment assignment() const {return assignment_;}
+
+  /// Flip which bus is the left arm and record that a human decided it. This
+  /// is the authoritative correction for the angle heuristic guessing wrong.
+  void swap_sides();
   const std::string & detail() const {return detail_;}
   const std::vector<MotorRecord> & discovered(std::size_t bus) const {return discovered_[bus];}
 

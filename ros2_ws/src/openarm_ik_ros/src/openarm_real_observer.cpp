@@ -98,6 +98,18 @@ public:
         RCLCPP_INFO(get_logger(), "disconnected");
       });
 
+    swap_service_ = create_service<std_srvs::srv::Trigger>(
+      "/openarm_real/swap_sides",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response)
+      {
+        observer_->swap_sides();
+        response->success = true;
+        response->message = observer_->assignment().reason;
+        publish_status();
+        RCLCPP_INFO(get_logger(), "%s", response->message.c_str());
+      });
+
     timer_ = create_wall_timer(10ms, [this]() {poll();});
     publish_status();
     RCLCPP_WARN(
@@ -181,6 +193,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_publisher_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr connect_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr disconnect_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr swap_service_;
   rclcpp::TimerBase::SharedPtr timer_;
   unsigned consecutive_failures_{0};
   unsigned status_divider_{0};
