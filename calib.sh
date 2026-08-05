@@ -62,10 +62,12 @@ openarm_sanitize_snap_environment
 
 "$root_dir/scripts/build.sh" --incremental --output-root "$root_dir/ros2_ws"
 
-# shellcheck disable=SC1091
-source /opt/ros/lyrical/setup.bash >/dev/null 2>&1 || true
-# shellcheck disable=SC1091
-source "$root_dir/ros2_ws/install/setup.bash" >/dev/null 2>&1 || true
+# Deliberately NOT sourcing the ROS setup files. This binary links GTK, json-c
+# and the static openarm_can and needs nothing from ROS, and sourcing them here
+# silently killed the script: those setup scripts reference unbound variables,
+# which under `set -u` aborts the shell before reaching the exec below. The
+# symptom was calib.sh completing its build and then simply never opening a
+# window, with no error printed.
 
 binary="$root_dir/ros2_ws/install/openarm_ik_ros/lib/openarm_ik_ros/openarm_calibrate_gui"
 [[ -x "$binary" ]] || {
