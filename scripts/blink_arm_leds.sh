@@ -61,6 +61,13 @@ if [[ "$(ip -br link show "$interface" | awk '{print $2}')" != UP ]]; then
   exit 1
 fi
 
+# cansend demands exactly 3 hex characters for a standard CAN ID. Passing a
+# bare "08" makes it print its usage and send nothing, which looks identical to
+# a motor that ignored the frame -- so build every ID through here.
+frame_id() {
+  printf '%03X' "$((16#$1))"
+}
+
 # Read one motor's position without energizing it: a refresh-status query,
 # which is read-only. Used before and after so any movement is visible.
 read_positions() {
@@ -104,7 +111,7 @@ release_motors() {
   # Twice, in case a frame is lost. Disable is idempotent.
   for attempt in 1 2; do
     for motor in "${motors[@]}"; do
-      cansend "$interface" "${motor}#FFFFFFFFFFFFFFFD" 2>/dev/null || true
+      cansend "$interface" "$(frame_id "$motor")#FFFFFFFFFFFFFFFD" || true
       sleep 0.02
     done
   done
@@ -133,7 +140,7 @@ read_positions before
 
 printf '\nEnabling...\n'
 for motor in "${motors[@]}"; do
-  cansend "$interface" "${motor}#FFFFFFFFFFFFFFFC"
+  cansend "$interface" "$(frame_id "$motor")#FFFFFFFFFFFFFFFC"
   printf '  motor 0x%s enabled\n' "$motor"
   sleep 0.05
 done

@@ -112,33 +112,39 @@ public:
 private:
   void poll()
   {
-    if (!observer_->connected()) {
-      return;
-    }
+    // Being passive means sending nothing on the CAN bus. It does not mean
+    // going quiet on ROS: robot_state_publisher derives TF from /joint_states,
+    // so if this stops publishing, the robot vanishes from RViz entirely and an
+    // idle stack looks like a broken one. Publish the rest pose until there is
+    // something measured to show.
     std::array<BusReading, 2> readings{};
-    if (!observer_->read_once(readings)) {
+    const bool measured = observer_->connected() && observer_->read_once(readings);
+
+    if (observer_->connected() && !measured) {
       ++consecutive_failures_;
       if (consecutive_failures_ == 50U) {
         RCLCPP_WARN(get_logger(), "no complete reading for 500 ms: %s",
           observer_->detail().c_str());
         publish_status();
       }
-      return;
+    } else {
+      consecutive_failures_ = 0U;
     }
-    consecutive_failures_ = 0U;
-    publish_joint_state(readings);
+
+    publish_joint_state(readings, measured);
     if (++status_divider_ >= 100U) {
       status_divider_ = 0U;
       publish_status();
     }
   }
 
-  void publish_joint_state(const std::array<BusReading, 2> & readings)
+  void publish_joint_state(const std::array<BusReading, 2> & readings, const bool measured)
   {
     const ArmAssignment assignment = observer_->assignment();
-    if (!assignment.resolved) {
-      return;   // Publishing under a guessed side would put the wrong arm on screen.
-    }
+    // An unresolved assignment means we do not know which arm is which, so
+    // measured angles would be as likely to land on the wrong side as the
+    // right one. Fall back to the rest pose rather than guess.
+    const bool usable = measured && assignment.resolved;
     sensor_msgs::msg::JointState state;
     state.header.stamp = now();
     const auto & names = openarm_ik_ros::real::canonical_joint_names();
@@ -146,13 +152,18 @@ private:
     state.position.assign(names.size(), 0.0);
     state.velocity.assign(names.size(), 0.0);
     state.effort.assign(names.size(), 0.0);
-    for (std::size_t bus = 0; bus < 2U; ++bus) {
-      const std::size_t side = assignment.side_of_interface[bus];
-      for (std::size_t joint = 0; joint < 7U; ++joint) {
-        const std::size_t index = side * 7U + joint;
-        state.position[index] = readings[bus].position_rad[joint];
-        state.velocity[index] = readings[bus].velocity_rad_s[joint];
-        state.effort[index] = readings[bus].torque_nm[joint];
+    if (usable) {
+      for (std::size_t bus = 0; bus < 2U; ++bus) {
+        if (!readings[bus].complete) {
+          continue;   // Unpopulated bus: leave that arm at the rest pose.
+        }
+        const std::size_t side = assignment.side_of_interface[bus];
+        for (std::size_t joint = 0; joint < 7U; ++joint) {
+          const std::size_t index = side * 7U + joint;
+          state.position[index] = readings[bus].position_rad[joint];
+          state.velocity[index] = readings[bus].velocity_rad_s[joint];
+          state.effort[index] = readings[bus].torque_nm[joint];
+        }
       }
     }
     joint_publisher_->publish(std::move(state));
