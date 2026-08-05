@@ -564,10 +564,33 @@ Do not build the calibration before this works.
   about and the existing keepout model is not certified for the real robot.
 - Command small position increments from the current measured position, not
   absolute targets. An absolute target lets a motor snap across its range.
-- Cap velocity and torque hard. Limit detection is "measured torque exceeded a
-  threshold while commanded motion stalled" -- the same signal the virtual
-  contact detector uses (see the contact work above, where torque was derived
-  from servo effort while blocked rather than from penetration depth).
+- Move slowly, and keep the torque limit HIGH. These are not in tension once
+  detection stops being torque-based, and both are required: the proximal
+  joints need real torque simply to lift the arm against gravity, so a low
+  ceiling would trip on gravity load and never reach the true range.
+
+- Detect the limit by STALL, not by a torque threshold. The commanded position
+  keeps advancing while the measured position stops changing; that is the
+  signal. Concretely, the joint has hit something when the commanded-minus-
+  measured following error grows past a few encoder codes for N consecutive
+  cycles while the commanded position is still moving.
+
+  Why stall rather than torque, given the torque signal exists: a torque
+  threshold has to sit above whatever gravity is demanding at that pose, which
+  varies with joint, arm configuration and payload. Set it low and it false
+  trips mid-travel; set it high enough to be reliable and the joint is already
+  pressing hard into the stop by the time it fires. Following error does not
+  depend on the gravity baseline at all, so it fires on the first cycle the
+  joint stops tracking, at whatever force it happens to be applying. High
+  available torque then becomes harmless, because nothing ever asks the motor
+  to use it against a stop.
+
+  Torque stays as a secondary ceiling and an abort condition, not as the
+  primary detector.
+
+- Slow motion is what makes stall detection safe rather than merely correct:
+  the following error accumulates over distance, so at low speed the joint has
+  travelled a fraction of a degree past first contact by the time it aborts.
 - Back off on contact before recording, and record the backed-off value, so the
   stored limit is not the hard stop itself.
 - Abort the whole sequence on: E-stop, any joint exceeding a torque ceiling, a
