@@ -149,6 +149,15 @@ private:
 /// better fit and 0.0 means fully inside. Exposed for testing.
 double joint_limit_misfit(const std::array<double, kJointsPerArm> & q, std::size_t side);
 
+/// Sign that converts a motor angle into a URDF joint angle for this joint.
+///
+/// The manifest's q_scale alternates along the chain and is mirrored between
+/// the arms, because the two arms are built as reflections of each other.
+/// Publishing a motor angle without it makes every negatively-scaled joint
+/// travel the wrong way, which shows up as an arm swinging inboard into the
+/// central pole when it was physically moved outboard.
+double joint_scale(std::size_t side, std::size_t joint);
+
 }  // namespace openarm_ik_ros::real
 
 #endif  // OPENARM_IK_ROS__REAL_OBSERVER_CORE_HPP_

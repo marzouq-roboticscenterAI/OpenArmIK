@@ -226,9 +226,16 @@ private:
         const std::size_t side = assignment.side_of_interface[bus];
         for (std::size_t joint = 0; joint < 7U; ++joint) {
           const std::size_t index = side * 7U + joint;
-          state.position[index] = readings[bus].position_rad[joint] - zero_offset_[side][joint];
-          state.velocity[index] = readings[bus].velocity_rad_s[joint];
-          state.effort[index] = readings[bus].torque_nm[joint];
+          // Motor space to URDF space: subtract the captured reference, then
+          // apply the joint's sign. Order matters -- the reference was captured
+          // in motor space, so it must come off before the sign is applied.
+          state.position[index] =
+            openarm_ik_ros::real::joint_scale(side, joint) *
+            (readings[bus].position_rad[joint] - zero_offset_[side][joint]);
+            state.velocity[index] = openarm_ik_ros::real::joint_scale(side, joint) *
+            readings[bus].velocity_rad_s[joint];
+          state.effort[index] = openarm_ik_ros::real::joint_scale(side, joint) *
+            readings[bus].torque_nm[joint];
         }
         if (readings[bus].has_gripper) {
           const double metres = gripper_metres(bus, readings[bus].gripper_rad);

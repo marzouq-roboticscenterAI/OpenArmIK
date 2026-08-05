@@ -38,6 +38,7 @@ struct JointMetadata
   std::array<std::uint32_t, kJointsPerArm * kBusCount> motor_type{};
   std::array<double, kJointsPerArm * kBusCount> lower_rad{};
   std::array<double, kJointsPerArm * kBusCount> upper_rad{};
+  std::array<double, kJointsPerArm * kBusCount> q_scale{};
 };
 
 const JointMetadata & metadata()
@@ -62,6 +63,9 @@ const JointMetadata & metadata()
           built.motor_type[index] = motor.motor_type;
           built.lower_rad[index] = motor.lower_rad;
           built.upper_rad[index] = motor.upper_rad;
+          // q_scale and direction carry the same sign in this manifest, so
+          // applying both would cancel the correction. q_scale alone is used.
+          built.q_scale[index] = motor.q_scale != 0.0 ? motor.q_scale : 1.0;
         }
       }
       oa_runtime_manifest_destroy(manifest);
@@ -105,6 +109,14 @@ std::string number(const double value, const int precision = 6)
 const std::array<std::string, kJointsPerArm * kBusCount> & canonical_joint_names()
 {
   return metadata().names;
+}
+
+double joint_scale(const std::size_t side, const std::size_t joint)
+{
+  if (side >= kBusCount || joint >= kJointsPerArm) {
+    return 1.0;
+  }
+  return metadata().q_scale[side * kJointsPerArm + joint];
 }
 
 double joint_limit_misfit(const std::array<double, kJointsPerArm> & q, const std::size_t side)
