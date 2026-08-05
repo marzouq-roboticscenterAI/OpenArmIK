@@ -436,6 +436,42 @@ static void on_start(GtkButton *button, gpointer data) {
                        "Move this joint slowly from one hard stop to the other, then Stop.");
 }
 
+/* Print a copy-pasteable summary of the sweep just finished.
+ *
+ * Goes to stdout AND to a log file. stdout is line-buffered to a terminal but
+ * block-buffered to a pipe, and this output exists precisely so it can be
+ * pasted somewhere, so it is flushed explicitly rather than left to chance --
+ * an unflushed diagnostic is worse than none, because it looks like the code
+ * never ran.
+ */
+static void report_diagnostic(oa_app *app, const oa_track *track) {
+    const char *home = getenv("HOME");
+    char path[512];
+    FILE *log;
+    char line[512];
+
+    snprintf(line, sizeof(line),
+             "CALIB %s motor 0x%02x  extent %.2f deg  path %.2f deg  "
+             "samples %zu  rate %.1f Hz  reads_ok %lu  dropped %lu  "
+             "min %.4f rad  max %.4f rad  first %.4f rad",
+             app->interface[app->active_arm], app->active_motor + 1u,
+             (track->maximum - track->minimum) * 180.0 / OA_PI,
+             track->path_length * 180.0 / OA_PI,
+             track->count, app->achieved_hz, app->reads_ok, app->reads_failed,
+             track->minimum, track->maximum, track->first_raw);
+
+    printf("%s\n", line);
+    fflush(stdout);
+
+    snprintf(path, sizeof(path), "%s/.openarm_calib_diag.log",
+             home != NULL ? home : "/tmp");
+    log = fopen(path, "a");
+    if (log != NULL) {
+        fprintf(log, "%s\n", line);
+        fclose(log);
+    }
+}
+
 static void on_stop(GtkButton *button, gpointer data) {
     oa_app *app = data;
     oa_track *track;
@@ -468,6 +504,7 @@ static void on_stop(GtkButton *button, gpointer data) {
     }
     gtk_label_set_text(GTK_LABEL(app->status_label), text);
     refresh_grid(app);
+    report_diagnostic(app, track);
 }
 
 static void on_save(GtkButton *button, gpointer data) {
@@ -567,7 +604,8 @@ static void build_gui(oa_app *app) {
     gtk_label_set_markup(GTK_LABEL(frame),
         "<b>The motors are not powered.</b> Select an arm and motor, press Start, move that "
         "joint by hand from one hard stop to the other, then press Stop. Repeat for every "
-        "motor, then Save.");
+        "motor, then Save.\n\nEach Stop prints a copy-pasteable summary line to the "
+        "terminal and appends it to ~/.openarm_calib_diag.log");
     gtk_label_set_line_wrap(GTK_LABEL(frame), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(frame), 88);
     gtk_label_set_xalign(GTK_LABEL(frame), 0.0f);
