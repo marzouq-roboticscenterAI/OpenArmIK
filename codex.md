@@ -526,6 +526,71 @@ can snap.
 `08#...` makes it print usage and send nothing, which looks identical to a
 motor ignoring the frame. Every ID goes through `frame_id()`.
 
+## Planned: powered auto-calibration (NOT YET BUILT)
+
+Requested: connect to the servos, drive each joint on its own to find its range
+of motion, derive left/right and per-joint direction from that, reflect it in
+RViz, behind a button, with an e-stop that works under all circumstances.
+
+Two constraints shape the whole design, and both are load-bearing.
+
+**This assistant cannot test motion.** The sandbox blocks transmitting enable
+and motion frames to physical actuators. Every read-only claim in the section
+above was verified by measurement; nothing in this section can be, so it must be
+treated as unverified until someone runs it on hardware.
+
+**There is no hardware e-stop on this rig** (confirmed 2026-08-05). A software
+e-stop cannot stop a motor once it has latched a position target, and cannot act
+at all if the process dies, the adapter is unplugged, or the bus saturates.
+
+### Build the motor timeout FIRST
+
+`OA_CAN_RID_TIMEOUT` (register 9) is a per-motor watchdog: if no command arrives
+within the window, the motor disables itself. The enforcement is in motor
+firmware, so it survives the failure modes a software e-stop cannot -- process
+killed, cable pulled, bus saturated, code deadlocked.
+
+Set it short (order 100 ms) before enabling anything, and drive motion from a
+loop that must keep refreshing. Then the default state of the system is
+"disabled", and staying enabled requires continuous proof of life. This is the
+single highest-value safety item and it is verifiable read-only: write the
+timeout, stop sending, confirm the motor drops out.
+
+Do not build the calibration before this works.
+
+### Calibration sequence, per joint, one joint at a time
+
+- Never move more than one joint at once. A whole-arm move cannot be reasoned
+  about and the existing keepout model is not certified for the real robot.
+- Command small position increments from the current measured position, not
+  absolute targets. An absolute target lets a motor snap across its range.
+- Cap velocity and torque hard. Limit detection is "measured torque exceeded a
+  threshold while commanded motion stalled" -- the same signal the virtual
+  contact detector uses (see the contact work above, where torque was derived
+  from servo effort while blocked rather than from penetration depth).
+- Back off on contact before recording, and record the backed-off value, so the
+  stored limit is not the hard stop itself.
+- Abort the whole sequence on: E-stop, any joint exceeding a torque ceiling, a
+  reading gap, or a joint moving when it was not commanded to.
+
+### What calibration yields
+
+- Per-joint range, which is the field of motion.
+- Per-joint direction sign, from the sign of the measured delta against the
+  commanded direction. This is what the current Flip buttons stand in for, and
+  it removes the guessing that got the sign wrong twice.
+- Left versus right, from the range asymmetry: joints 1 and 2 have mirrored
+  limits, so once real ranges are measured the sides separate. This is the
+  motion-delta idea, and it works where absolute angles failed because the
+  uncommissioned zero cancels in a difference.
+
+### E-stop must cover the new paths
+
+The existing process-wide E-stop covers the virtual stack. Powered calibration
+adds paths it does not know about, so it needs to gate the calibration loop
+itself, and asserting it must send explicit disable frames rather than merely
+stopping the sending of commands.
+
 ## Build and test commands
 
 Install dependencies only when needed (this invokes sudo in the user's shell):
