@@ -102,7 +102,21 @@ typedef struct {
     GtkWidget *live_label;
     GtkWidget *status_label;
     GtkWidget *grid_label;
+    GtkWidget *dial;
     guint timer_id;
+
+    /* Live diagnostics. A sweep that reads far smaller than it felt is almost
+     * always dropped samples rather than bad scaling, so the drop count and the
+     * achieved rate are shown rather than left to be inferred. */
+    double dial_start;
+    double dial_now;
+    double dial_min;
+    double dial_max;
+    unsigned long reads_ok;
+    unsigned long reads_failed;
+    double rate_window_start;
+    unsigned long rate_window_reads;
+    double achieved_hz;
 } oa_app;
 
 static double monotonic_seconds(void) {
@@ -209,6 +223,67 @@ static double shortest_delta(double delta) {
     return delta;
 }
 
+/* ---- Dial -------------------------------------------------------------- */
+
+/* A circle showing where the joint is now and how far it has swept. The filled
+ * arc spans the recorded minimum to maximum, so the travel is legible at a
+ * glance rather than only as a number. */
+static gboolean on_draw_dial(GtkWidget *widget, cairo_t *cr, gpointer data) {
+    oa_app *app = data;
+    const double width = gtk_widget_get_allocated_width(widget);
+    const double height = gtk_widget_get_allocated_height(widget);
+    const double cx = width * 0.5;
+    const double cy = height * 0.5;
+    const double radius = (width < height ? width : height) * 0.5 - 14.0;
+    const double swept = app->dial_max - app->dial_min;
+    char text[64];
+
+    if (radius <= 4.0) return FALSE;
+
+    /* Track */
+    cairo_set_line_width(cr, 12.0);
+    cairo_set_source_rgb(cr, 0.17, 0.20, 0.25);
+    cairo_arc(cr, cx, cy, radius, 0.0, 2.0 * OA_PI);
+    cairo_stroke(cr);
+
+    /* Swept arc, measured from where recording started so it grows outward in
+     * both directions as the joint is moved. Angles are drawn directly in
+     * radians of joint travel, so a full turn of the dial is a full turn of the
+     * joint and there is no hidden scaling to misread. */
+    if (swept > 1.0e-6) {
+        cairo_set_source_rgb(cr, 0.24, 0.57, 0.90);
+        cairo_arc(cr, cx, cy, radius,
+                  -OA_PI * 0.5 + (app->dial_min - app->dial_start),
+                  -OA_PI * 0.5 + (app->dial_max - app->dial_start));
+        cairo_stroke(cr);
+    }
+
+    /* Needle at the present position */
+    cairo_set_line_width(cr, 3.0);
+    cairo_set_source_rgb(cr, 0.95, 0.85, 0.35);
+    cairo_move_to(cr, cx, cy);
+    cairo_line_to(cr,
+                  cx + radius * cos(-OA_PI * 0.5 + (app->dial_now - app->dial_start)),
+                  cy + radius * sin(-OA_PI * 0.5 + (app->dial_now - app->dial_start)));
+    cairo_stroke(cr);
+
+    cairo_set_source_rgb(cr, 0.91, 0.93, 0.96);
+    cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 22.0);
+    snprintf(text, sizeof(text), "%.1f deg", swept * 180.0 / OA_PI);
+    cairo_text_extents_t extents;
+    cairo_text_extents(cr, text, &extents);
+    cairo_move_to(cr, cx - extents.width * 0.5, cy + extents.height * 0.5);
+    cairo_show_text(cr, text);
+
+    cairo_set_font_size(cr, 12.0);
+    snprintf(text, sizeof(text), "swept");
+    cairo_text_extents(cr, text, &extents);
+    cairo_move_to(cr, cx - extents.width * 0.5, cy + 28.0);
+    cairo_show_text(cr, text);
+    return FALSE;
+}
+
 /* ---- Recording --------------------------------------------------------- */
 
 static void reset_track(oa_track *track) {
@@ -230,14 +305,34 @@ static gboolean on_tick(gpointer data) {
     if (arm >= OA_ARMS || motor >= OA_MOTORS_PER_ARM) return TRUE;
 
     if (read_position(app->socket_fd[arm], (uint16_t)(motor + 1u), &raw) != 0) {
-        gtk_label_set_text(GTK_LABEL(app->live_label), "no reply from this motor");
+        app->reads_failed++;
+        gtk_label_set_text(GTK_LABEL(app->live_label),
+                           "no reply from this motor (check it is powered)");
         return TRUE;
+    }
+    app->reads_ok++;
+    app->rate_window_reads++;
+    {
+        const double now_s = monotonic_seconds();
+        if (app->rate_window_start <= 0.0) app->rate_window_start = now_s;
+        if (now_s - app->rate_window_start >= 1.0) {
+            app->achieved_hz = (double)app->rate_window_reads / (now_s - app->rate_window_start);
+            app->rate_window_start = now_s;
+            app->rate_window_reads = 0;
+        }
     }
 
     if (!app->recording) {
-        snprintf(text, sizeof(text), "live: %+.4f rad   (%+.2f deg)",
-                 raw, raw * 180.0 / OA_PI);
+        app->dial_start = raw;
+        app->dial_now = raw;
+        app->dial_min = raw;
+        app->dial_max = raw;
+        snprintf(text, sizeof(text),
+                 "live %+.4f rad (%+.2f deg)   %.0f Hz   reads ok %lu / failed %lu",
+                 raw, raw * 180.0 / OA_PI, app->achieved_hz,
+                 app->reads_ok, app->reads_failed);
         gtk_label_set_text(GTK_LABEL(app->live_label), text);
+        gtk_widget_queue_draw(app->dial);
         return TRUE;
     }
 
@@ -251,6 +346,7 @@ static gboolean on_tick(gpointer data) {
         track->minimum = raw;
         track->maximum = raw;
         unwrapped = raw;
+        app->dial_start = raw;
     } else {
         const double step = shortest_delta(raw - app->previous_raw);
         unwrapped = app->previous_unwrapped + step;
@@ -276,13 +372,19 @@ static gboolean on_tick(gpointer data) {
         track->count++;
     }
 
+    app->dial_now = unwrapped;
+    app->dial_min = track->minimum;
+    app->dial_max = track->maximum;
+
     snprintf(text, sizeof(text),
-             "RECORDING  now %+.4f rad   extent %.4f rad (%.1f deg)   "
-             "path %.4f rad   %zu samples",
-             unwrapped, track->maximum - track->minimum,
+             "RECORDING  now %+.4f rad   extent %.1f deg   path %.1f deg   "
+             "%zu samples at %.0f Hz   dropped reads %lu",
+             unwrapped,
              (track->maximum - track->minimum) * 180.0 / OA_PI,
-             track->path_length, track->count);
+             track->path_length * 180.0 / OA_PI,
+             track->count, app->achieved_hz, app->reads_failed);
     gtk_label_set_text(GTK_LABEL(app->live_label), text);
+    gtk_widget_queue_draw(app->dial);
     return TRUE;
 }
 
@@ -320,6 +422,10 @@ static void on_start(GtkButton *button, gpointer data) {
     reset_track(&app->track[app->active_arm][app->active_motor]);
     app->have_previous = 0;
     app->recording = 1;
+    app->reads_failed = 0;
+    app->reads_ok = 0;
+    app->dial_min = 0.0;
+    app->dial_max = 0.0;
     clock_gettime(CLOCK_MONOTONIC, &app->started_at);
 
     gtk_widget_set_sensitive(app->start_button, FALSE);
@@ -525,6 +631,14 @@ static void build_gui(oa_app *app) {
     gtk_label_set_max_width_chars(GTK_LABEL(app->status_label), 88);
     gtk_label_set_xalign(GTK_LABEL(app->status_label), 0.0f);
     gtk_box_pack_start(GTK_BOX(box), app->status_label, FALSE, FALSE, 0);
+
+    /* The dial sits in its own row with a fixed height, so it cannot squeeze
+     * the labels above it or be clipped by them. */
+    app->dial = gtk_drawing_area_new();
+    gtk_widget_set_size_request(app->dial, 200, 200);
+    gtk_widget_set_halign(app->dial, GTK_ALIGN_CENTER);
+    g_signal_connect(app->dial, "draw", G_CALLBACK(on_draw_dial), app);
+    gtk_box_pack_start(GTK_BOX(box), app->dial, FALSE, FALSE, 6);
 
     app->grid_label = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(app->grid_label), 0.0f);
