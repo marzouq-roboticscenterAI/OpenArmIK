@@ -422,6 +422,110 @@ The Firefox oracle derives its synthetic rollback sequence above the current
 live 30 Hz sequence. Keep that relative sequence; a fixed value caused a
 transient test-harness race even though rollback rejection itself was correct.
 
+## Physical hardware: read-only observer (commits 41c5d27 .. ba45690)
+
+The arms are now physically connected. Everything below was measured against
+them, not inferred.
+
+### What the hardware actually is
+
+- One DaMiao USB-C-to-CAN adapter (gs_usb, OpenMoko 1d50:606f), dual channel,
+  presenting `can0` and `can1`. CAN-FD capable, 80 MHz clock.
+- **Eight motors per arm, not seven.** IDs `0x01`..`0x07` are the joints,
+  `0x08` is the gripper. The gripper has no URDF joint in this model, so it is
+  read and reported but not published as a joint state.
+- Replies arrive at `send_id + 0x10`, so `0x011`..`0x018`.
+- Motor IDs are unique **within** a bus, not across the pair. A stock pair puts
+  the same eight IDs on both interfaces.
+- Refresh-status is `7FF#<id>00CC...`; the reply's position field is the 16-bit
+  value at `data[1..2]` spanning +/-12.5 rad. That range is the same for every
+  DaMiao type here, so **position decodes without knowing the motor type**.
+  Velocity and torque do not.
+
+`sudo bash scripts/setup_can_interfaces.sh` is the only privileged step.
+`run-real.sh` refuses to run as root and refuses to start unless the interfaces
+are already up, so nothing that talks to the arms ever runs with root.
+
+gs_usb rejects `restart-ms` outright ("Device doesn't support restart from Bus
+Off"). The setup script attempts attribute combinations in order of preference
+and takes the first the driver accepts; do not reintroduce a single hardcoded
+`ip link` invocation.
+
+### The observer is read-only by construction
+
+`openarm_real_observer` cannot command motion, and that is structural rather
+than a policy. Its single socket write takes a motor ID and builds the frame
+itself with `oa_can_make_refresh_status`; there is no overload accepting bytes,
+and no enable/zero/motion encoder is referenced in the translation unit. Keep
+it that way -- adding a frame-taking write would silently remove the guarantee.
+
+It starts passive: nothing is opened and nothing transmitted until
+`/openarm_real/connect` is called.
+
+**It still publishes `/joint_states` while passive**, at 100 Hz, holding the
+rest pose. This is deliberate and was a bug once: `robot_state_publisher`
+derives TF from `/joint_states`, so a silent observer makes the robot vanish
+from RViz entirely and an idle stack looks broken.
+
+### Arm identification does NOT work automatically, and this is settled
+
+The joint-limit heuristic scores a measured pose against each side's mirrored
+joint-1/joint-2 limits. On the connected hardware it answered **left** with an
+0.819 rad margin. Ground truth from the LED test: that bus is the **right** arm.
+
+The arithmetic is fine -- the scorer is exactly mirror symmetric, and tests
+verify it. The input is the problem. Motor zeros are not commissioned to the
+URDF zeros (joint 4 reads -0.978 rad, impossible for either side), so absolute
+angles carry no dependable side information. **Applying the manifest's
+`q_scale`/`q_offset_rad`/`direction` was tried and does not rescue it: every
+sign convention still answers left.** Do not spend time re-deriving this.
+
+Motor IDs cannot substitute: a stock pair is `0x01`..`0x08` on both buses.
+
+So the assignment carries a `confidence`. `"low"` for the heuristic, `"high"`
+only when a human or the `interface_a_side` parameter settled it. The portal
+presents the guess as unverified and offers **Swap arms**
+(`/openarm_real/swap_sides`), which is one click and marks the result
+operator-confirmed. `test_real_observer_core` pins the falsification, so
+restoring the heuristic to authority trips a test that explains why.
+
+The sound automatic method, if this is ever revisited, is a **motion-delta**
+test: zeros cancel in a difference, so the sign of a joint's change under a
+named physical motion identifies the side regardless of commissioning.
+
+### Not yet established
+
+- Motor zeros are uncommissioned, so RViz renders a pose offset from reality.
+  This is the next thing standing between the current state and a faithful
+  mirror of the robot.
+- `can0` was silent throughout. All 63 IDs `0x01`..`0x3F` swept on both buses;
+  only the 8 responders on `can1`. `can0` counters read RX=32/TX=32, pure
+  SocketCAN loopback with zero external frames, while both arms were powered.
+  The second arm's CAN is not reaching channel 0.
+
+### Real mode is a flag, not a fork
+
+`launch_web_portal.sh --real` swaps `openarm_ik_rviz.launch.xml` for
+`openarm_real.launch.xml` and passes `--real` to the portal. The real launch
+**omits `openarm_ik_ros_node`**: it and the observer both publish
+`/joint_states`, and running both renders a blend of a real arm and a simulated
+one. `run.sh`'s path is untouched and was re-verified after this work.
+
+`/api/real/status` answers in both modes, so one request tells the page which
+stack it is attached to; that is why the same page serves both launchers with
+no build-time switch.
+
+### scripts/blink_arm_leds.sh
+
+Enables motors briefly so their LEDs identify the arm, then disables from an
+EXIT trap. Defaults to the gripper alone because enabling a DaMiao motor with
+non-zero saved gains makes it hold a position target immediately, so a joint
+can snap.
+
+`cansend` requires exactly **three** hex characters for a standard CAN ID.
+`08#...` makes it print usage and send nothing, which looks identical to a
+motor ignoring the frame. Every ID goes through `frame_id()`.
+
 ## Build and test commands
 
 Install dependencies only when needed (this invokes sudo in the user's shell):
