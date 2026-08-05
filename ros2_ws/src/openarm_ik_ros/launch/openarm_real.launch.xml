@@ -23,6 +23,9 @@
   <arg name="interface_a_side" default=""/>
   <arg name="interface_a" default="can0"/>
   <arg name="interface_b" default="can1"/>
+  <!-- Connect and zero automatically so a single run-real.sh gives a working
+       view. The Connect button remains for reconnecting after a disconnect. -->
+  <arg name="connect_on_start" default="false"/>
 
   <node pkg="robot_state_publisher" exec="robot_state_publisher"
         name="robot_state_publisher" output="screen">
@@ -40,6 +43,7 @@
     <param name="interface_a" value="$(var interface_a)"/>
     <param name="interface_b" value="$(var interface_b)"/>
     <param name="interface_a_side" value="$(var interface_a_side)"/>
+    <param name="connect_on_start" value="$(var connect_on_start)"/>
   </node>
 
   <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen"

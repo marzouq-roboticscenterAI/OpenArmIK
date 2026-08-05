@@ -75,6 +75,7 @@ public:
       "zero_file", std::string(home != nullptr ? home : "/tmp") + "/.openarm_real_zero");
     invert_gripper_ = !declare_parameter<bool>("gripper_opens_with_increasing_angle", false);
     capture_zero_on_connect_ = declare_parameter<bool>("capture_zero_on_connect", true);
+    const bool connect_on_start = declare_parameter<bool>("connect_on_start", false);
     load_zero();
 
     observer_ = std::make_unique<RealObserver>(config);
@@ -157,6 +158,22 @@ public:
       });
 
     timer_ = create_wall_timer(10ms, [this]() {poll();});
+    if (connect_on_start) {
+      // One shot, slightly delayed. Connecting from the constructor would sweep
+      // the bus before the node is fully built and before publishers are
+      // discovered, so the first readings would go nowhere.
+      startup_timer_ = create_wall_timer(1500ms, [this]() {
+          startup_timer_->cancel();
+          std::string detail;
+          if (observer_->connect(detail) && capture_zero_on_connect_) {
+            std::string zero_message;
+            (void)capture_zero(zero_message);
+            detail += " " + zero_message;
+          }
+          publish_status();
+          RCLCPP_INFO(get_logger(), "auto-connect: %s", detail.c_str());
+        });
+    }
     publish_status();
     RCLCPP_WARN(
       get_logger(),
@@ -398,6 +415,7 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr capture_zero_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_zero_service_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr startup_timer_;
   unsigned consecutive_failures_{0};
   unsigned status_divider_{0};
 };

@@ -287,14 +287,17 @@ trap 'shutdown $?' EXIT
 # blend of a real arm and a simulated one.
 if ((real_mode)); then
   launch_file=openarm_real.launch.xml
+  launch_arguments=(connect_on_start:=true)
   portal_arguments=(--port "$port" --real)
 else
   launch_file=openarm_ik_rviz.launch.xml
+  launch_arguments=()
   portal_arguments=(--port "$port")
 fi
 
 (exec 9>&-; openarm_close_shared_lock_fds
-  exec setsid ros2 launch openarm_ik_ros "$launch_file" rviz:=false) &
+  exec setsid ros2 launch openarm_ik_ros "$launch_file" rviz:=false \
+    ${launch_arguments+"${launch_arguments[@]}"}) &
 core_pid=$!
 
 (exec 9>&-; openarm_close_shared_lock_fds

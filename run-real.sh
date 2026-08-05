@@ -56,10 +56,19 @@ if ((${#missing[@]})); then
   exit 1
 fi
 if ((${#down[@]})); then
-  printf 'These CAN interfaces are down: %s\n\n' "${down[*]}" >&2
-  printf 'Bring them up first:\n  sudo bash %s/scripts/setup_can_interfaces.sh\n' \
-    "$root_dir" >&2
-  exit 1
+  # Bring them up rather than refusing. The helper re-execs itself under sudo,
+  # so the password prompt appears here and the rest of this script, and
+  # everything that talks to the arms, still runs unprivileged.
+  printf 'CAN interfaces are down: %s\n' "${down[*]}"
+  printf 'Bringing them up (this needs sudo)...\n\n'
+  "$root_dir/scripts/setup_can_interfaces.sh"
+  printf '\n'
+  for interface in "${interfaces[@]}"; do
+    if [[ "$(ip -br link show "$interface" | awk '{print $2}')" != UP ]]; then
+      printf 'Interface %s is still down; cannot continue.\n' "$interface" >&2
+      exit 1
+    fi
+  done
 fi
 
 output_root="$root_dir/ros2_ws"
@@ -106,7 +115,10 @@ if [[ "$build_mode" != never ]]; then
 fi
 
 printf '\n'
-printf 'Real-arm mode: READ ONLY, and passive until you press Connect.\n'
-printf 'Interfaces up: %s\n\n' "${interfaces[*]}"
+printf 'Real-arm mode: READ ONLY. It polls motor status and mirrors the pose;\n'
+printf 'it cannot enable, zero, or move a motor.\n'
+printf 'Interfaces up: %s\n' "${interfaces[*]}"
+printf 'Connecting to the motors automatically and taking the current pose as\n'
+printf 'neutral. If the arms are not at rest, press Clear zero then Connect.\n\n'
 
 exec "$root_dir/scripts/launch_web_portal.sh" --real --firefox "$@" --no-build
