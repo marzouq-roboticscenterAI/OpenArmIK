@@ -267,6 +267,32 @@ Xlib's default error handler calls `exit()`, so any unguarded X call in the
 portal is a process-killer, not a logged warning. `RvizCapture` installs a
 counting handler; `test_rviz_capture` guards it.
 
+### Waypoints must clear the GUARD, not just the monitor
+
+Two gates exist and they are not the same. The real-time monitor intervenes at
+10 mm; the portal's pre-flight guard requires 25 mm across seventeen sampled
+path waypoints and additionally checks IK branch continuity. Waypoints tuned
+only against the monitor are silently unusable from the portal, which is how
+eight of fourteen demo presets came to be rejected while the CLI demos worked:
+the CLI goes through the action, which does not run the guard.
+
+Method: link `libopenarm_portal_core.a` and run
+`NominalPathGuard::validate_or_project` over each waypoint, once from neutral
+and once step by step through each sequence, before believing a demo works.
+
+Closed poses sit at +/-0.15. Below +/-0.13 the left tool passes inside the
+central shaft gate. Some poses are only reachable partway through a sequence,
+because the guard's IK branch continuity check refuses a large single jump;
+those are labelled mid-sequence in the UI and covered by the Run buttons.
+
+### Frame rate
+
+The portal requests the GPU renderer, unlike `launch_rviz.sh`. The
+software-rendering default exists for live-resize flicker on a hand-dragged
+window; the captured window is never resized, and llvmpipe gave 3-4 fps.
+Measured: rviz2 33 fps, stream 35.4-35.9 fps against a 28 ms cap. The sweep
+asserts at least 30 fps.
+
 ### Three rules that are easy to break again
 
 1. **A monitor stop is a success only for converge.** Mapping STOPPED to
