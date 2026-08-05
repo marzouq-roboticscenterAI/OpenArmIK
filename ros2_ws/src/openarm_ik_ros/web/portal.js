@@ -303,6 +303,19 @@
       '<button id="real-swap" type="button" disabled>Swap arms</button> ' +
       '<button id="real-zero" type="button" disabled>Capture zero here</button> ' +
       '<button id="real-unzero" type="button" disabled>Clear zero</button></p>' +
+      '<p><button id="real-estop" type="button" class="stop">EMERGENCY STOP</button></p>' +
+      '<p id="real-estop-note" class="caption">Asserts the process-wide E-stop and drops the '
+      + 'CAN connection, so nothing in this stack can transmit. Be clear on what it is not: '
+      + 'this build is read-only and cannot move a motor, so today the E-stop has nothing to '
+      + 'interrupt. It is a latch that will gate powered calibration. It cannot stop a motor '
+      + 'that already holds a target, and it is not a substitute for the hardware stop.</p>' +
+      '<p><button id="real-calibrate" type="button" disabled>Auto-calibrate (not built yet)'
+      + '</button></p>' +
+      '<p class="caption">Powered calibration is designed but not implemented, so this is '
+      + 'deliberately inert rather than a button that appears to work. The design is in '
+      + 'codex.md: motor timeout watchdog first, then a slow single-joint sweep that detects '
+      + 'limits by following error rather than torque, then direction and left/right derived '
+      + 'from the measured ranges.</p>' +
       '<p><button id="real-flip-left" type="button" disabled>Flip LEFT arm direction</button> ' +
       '<button id="real-flip-right" type="button" disabled>Flip RIGHT arm direction</button></p>' +
       '<p class="caption">If moving an arm outward makes it swing inward on screen, flip '
@@ -421,6 +434,25 @@
       pollRealStatus();
     });
     applyRealStatus(status.observer);
+    // The E-stop must work whether or not anything is connected, so it is wired
+    // outside the status-driven enable/disable logic and never disabled.
+    $('real-estop').addEventListener('click', async () => {
+      $('real-estop-note').textContent = 'Stopping...';
+      const outcome = [];
+      // Assert first, then drop the bus. Order matters: asserting latches the
+      // stop even if the disconnect then fails.
+      for (const path of ['/api/estop', '/api/real/disconnect']) {
+        try {
+          await post(path);
+          outcome.push(path + ' ok');
+        } catch (error) {
+          outcome.push(path + ' FAILED: ' + error.message);
+        }
+      }
+      $('real-estop-note').textContent = 'E-STOP asserted. ' + outcome.join('; ') +
+        '. Press the hardware stop if anything is still moving.';
+      pollRealStatus();
+    });
     $('real-connect').focus();
     window.setInterval(pollRealStatus, 1000);
   }
