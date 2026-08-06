@@ -411,7 +411,16 @@ TEST(PortalPage, CarriesStrictInputAndSafetyContracts)
   EXPECT_NE(page.find("/api/rviz/stream"), std::string::npos);
   EXPECT_NE(page.find("id=\"both\""), std::string::npos);
   EXPECT_NE(page.find("real <strong>RViz</strong> pixels"), std::string::npos);
-  EXPECT_NE(page.find("display-only"), std::string::npos);
+  // The stream used to be one-way and the page said "display-only". It now
+  // replays pointer events into the real RViz window, so that claim would be
+  // false and asserting it would pin a lie. What still has to be disclosed is
+  // that input reaches RViz and that it can be refused, so those are checked
+  // instead.
+  EXPECT_EQ(page.find("display-only"), std::string::npos)
+    << "the page must not claim the RViz stream is display-only now that "
+       "pointer events are replayed into it";
+  EXPECT_NE(page.find("pointer events are replayed"), std::string::npos);
+  EXPECT_NE(page.find("Input is refused"), std::string::npos);
   EXPECT_NE(page.find("not collision checking"), std::string::npos);
   EXPECT_NE(page.find("never used as control feedback"), std::string::npos);
   EXPECT_NE(page.find("no portal-switchable coordinate grid"), std::string::npos);

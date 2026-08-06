@@ -44,6 +44,26 @@ std::string targets_json()
 // The closed poses sit at y = +/-0.15. Below +/-0.13 the left tool passes
 // inside the central shaft gate, by as little as half a millimetre at
 // +/-0.11, which is where the earlier values sat.
+/* The heart is traced in the Y-Z plane at a fixed X, symmetric about Y = 0, so
+ * both claws mirror and a single pass up and back down draws both lobes at once.
+ *
+ * It deliberately does NOT close at Y = 0. A real heart's bottom cusp and centre
+ * dip both sit on the axis, which would put the two claws in the same place; the
+ * outline is pinched to +/-0.15 m at those two points instead, which is the same
+ * closest approach the clap demo settled on. It still reads as a heart and it
+ * clears the guard.
+ *
+ * Every coordinate here sits inside the envelope of presets already known to
+ * pass: Y in [0.15, 0.26], Z in [0.22, 0.62], X = 0.30. That matters because the
+ * guard checked is the 25 mm planning gate, not the 10 mm real-time floor, and
+ * eight of the original fourteen presets were rejected for being tuned against
+ * the wrong one.
+ *
+ * The bottom point's midpoint is (0.30, 0, 0.24), which is 72 mm from the box at
+ * (0.34, 0, 0.30) and so outside its 50 mm grasp radius. Without that margin the
+ * heart would pick the box up on its way past, which is how the clap demo
+ * originally stole it.
+ */
 std::string demo_targets_json()
 {
   return R"JSON([
@@ -53,6 +73,11 @@ std::string demo_targets_json()
 {"id":"cross_half","label":"Cross: part heights","left":[0.30,0.26,0.55],"right":[0.30,-0.26,0.30]},
 {"id":"cross_split","label":"Cross: stack heights","left":[0.30,0.26,0.62],"right":[0.30,-0.26,0.22]},
 {"id":"cross_over","label":"Cross: claws swapped (mid-sequence)","left":[0.30,-0.04,0.62],"right":[0.30,0.04,0.22]},
+{"id":"heart_bottom","label":"Heart: bottom point","left":[0.30,0.15,0.24],"right":[0.30,-0.15,0.24]},
+{"id":"heart_lower","label":"Heart: lower curve","left":[0.30,0.24,0.34],"right":[0.30,-0.24,0.34]},
+{"id":"heart_outer","label":"Heart: widest","left":[0.30,0.26,0.46],"right":[0.30,-0.26,0.46]},
+{"id":"heart_lobe","label":"Heart: top of lobe","left":[0.30,0.22,0.58],"right":[0.30,-0.22,0.58]},
+{"id":"heart_dip","label":"Heart: centre dip","left":[0.30,0.15,0.52],"right":[0.30,-0.15,0.52]},
 {"id":"mirror","label":"Mirrored pair","left":[0.30,0.22,0.40],"right":[0.30,-0.22,0.40]},
 {"id":"forward_mid","label":"Forward mid","left":[0.30,0.22,0.30],"right":[0.30,-0.22,0.30]},
 {"id":"neutral_low","label":"Near low","left":[0.15,0.22,0.15],"right":[0.15,-0.22,0.15]},
@@ -78,7 +103,8 @@ std::string demo_sequences_json()
   return R"JSON([
 {"id":"clap","label":"Run clap","steps":["clap_open","clap_closed","clap_open","clap_closed","clap_open"]},
 {"id":"cross","label":"Run cross","steps":["clap_open","cross_open","cross_half","cross_split","cross_over","cross_split","cross_half","cross_open","clap_open"]},
-{"id":"pick_place","label":"Run pick and place","steps":["box_approach","box_grasp","box_lift","box_carry","box_place","box_release","box_approach"]}
+{"id":"pick_place","label":"Run pick and place","steps":["box_approach","box_grasp","box_lift","box_carry","box_place","box_release","box_approach"]},
+{"id":"heart","label":"Run heart","steps":["clap_open","heart_bottom","heart_lower","heart_outer","heart_lobe","heart_dip","heart_lobe","heart_outer","heart_lower","heart_bottom","clap_open"]}
 ])JSON";
 }
 
