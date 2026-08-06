@@ -79,7 +79,14 @@ pre-computed check, against a 25 mm planning gate and a 10 mm intervention
 floor. A process-wide E-stop is always listening.
 
 Portal demos cover clap, crossed arms, box pick-and-place, and a heart traced by
-both claws.
+both claws. The box prop appears only for pick-and-place; in every other demo it
+is removed from the scene, since it otherwise sits in the workspace and gets
+grasped by any pose that closes near it.
+
+Collision recovery works because the real-time monitor vetoes motion only while
+the minimum clearance is actively **worsening**, never on clearance alone. An
+absolute test would trap the arms permanently, since every escape from an
+overlapping pose begins in that pose.
 
 The build command performs a clean Release build in dependency order (CAN,
 model, commission, transport, control, runtime, then ROS), installs everything

@@ -13,6 +13,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
@@ -356,6 +357,11 @@ public:
   : Node("openarm_portal"), real_mode_(real_mode)
   {
     action_ = rclcpp_action::create_client<Action>(this, "/openarm_ik/move_paired_tcp_scaled");
+    // Latched: the node may start after the portal, and it must still learn
+    // whether the box prop belongs in the scene.
+    scene_box_publisher_ = create_publisher<std_msgs::msg::Bool>(
+      "/openarm_ik/scene_box_enabled",
+      rclcpp::QoS(1).reliable().transient_local());
     if (real_mode_) {
       // Real mode drives a physical arm, so the portal owns no motion path of
       // its own here: it only relays connect/disconnect to the read-only
@@ -386,6 +392,13 @@ public:
   }
 
   bool real_mode() const {return real_mode_;}
+
+  void set_scene_box(const bool enabled)
+  {
+    std_msgs::msg::Bool message;
+    message.data = enabled;
+    scene_box_publisher_->publish(message);
+  }
 
   /// Latest observer status, or a placeholder before the first publication.
   std::string real_status() const
@@ -823,6 +836,7 @@ private:
   GoalHandle::SharedPtr active_goal_;
   rclcpp_action::Client<Action>::SharedPtr action_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr state_subscription_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr scene_box_publisher_;
   const bool real_mode_{false};
   mutable std::mutex real_mutex_;
   std::string real_status_;
@@ -1368,7 +1382,8 @@ private:
       target != "/api/real/connect" && target != "/api/real/disconnect" &&
       target != "/api/real/swap" && target != "/api/rviz/input" &&
       target != "/api/real/capture-zero" && target != "/api/real/clear-zero" &&
-      target != "/api/real/flip-left" && target != "/api/real/flip-right"))
+      target != "/api/real/flip-left" && target != "/api/real/flip-right" &&
+      target != "/api/scene-box"))
     {
       write_json(stream, http::status::not_found, "{\"error\":\"route not found\"}");
       return;
@@ -1397,6 +1412,13 @@ private:
     if (!policy_.validate(headers, reason)) {
       write_json(stream, http::status::forbidden,
         "{\"error\":\"" + json_escape(reason) + "\"}");
+      return;
+    }
+    if (target == "/api/scene-box") {
+      const bool enabled = request.body().find("true") != std::string::npos;
+      node_->set_scene_box(enabled);
+      write_json(stream, http::status::ok,
+        std::string("{\"ok\":true,\"enabled\":") + (enabled ? "true" : "false") + "}");
       return;
     }
     if (target == "/api/rviz/input") {

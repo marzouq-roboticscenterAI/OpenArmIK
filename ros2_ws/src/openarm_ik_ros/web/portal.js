@@ -146,9 +146,18 @@
     }
     throw new Error('Waypoint did not finish within 60 s.');
   }
+  async function setSceneBox(enabled) {
+    try {
+      await post('/api/scene-box', {enabled});
+    } catch (_) { /* the prop is cosmetic; a failure must not stop the demo */ }
+  }
   async function runSequence(sequence) {
     if (sequenceRunning) return;
     sequenceRunning = true;
+    // The box prop belongs to pick-and-place only. Every other sequence sweeps
+    // through where it sits and would grasp or shove it, so it is removed from
+    // the scene for the duration of anything else.
+    await setSceneBox(sequence.id === 'pick_place');
     setSequenceButtons(true);
     clearError();
     try {

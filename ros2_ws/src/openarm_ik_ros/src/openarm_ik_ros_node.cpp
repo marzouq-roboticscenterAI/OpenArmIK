@@ -14,6 +14,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
 #define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1
@@ -184,6 +185,13 @@ public:
       "/openarm_ik/diagnostics", qos);
     box_publisher_ = create_publisher<visualization_msgs::msg::Marker>(
       "/openarm_ik/scene_box", rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+    // Off by default: the box is a pick-and-place prop and interferes with
+    // every other demo if it is present in the scene.
+    scene_box_subscription_ = create_subscription<std_msgs::msg::Bool>(
+      "/openarm_ik/scene_box_enabled", rclcpp::QoS(1).reliable().transient_local(),
+      [this](const std_msgs::msg::Bool::SharedPtr message) {
+        scene_box_enabled_ = message->data;
+      });
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, *this, false);
 
@@ -757,6 +765,30 @@ private:
   // pass through it if driven to.
   void publish_scene_box(const MeasuredState & measured)
   {
+    // The box is a prop for the pick-and-place demo only. Left in the scene it
+    // sits in the workspace of every other demo and gets grasped by anything
+    // whose claws happen to close near it, which is how the clap demo used to
+    // carry it away. So it is published only while explicitly enabled, and
+    // actively deleted otherwise -- a marker simply left unpublished lingers in
+    // RViz until something replaces it.
+    if (!scene_box_enabled_) {
+      if (scene_box_present_) {
+        visualization_msgs::msg::Marker removal;
+        removal.header.frame_id = "openarm_body_link0";
+        removal.header.stamp = now();
+        removal.ns = "openarm_scene";
+        removal.id = 1;
+        removal.action = visualization_msgs::msg::Marker::DELETE;
+        box_publisher_->publish(removal);
+        scene_box_present_ = false;
+        // Drop any hold and return the box to the shelf, so re-enabling starts
+        // from the rest pose rather than wherever it was abandoned.
+        box_held_ = false;
+        box_position_ = {0.34, 0.00, kBoxRestHeight};
+      }
+      return;
+    }
+    scene_box_present_ = true;
     std::array<std::array<double, 3>, 2> tcp{};
     for (std::size_t side = 0; side < 2U; ++side) {
       const oa_model * const model = side == 0U ? oa_model_left_v10_bimanual()
@@ -1041,6 +1073,9 @@ private:
   static constexpr double kBoxGraspRadius = 0.05;
   static constexpr double kBoxRestHeight = 0.30;
   std::array<double, 3> box_position_{0.34, 0.00, kBoxRestHeight};
+  bool scene_box_enabled_{false};
+  bool scene_box_present_{false};
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr scene_box_subscription_;
   bool box_held_{false};
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr legacy_subscription_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;

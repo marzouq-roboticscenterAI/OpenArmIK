@@ -80,6 +80,23 @@ raised: 0.060/0.085 makes the robot's own neutral pose fail and segfaults
 `test_ros_contract`. The envelope is mis-shaped, not mis-sized; it needs
 oriented boxes.
 
+**Collision recovery: the monitor vetoes only *worsening* clearance.** This is
+how the arms escape once the keepout capsules overlap. An absolute test —
+"clearance below the floor, refuse to move" — traps them permanently, because
+every motion out of a violating pose starts from that pose. The real-time
+monitor in `control/src/control_core.cpp` therefore compares against the
+previous cycle:
+
+```cpp
+if (std::isfinite(previous) && std::isfinite(status.minimum_clearance_m) &&
+    status.minimum_clearance_m >= previous - kClearanceWorseningEpsilon) {
+```
+
+`kClearanceWorseningEpsilon = 1.0e-6`. Note the test is **not worsening**, not
+strictly improving: the first cycles of a retreat often measure equal clearance,
+and demanding improvement stalls the escape on cycle one. This was a real bug —
+arms were trapped after converge until the rule was changed.
+
 **Do not map every `STOPPED` event to `COMPLETED`.** That was tried and masked
 real failures: pick-place reported all seven steps complete while the arms sat
 8 cm off target. `complete_on_contact()` is narrow on purpose.
@@ -123,6 +140,14 @@ Powered, so the position observer runs and streams true angles; commanding
 nothing, so the arm stays limp and back-drivable. Use `./dread.sh`.
 
 ## Portal notes
+
+- The **box prop is off by default** and gated on
+  `/openarm_ik/scene_box_enabled` (latched `std_msgs/Bool`). The portal enables
+  it only for the pick-and-place sequence. Left in the scene it sits in the
+  workspace of every other demo and gets grasped by anything closing near it,
+  which is how clap used to carry it off. Disabling publishes an explicit
+  `Marker::DELETE`, because an unpublished marker lingers in RViz, and resets
+  the box to its shelf pose so re-enabling starts clean.
 
 - Real mode is `launch_web_portal.sh --real`, a flag rather than a fork. It
   swaps in `openarm_real.launch.xml`, which **omits** `openarm_ik_ros_node`:
