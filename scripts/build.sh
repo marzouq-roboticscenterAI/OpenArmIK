@@ -250,9 +250,12 @@ openarm_build_all_body() {
     ros_test_listing=$(ctest --test-dir "$ros_build/openarm_ik_ros" -N)
     printf '%s\n' "$ros_test_listing"
     registered_ros_tests=$(awk '/Total Tests:/ {print $3}' <<<"$ros_test_listing")
-    # 15: 14 plus the X BadWindow survival regression for the RViz capture.
-    if [[ "$registered_ros_tests" != 15 ]]; then
-      printf 'Expected 15 openarm_ik_ros tests, found %s\n' \
+    # 16: 14, plus the X BadWindow survival regression for the RViz capture,
+    # plus test_real_observer_core for the physical-arm side identification.
+    # This gate exists so a suite cannot be silently dropped; when adding or
+    # removing a test, move this number in the same commit.
+    if [[ "$registered_ros_tests" != 16 ]]; then
+      printf 'Expected 16 openarm_ik_ros tests, found %s\n' \
         "${registered_ros_tests:-none}" >&2
       return 1
     fi
