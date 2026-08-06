@@ -1,0 +1,492 @@
+openarm_right_joint1:
+  id: 1
+  master_id: 17
+  model: DM8009
+  kp: 70.0
+  kd: 2.75
+  dir: 1
+  offset: 2.575740971243
+  soft_limits:
+    pos:
+    - -1.3963
+    - 3.4907
+    vel: 3.0
+    effort: 40.0
+  scale: 0.997491473254
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T21:59:45.193858+00:00'
+    raw_reference: -1.2224384
+    hardstop:
+      span: 2.47463
+      method: auto
+      saved_at: 1781894701.0985277
+    firmware_zero_changed: false
+    stops:
+      lo: -1.3963
+      hi: 3.4907
+      r_min: -4.000343327992676
+      r_max: 0.917257953765164
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_right_joint2:
+  id: 2
+  master_id: 18
+  model: DM8009
+  kp: 70.0
+  kd: 2.5
+  dir: 1
+  offset: 3.328441133870
+  soft_limits:
+    pos:
+    - -0.17453
+    - 3.3161
+    vel: 3.0
+    effort: 40.0
+  scale: 0.995252731461
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T21:59:45.193858+00:00'
+    raw_reference: -0.1123445
+    hardstop: null
+    firmware_zero_changed: false
+    stops:
+      lo: -0.17453
+      hi: 3.3161
+      r_min: -3.531509880216678
+      r_max: -0.01583123521782248
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_right_joint3:
+  id: 3
+  master_id: 19
+  model: DM4340_V20
+  kp: 70.0
+  kd: 2.0
+  dir: 1
+  offset: 0.439530555634
+  soft_limits:
+    pos:
+    - -1.5708
+    - 1.5708
+    vel: 3.0
+    effort: 20.0
+  scale: 0.986036176003
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T21:59:45.193858+00:00'
+    raw_reference: 0.5247196
+    hardstop:
+      span: 3.1651
+      method: auto
+      saved_at: 1781895432.3911915
+    firmware_zero_changed: false
+    stops:
+      lo: -1.5708
+      hi: 1.5708
+      r_min: -2.0368886854352635
+      r_max: 1.1461432822156095
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_right_joint4:
+  id: 4
+  master_id: 20
+  model: DM4340_V20
+  kp: 60.0
+  kd: 2.0
+  dir: 1
+  offset: 2.116898527830
+  soft_limits:
+    pos:
+    - 0.0
+    - 2.4435
+    vel: 3.0
+    effort: 20.0
+  scale: 0.997257389132
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T21:59:45.193858+00:00'
+    raw_reference: -2.211223
+    hardstop:
+      span: 2.18
+      method: j4_back_saved_front
+      saved_at: 1781895601.5335338
+    firmware_zero_changed: false
+    stops:
+      lo: 0.0
+      hi: 2.4435
+      raw_stop: -2.1215762569619283
+      end: lo
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_right_joint5:
+  id: 5
+  master_id: 21
+  model: DM4310P
+  kp: 12.0
+  kd: 0.6
+  dir: 1
+  offset: -0.041335279591
+  soft_limits:
+    pos:
+    - -1.5708
+    - 1.5708
+    vel: 6.0
+    effort: 8.0
+  scale: 0.989592520727
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T21:59:45.193858+00:00'
+    raw_reference: 0.1066224
+    hardstop:
+      span: 3.18189
+      method: auto
+      saved_at: 1781895647.681281
+    firmware_zero_changed: false
+    stops:
+      lo: -1.5708
+      hi: 1.5708
+      r_min: -1.544022278171969
+      r_max: 1.6245136186770424
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_right_joint6:
+  id: 6
+  master_id: 22
+  model: DM4310P
+  kp: 12.0
+  kd: 0.6
+  dir: -1
+  offset: 0.037531657970
+  soft_limits:
+    pos:
+    - -0.7854
+    - 0.7854
+    vel: 6.0
+    effort: 8.0
+  scale: 0.983920775210
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T21:59:45.193858+00:00'
+    raw_reference: -0.0402457
+    hardstop:
+      span: 1.59152
+      method: auto
+      saved_at: 1781895671.4298067
+    firmware_zero_changed: false
+    stops:
+      lo: -0.7854
+      hi: 0.7854
+      r_min: -0.7570382238498521
+      r_max: 0.8333333333333339
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+    direction_corrected: '2026-07-16: J6 physical motion was reversed in RViz; sign flipped about calibrated midpoint'
+openarm_right_joint7:
+  id: 7
+  master_id: 23
+  model: DM4310P
+  kp: 12.0
+  kd: 0.6
+  dir: 1
+  offset: 0.033993636856
+  soft_limits:
+    pos:
+    - -1.5708
+    - 1.5708
+    vel: 6.0
+    effort: 8.0
+  scale: 1.006771415844
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T21:59:45.193858+00:00'
+    raw_reference: 0.1916915
+    hardstop:
+      span: 2.59937
+      method: auto
+      saved_at: 1781895810.084085
+    firmware_zero_changed: false
+    stops:
+      lo: -1.5708
+      hi: 1.5708
+      r_min: -1.611161974517433
+      r_max: 1.5642404821850917
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_right_finger_joint1:
+  id: 8
+  master_id: 24
+  model: DM4310P
+  kp: 12.0
+  kd: 0.6
+  dir: -1
+  offset: -0.7908838896457765
+  soft_limits:
+    pos:
+    - -0.7854
+    - 0.0
+    vel: 6.0
+    effort: 8.0
+  scale: 0.7012423569482291
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T21:59:45.193858+00:00'
+    raw_reference: -1.103418
+    hardstop:
+      span: 1.1326
+      method: auto
+      saved_at: 1781895829.0004838
+    firmware_zero_changed: false
+    stops:
+      lo: -0.7854
+      hi: 0.0
+      raw_stop: -1.1278324559395738
+      end: closed
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_left_joint1:
+  id: 1
+  master_id: 17
+  model: DM8009
+  kp: 70.0
+  kd: 2.75
+  dir: 1
+  offset: 0.348678609748
+  soft_limits:
+    pos:
+    - -3.4907
+    - 1.3963
+    vel: 3.0
+    effort: 40.0
+  scale: 0.999905881583
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T22:23:32.595038+00:00'
+    raw_reference: -0.4274434
+    hardstop:
+      span: 2.41627
+      method: auto
+      saved_at: 1781894684.5090652
+    firmware_zero_changed: false
+    stops:
+      lo: -3.4907
+      hi: 1.3963
+      r_min: -3.8447013046463727
+      r_max: 1.0503929198138398
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_left_joint2:
+  id: 2
+  master_id: 18
+  model: DM8009
+  kp: 70.0
+  kd: 2.5
+  dir: 1
+  offset: -3.144569638265
+  soft_limits:
+    pos:
+    - -3.3161
+    - 0.17453
+    vel: 3.0
+    effort: 40.0
+  scale: 0.989331882197
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T22:23:32.595038+00:00'
+    raw_reference: -0.1615549
+    hardstop: null
+    firmware_zero_changed: false
+    stops:
+      lo: -3.3161
+      hi: 0.17453
+      r_min: -0.19016556038757848
+      r_max: 3.3308537422751208
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_left_joint3:
+  id: 3
+  master_id: 19
+  model: DM4340_V20
+  kp: 70.0
+  kd: 2.0
+  dir: 1
+  offset: 0.921409361860
+  soft_limits:
+    pos:
+    - -1.5708
+    - 1.5708
+    vel: 3.0
+    effort: 20.0
+  scale: 0.974139534884
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T22:23:32.595038+00:00'
+    raw_reference: -1.2552453
+    hardstop:
+      span: 3.16358
+      method: auto
+      saved_at: 1781895418.4656117
+    firmware_zero_changed: false
+    stops:
+      lo: -1.5708
+      hi: 1.5708
+      r_min: -1.60276951247425
+      r_max: 1.617647058823529
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_left_joint4:
+  id: 4
+  master_id: 20
+  model: DM4340_V20
+  kp: 60.0
+  kd: 2.0
+  dir: 1
+  offset: 0.047760000000
+  soft_limits:
+    pos:
+    - 0.0
+    - 2.4435
+    vel: 3.0
+    effort: 20.0
+  scale: 0.989708008797
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T22:23:32.595038+00:00'
+    raw_reference: -0.0440604
+    hardstop:
+      span: 2.18
+      method: j4_back_saved_front
+      saved_at: 1781895595.8097312
+    firmware_zero_changed: false
+    stops:
+      lo: 0.0
+      hi: 2.4435
+      raw_stop: -0.05092698558022413
+      end: lo
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_left_joint5:
+  id: 5
+  master_id: 21
+  model: DM4310P
+  kp: 12.0
+  kd: 0.6
+  dir: 1
+  offset: 0.021111898165
+  soft_limits:
+    pos:
+    - -1.5708
+    - 1.5708
+    vel: 6.0
+    effort: 8.0
+  scale: 0.997019984195
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T22:23:32.595038+00:00'
+    raw_reference: 1.1888685
+    hardstop:
+      span: 3.16815
+      method: auto
+      saved_at: 1781895635.566861
+    firmware_zero_changed: false
+    stops:
+      lo: -1.5708
+      hi: 1.5708
+      r_min: -1.6042954146639197
+      r_max: 1.5600442511635002
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_left_joint6:
+  id: 6
+  master_id: 22
+  model: DM4310P
+  kp: 12.0
+  kd: 0.6
+  dir: -1
+  offset: 0.263507024527
+  soft_limits:
+    pos:
+    - -0.7854
+    - 0.7854
+    vel: 6.0
+    effort: 8.0
+  scale: 0.992456120399
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T22:23:32.595038+00:00'
+    raw_reference: 0.1333257
+    hardstop:
+      span: 1.59266
+      method: auto
+      saved_at: 1781895662.7910314
+    firmware_zero_changed: false
+    stops:
+      lo: -0.7854
+      hi: 0.7854
+      r_min: -0.5296787975890744
+      r_max: 1.0519188220035094
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+    direction_corrected: '2026-07-16: J6 physical motion was reversed in RViz; sign flipped about calibrated midpoint'
+openarm_left_joint7:
+  id: 7
+  master_id: 23
+  model: DM4310P
+  kp: 12.0
+  kd: 0.6
+  dir: 1
+  offset: 0.059727520933
+  soft_limits:
+    pos:
+    - -1.5708
+    - 1.5708
+    vel: 6.0
+    effort: 8.0
+  scale: 0.994133171315
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T22:23:32.595038+00:00'
+    raw_reference: -0.4957275
+    hardstop:
+      span: 2.58602
+      method: auto
+      saved_at: 1781895798.2539303
+    firmware_zero_changed: false
+    stops:
+      lo: -1.5708
+      hi: 1.5708
+      r_min: -1.636339360646982
+      r_max: 1.5489814602883953
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'
+openarm_left_finger_joint1:
+  id: 8
+  master_id: 24
+  model: DM4310P
+  kp: 12.0
+  kd: 0.6
+  dir: 1
+  offset: 0.7928068930041151
+  soft_limits:
+    pos:
+    - 0.0
+    - 0.7854
+    vel: 6.0
+    effort: 8.0
+  scale: 0.7060519753086422
+  calibration:
+    source: live_hardstop_wizard
+    captured_at: '2026-07-10T22:23:32.595038+00:00'
+    raw_reference: -1.1259251
+    hardstop:
+      span: 1.18715
+      method: auto
+      saved_at: 1781895821.0869274
+    firmware_zero_changed: false
+    stops:
+      lo: 0.0
+      hi: 0.7854
+      raw_stop: -1.1228732738231475
+      end: closed
+    refit: 'bus-side swap 2026-07-11: payload captured on the other-name session (crossed
+      buses), re-fit to this side''s URDF template from the stored stop raws'

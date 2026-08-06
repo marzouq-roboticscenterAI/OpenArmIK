@@ -1,0 +1,21 @@
+{
+  "_source": {
+    "records": "/home/roboticscenter/OpenArm/calibrations.json at b90fb940",
+    "proven_reference": "marzouq-roboticscenterAI/OpenArm at 3309359",
+    "note": "The proven OpenArm-C arm_calib.txt is gitignored; J2 records are absent."
+  },
+  "0:1": {"channel": "0", "motor_id": 1, "method": "auto", "saved_at": 1781894684.5090652, "result": {"span": 2.41627}},
+  "0:3": {"channel": "0", "motor_id": 3, "method": "auto", "saved_at": 1781895418.4656117, "result": {"span": 3.16358}},
+  "0:4": {"channel": "0", "motor_id": 4, "method": "j4_back_saved_front", "saved_at": 1781895595.8097312, "result": {"span": 2.18}},
+  "0:5": {"channel": "0", "motor_id": 5, "method": "auto", "saved_at": 1781895635.566861, "result": {"span": 3.16815}},
+  "0:6": {"channel": "0", "motor_id": 6, "method": "auto", "saved_at": 1781895662.7910314, "result": {"span": 1.59266}},
+  "0:7": {"channel": "0", "motor_id": 7, "method": "auto", "saved_at": 1781895798.2539303, "result": {"span": 2.58602}},
+  "0:8": {"channel": "0", "motor_id": 8, "method": "auto", "saved_at": 1781895821.0869274, "result": {"span": 1.18715}},
+  "1:1": {"channel": "1", "motor_id": 1, "method": "auto", "saved_at": 1781894701.0985277, "result": {"span": 2.47463}},
+  "1:3": {"channel": "1", "motor_id": 3, "method": "auto", "saved_at": 1781895432.3911915, "result": {"span": 3.1651}},
+  "1:4": {"channel": "1", "motor_id": 4, "method": "j4_back_saved_front", "saved_at": 1781895601.5335338, "result": {"span": 2.18}},
+  "1:5": {"channel": "1", "motor_id": 5, "method": "auto", "saved_at": 1781895647.681281, "result": {"span": 3.18189}},
+  "1:6": {"channel": "1", "motor_id": 6, "method": "auto", "saved_at": 1781895671.4298067, "result": {"span": 1.59152}},
+  "1:7": {"channel": "1", "motor_id": 7, "method": "auto", "saved_at": 1781895810.084085, "result": {"span": 2.59937}},
+  "1:8": {"channel": "1", "motor_id": 8, "method": "auto", "saved_at": 1781895829.0004838, "result": {"span": 1.1326}}
+}
