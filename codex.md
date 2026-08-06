@@ -620,6 +620,90 @@ adds paths it does not know about, so it needs to gate the calibration loop
 itself, and asserting it must send explicit disable frames rather than merely
 stopping the sending of commands.
 
+## Planned: fold converge into mirror (NOT YET BUILT)
+
+Requested 2026-08-05: converge is redundant if mirroring can do the same, so make
+the mirror path cover everything converge does. Also a heart demo.
+
+### The premise is right about geometry and wrong about termination
+
+Converge's motion IS a mirror. Two claws closing on a midpoint are mirror images
+by construction, and oa_mirrored_tcp_move already describes that trajectory. That
+half is genuinely duplicated.
+
+What converge has that mirror does not is not geometry. It is these six fields
+from oa_converge_tcp_move:
+
+    double   contact_torque_nm[7];        per-joint |tau| stop threshold
+    double   contact_torque_fraction;     fallback as a fraction of tmax
+    uint32_t contact_persistence_cycles;  consecutive cycles before stopping
+    double   stop_distance_m;             stop short along the approach ray
+    double   minimum_progress_m;          reject if too little travel exists
+
+Converge is force-terminated motion. Mirror is purely kinematic: it plans and
+runs to completion. So mirror reproduces converge's path today but not its stop
+condition, and the stop condition is the entire reason converge exists.
+
+The merge is therefore: move contact termination onto mirror as an option. Then
+mirror-with-contact is converge, and converge becomes a wrapper or disappears.
+
+### The ABI freeze dictates where this lands
+
+openarm_runtime.h is byte-pinned against a frozen copy and has an exact exported
+symbol manifest. Widening oa_runtime_mirrored_tcp_move in place changes
+struct_size and fails the freeze test. So:
+
+- Add a NEW request type in openarm_runtime_motion.h, the additive surface,
+  carrying the mirror fields plus the contact fields. Do not touch the frozen
+  header.
+- Centroid and mirrored are currently static inline adapters over the frozen V1
+  planner and export no symbols. A contact-capable mirror needs the monitor, so
+  it cannot stay header-only; it becomes an exported symbol like converge did,
+  and the manifest count rises accordingly. Update the expected count in the
+  same commit or the manifest test fails.
+
+### control_core: one gate to change, carefully
+
+complete_on_contact() currently treats a contact stop as success only when the
+command is converge. That narrowness is deliberate and load-bearing. An earlier
+version mapped STOPPED to COMPLETED unconditionally and it masked real failures:
+pick-place reported all seven steps complete while the arms sat at
+(0.333, 0.080, 0.407) instead of (0.34, 0.11, 0.30).
+
+So the gate becomes "was contact termination requested for this command", not
+"is this command converge". Do not widen it to all STOPPED events again.
+
+Keep the two clearance thresholds distinct while doing this: the 25 mm planning
+gate and the 10 mm real-time intervention floor. Collapsing them aborts motions
+the planner legitimately accepted.
+
+### Verification that must pass
+
+- test_virtual_control_session, test_portal_core, test_real_observer_core
+- the frozen-ABI hash test and the exported-symbol manifest count
+- scripts/functional_sweep.sh, all 32 checks
+- a contact test that is NOT vacuous: assert unconditionally on
+  OA_STOP_CAUSE_CONTACT. An earlier contact test had a conditional escape hatch
+  and never exercised the contact path at all.
+- confirm converge's own behaviour is unchanged if the symbol is kept
+
+### Heart demo
+
+Two arms tracing a heart: claws meet at the bottom point, sweep out and up
+through the two lobes, and meet again at the top cusp. This is a natural mirror
+sequence, since a heart is symmetric about the vertical axis, so it needs the
+mirror planner and no contact termination.
+
+Constraints learned from the existing demos:
+
+- Every waypoint must clear the 25 mm portal guard, not just the 10 mm monitor.
+  Eight of fourteen presets were originally rejected because they were tuned
+  against the monitor. Closed poses ended up at +/-0.15 rather than +/-0.11.
+- The midpoint of any near-touching pose must stay outside the 0.12 m box grasp
+  radius or the box demo steals it; clap had to move to 0.05 m for this.
+- Add it to both demo_targets_json and demo_sequences_json in portal_page.cpp,
+  with a sequence button, and give it a lead-in waypoint like cross has.
+
 ## Build and test commands
 
 Install dependencies only when needed (this invokes sudo in the user's shell):
