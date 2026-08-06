@@ -41,6 +41,46 @@ watchdog are installed.
 ./scripts/launch_rviz.sh
 ```
 
+### Entry points
+
+| command | what it does | touches motors? |
+|---|---|---|
+| `./run.sh` | virtual stack: simulated controller, web portal, RViz | no, no CAN at all |
+| `./run-real.sh` | physical arms, read-only observer mirrored into RViz | reads only; cannot enable or move a motor |
+| `./dread.sh` | third-party hand-guided hardstop calibration wizard | **yes** — compliant-enables at zero gains |
+| `./scripts/setup_can_interfaces.sh` | brings `can0`/`can1` up; self-elevates | no |
+| `./scripts/set_zero.sh` | writes the mechanical zero into motor firmware | **yes**, and persistently |
+
+`run-real.sh` needs no sudo and refuses to run as root; the only privileged step
+is the interface bring-up, which it invokes for you.
+
+A read-only observer cannot calibrate joint ranges, because **a disabled DaMiao
+motor reports a frozen encoder value** — a 180 degree sweep records as about 13.
+Calibration therefore uses `./dread.sh`, which compliant-enables each motor at
+kp = kd = tau = 0: powered so the encoder observer runs, commanding nothing so
+the arm stays limp and back-drivable. That energizes the motors, unlike anything
+else here.
+
+### Bimanual motion in the C API
+
+Four planners, in `control/include/openarm_control.h` and exposed through
+`runtime/include/openarm_runtime_motion.h`:
+
+- `OA_PLAN_PAIRED_TCP` — an independent target per arm as one atomic command.
+  Single-arm motion is this with one side held at its measured pose.
+- `OA_PLAN_CENTROID_TCP` — the midpoint between the claws moves by a delta and
+  both arms follow it.
+- `OA_PLAN_MIRRORED_TCP` — one lead claw's target, reflected onto the other arm.
+- `OA_PLAN_CONVERGE_TCP` — both claws close on a point and stop on measured
+  contact torque.
+
+Collision avoidance runs on measured feedback in real time, not as a
+pre-computed check, against a 25 mm planning gate and a 10 mm intervention
+floor. A process-wide E-stop is always listening.
+
+Portal demos cover clap, crossed arms, box pick-and-place, and a heart traced by
+both claws.
+
 The build command performs a clean Release build in dependency order (CAN,
 model, commission, transport, control, runtime, then ROS), installs everything
 under `ros2_ws/install`, and never uses sudo or configures an interface. Builds
@@ -48,7 +88,7 @@ use at most two jobs by default; set `OPENARM_BUILD_JOBS` or pass `--jobs` to
 choose a different positive limit. ROS packages build sequentially so this
 limit remains global rather than multiplying across packages. To compile
 and run every registered hardware-free native CTest while verifying that all
-15 ROS tests are freshly registered, use:
+16 ROS tests are freshly registered, use:
 
 ```bash
 ./scripts/build.sh --tests
