@@ -56,15 +56,15 @@ try {
   assertFields('left', lastLeft, 100, 4);
   assertFields('right', lastRight, 100, 4);
   const motionSlider = document.getElementById('motion-limit-scale');
-  if (motionSlider.value !== '80' || document.getElementById('motion-limit-value').textContent !== '80%') {
+  if (motionSlider.value !== '100' || document.getElementById('motion-limit-value').textContent !== '100%') {
     throw new Error('movement limit default mismatch');
   }
-  motionSlider.value = '100';
+  motionSlider.value = '50';
   motionSlider.dispatchEvent(new Event('input', {bubbles:true}));
-  if (document.getElementById('motion-limit-value').textContent !== '100%') {
+  if (document.getElementById('motion-limit-value').textContent !== '50%') {
     throw new Error('movement limit label did not update');
   }
-  motionSlider.value = '80';
+  motionSlider.value = '100';
   motionSlider.dispatchEvent(new Event('input', {bubbles:true}));
 
   const observed = [];

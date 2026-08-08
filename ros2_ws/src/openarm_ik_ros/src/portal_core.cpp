@@ -27,12 +27,24 @@ constexpr double kMinimumProjectedMotionM = 0.001;
 // Twice the pinned 0.748 m centreline reach bounds TCP travel between any two
 // reachable poses.  Two metres adds margin while bounding huge finite inputs.
 constexpr double kProjectionMaximumRayM = 2.0;
-// DaMiao position feedback has a 25/65535 = 3.8148e-4 rad code step.  Keep
-// handoff equivalence far below one encoder code while covering floating-point
-// publication/serialization noise; an actual adjacent-code change still fails.
-constexpr double kGuardJointEquivalenceTolerance = 1.0e-6;
-// One DaMiao position code, 25/65535 rad, rounded up.
+// One DaMiao 16-bit position code over the documented [-12.5, 12.5] rad
+// range, rounded upward only enough to absorb binary64 evaluation error. A
+// physical encoder can alternate between adjacent codes while holding still;
+// requiring sub-code equality makes real-arm route handoff fail spuriously.
+// Two codes still prove a measured displacement and are rejected, while the
+// action adapter independently replans from the newest measured state and
+// monitors collision clearance throughout execution.
 constexpr double kMeasuredLimitTolerance = 3.9e-4;
+constexpr double kGuardJointEquivalenceTolerance = kMeasuredLimitTolerance;
+// A convergence endpoint enters the expanded rail safety envelope by 1 mm,
+// leaving 24 mm of actual STL-to-STL separation. The measured-state monitor
+// stops on the 25 mm boundary; the small endpoint margin prevents feedback
+// quantization from ending immediately outside the envelope.
+const double kContactTargetGapM = oa_collision_claw_rail_clearance_m() - 0.001;
+constexpr double kContactTargetGapToleranceM = 0.0005;
+constexpr double kContactSearchMinimumRadiusM = 0.015;
+constexpr double kContactSearchMaximumRadiusM = 0.070;
+constexpr std::size_t kContactSearchIterations = 12;
 
 Point origin(const oa_transform & transform)
 {
@@ -565,18 +577,15 @@ bool NominalPathGuard::inverse(
 }
 
 bool NominalPathGuard::scene_clear(
-  const std::array<oa_fk_result, 2> & fk, double & clearance, std::string & reason)
+  const std::array<oa_fk_result, 2> & fk,
+  const oa_collision_contact_policy contact_policy, double & clearance,
+  oa_collision_contact_evidence & contact, std::string & reason)
 {
   // The keepout model itself lives in the model library so that this pre-flight
   // guard and the real-time execution monitor cannot drift apart.
-  oa_collision_scene scene{};
-  if (oa_collision_scene_from_fk(&fk[0], &fk[1], &scene) != OA_MODEL_OK) {
-    clearance = -std::numeric_limits<double>::infinity();
-    reason = "nominal scene could not be constructed from forward kinematics";
-    return false;
-  }
   oa_collision_report report{};
-  const oa_model_status status = oa_collision_evaluate(&scene, &report);
+  const oa_model_status status = oa_collision_evaluate_scoped_fk_with_threshold(
+    &fk[0], &fk[1], oa_collision_required_clearance_m(), contact_policy, &report, &contact);
   clearance = report.minimum_clearance_m;
   if (status != OA_MODEL_OK) {
     reason = "nominal scene contains a non-finite coordinate";
@@ -642,6 +651,9 @@ GuardResult NominalPathGuard::validate(const GuardInput & input) const
     result.commanded_tcp[selected] = input.request.target;
   }
   std::array<JointVector, 2> q = input.measured_q;
+  bool retreat_saw_terminal = false;
+  bool retreat_cleared = false;
+  double retreat_previous_clearance = -std::numeric_limits<double>::infinity();
   for (std::size_t sample = 0; sample < kSamples; ++sample) {
     const double u = static_cast<double>(sample) / static_cast<double>(kSamples - 1);
     if (sample > 0) {
@@ -685,12 +697,57 @@ GuardResult NominalPathGuard::validate(const GuardInput & input) const
       return result;
     }
     double clearance = 0.0;
-    if (!scene_clear(fk, clearance, result.reason)) {
+    oa_collision_contact_evidence contact{};
+    if (!scene_clear(fk, input.contact_policy, clearance, contact, result.reason)) {
       result.sampled_keepout_violation = true;
       result.failure_path_fraction = u;
       return result;
     }
     result.minimum_nominal_clearance_m = std::min(result.minimum_nominal_clearance_m, clearance);
+    if (input.terminal_retreat) {
+      const bool active = contact.terminal_pair_active != 0U;
+      if (sample == 0U && !active) {
+        result.reason = "terminal retreat must start at the scoped terminal pair";
+        return result;
+      }
+      if (active) {
+        if (retreat_cleared ||
+          (retreat_saw_terminal && contact.terminal_pair_clearance_m <
+          retreat_previous_clearance - 1.0e-6))
+        {
+          result.reason = "terminal retreat path moved deeper into contact";
+          return result;
+        }
+        retreat_saw_terminal = true;
+        retreat_previous_clearance = contact.terminal_pair_clearance_m;
+      } else if (retreat_saw_terminal) {
+        retreat_cleared = true;
+      }
+    }
+    if (sample + 1U == kSamples) {
+      result.terminal_pair_active = contact.terminal_pair_active != 0U;
+      result.terminal_pair_clearance_m = contact.terminal_pair_clearance_m;
+      result.terminal_tcp_separation_m = contact.tcp_separation_m;
+      result.claw_contact_active = contact.claw_contact_active != 0U;
+      result.claw_hand_gap_m = contact.claw_hand_gap_m;
+      result.minimum_other_claw_gap_m = contact.minimum_other_claw_gap_m;
+    }
+  }
+  if (input.require_terminal_contact &&
+    (!result.terminal_pair_active || !result.claw_contact_active))
+  {
+    result.reason = "intentional contact target did not end at proved claw-hand tangency "
+      "(terminal_pair_active=" + std::string(result.terminal_pair_active ? "true" : "false") +
+      ", claw_contact_active=" + std::string(result.claw_contact_active ? "true" : "false") +
+      ", hand_gap_m=" + json_number(result.claw_hand_gap_m) +
+      ", minimum_other_claw_gap_m=" + json_number(result.minimum_other_claw_gap_m) + ")";
+    return result;
+  }
+  if (input.terminal_retreat && (!retreat_saw_terminal || !retreat_cleared ||
+    result.terminal_pair_active))
+  {
+    result.reason = "terminal retreat did not finish outside the scoped contact corridor";
+    return result;
   }
   result.accepted = true;
   result.achieved_fraction = 1.0;
@@ -895,6 +952,289 @@ GuardResult NominalPathGuard::validate_or_project(const GuardInput & input) cons
   return best;
 }
 
+GuardResult NominalPathGuard::revalidate_direct_leg(
+  const std::array<JointVector, 2> & measured_q,
+  const std::array<Point, 2> & endpoint, const bool terminal_retreat,
+  const int preserved_side) const
+{
+  if (terminal_retreat) {
+    GuardInput input;
+    input.measured_q = measured_q;
+    input.request.dual = true;
+    input.request.dual_target = endpoint;
+    input.contact_policy = OA_COLLISION_CONTACT_TERMINAL_CAPS;
+    input.terminal_retreat = true;
+    return validate(input);
+  }
+
+  GuardResult result;
+  oa_route_request request{};
+  request.abi_version = OA_ROUTE_ABI_VERSION;
+  request.struct_size = sizeof(request);
+  request.flags = OA_ROUTE_ALLOW_CLEARANCE_RECOVERY;
+  if (preserved_side == 0) {request.flags |= OA_ROUTE_PRESERVE_LEFT;}
+  else if (preserved_side == 1) {request.flags |= OA_ROUTE_PRESERVE_RIGHT;}
+  else if (preserved_side != -1) {
+    result.reason = "invalid preserved side";
+    return result;
+  }
+  request.maximum_branch_step_rad = 0.35;
+  for (std::size_t side = 0U; side < 2U; ++side) {
+    std::copy(measured_q[side].begin(), measured_q[side].end(), request.start_q_rad[side]);
+    std::copy(endpoint[side].begin(), endpoint[side].end(), request.target_tcp_m[side]);
+  }
+  oa_route_result planned{};
+  planned.abi_version = OA_ROUTE_ABI_VERSION;
+  planned.struct_size = sizeof(planned);
+  const oa_route_status status = oa_route_plan_paired(&request, &planned);
+  if (status != OA_ROUTE_OK) {
+    result.reason = "native-C direct-edge proof failed with status " + std::to_string(status);
+    return result;
+  }
+  if (planned.waypoint_count != 1U) {
+    result.reason = "fresh measured feedback requires a different guarded route";
+    return result;
+  }
+  result.accepted = true;
+  result.achieved_fraction = 1.0;
+  result.commanded_tcp = endpoint;
+  result.minimum_nominal_clearance_m = planned.minimum_clearance_m;
+  result.reason = "direct edge re-proved from fresh measured feedback";
+  return result;
+}
+
+GuardedRoute NominalPathGuard::route_or_project(const GuardInput & input) const
+{
+  GuardedRoute route;
+  // Intentional contact is permitted only by the dedicated scoped validator,
+  // and its first ordinary move must be the explicitly monotonic retreat.
+  if (input.contact_policy != OA_COLLISION_CONTACT_NONE ||
+    input.require_terminal_contact || input.terminal_retreat)
+  {
+    route.final = validate_or_project(input);
+    route.accepted = route.final.accepted;
+    route.reason = route.final.reason;
+    if (route.accepted) {route.waypoint_tcp.push_back(route.final.commanded_tcp);}
+    return route;
+  }
+
+  std::array<oa_fk_result, 2> measured_fk{};
+  std::array<Point, 2> measured_tcp{};
+  for (std::size_t side = 0; side < 2U; ++side) {
+    std::string ignored;
+    if (!validate_q(side, input.measured_q[side], ignored, kMeasuredLimitTolerance) ||
+      !forward(side, input.measured_q[side], measured_fk[side]))
+    {
+      route.reason = ignored.empty() ? "public FK rejected measured state" : ignored;
+      route.final.reason = route.reason;
+      return route;
+    }
+    measured_tcp[side] = origin(measured_fk[side].hand_tcp);
+  }
+
+  const std::size_t selected = input.request.side == MoveRequest::Side::left ? 0U : 1U;
+  const int preserved_side = input.request.dual ? input.preserved_side :
+    static_cast<int>(1U - selected);
+  std::array<Point, 2> target = measured_tcp;
+  if (input.request.dual) {
+    target = input.request.dual_target;
+  } else {
+    target[selected] = input.request.target;
+  }
+
+  oa_route_request request{};
+  request.abi_version = OA_ROUTE_ABI_VERSION;
+  request.struct_size = sizeof(request);
+  request.flags = OA_ROUTE_ALLOW_CLEARANCE_RECOVERY;
+  if (preserved_side == 0) {request.flags |= OA_ROUTE_PRESERVE_LEFT;}
+  else if (preserved_side == 1) {request.flags |= OA_ROUTE_PRESERVE_RIGHT;}
+  else if (preserved_side != -1) {
+    route.reason = "invalid preserved side";
+    route.final.reason = route.reason;
+    return route;
+  }
+  request.maximum_branch_step_rad = 0.35;
+  for (std::size_t side = 0; side < 2U; ++side) {
+    std::copy(input.measured_q[side].begin(), input.measured_q[side].end(),
+      request.start_q_rad[side]);
+    std::copy(target[side].begin(), target[side].end(), request.target_tcp_m[side]);
+  }
+  oa_route_result planned{};
+  planned.abi_version = OA_ROUTE_ABI_VERSION;
+  planned.struct_size = sizeof(planned);
+  const oa_route_status status = oa_route_plan_paired(&request, &planned);
+  if (status == OA_ROUTE_OK && planned.waypoint_count > 0U &&
+    planned.waypoint_count <= OA_ROUTE_MAX_WAYPOINTS)
+  {
+    route.accepted = true;
+    route.routed = planned.waypoint_count > 1U;
+    route.used_clearance_recovery = planned.used_clearance_recovery != 0U;
+    route.final.accepted = true;
+    route.final.measured_tcp = measured_tcp;
+    route.final.commanded_tcp = target;
+    route.final.requested_tcp = input.request.dual ? target[0] : input.request.target;
+    route.final.achieved_fraction = 1.0;
+    route.final.minimum_nominal_clearance_m = planned.minimum_clearance_m;
+    route.final.reason = "accepted exact target through " +
+      std::to_string(planned.waypoint_count) +
+      " native-C nominal-keepout-screened Cartesian leg" +
+      (planned.waypoint_count == 1U ? std::string{} : std::string("s"));
+    if (route.used_clearance_recovery) {
+      route.final.reason +=
+        "; first leg monotonically restores the 25 mm planning clearance";
+    }
+    route.reason = route.final.reason;
+    route.waypoint_tcp.reserve(planned.waypoint_count);
+    for (std::size_t waypoint = 0U; waypoint < planned.waypoint_count; ++waypoint) {
+      std::array<Point, 2> pair{};
+      for (std::size_t side = 0U; side < 2U; ++side) {
+        std::copy_n(planned.waypoint_tcp_m[waypoint][side], 3U, pair[side].begin());
+      }
+      route.waypoint_tcp.push_back(pair);
+    }
+    return route;
+  }
+
+  // Preserve the established best-effort semantics for an impossible
+  // single-arm XYZ. A dual target is atomic and therefore never projected.
+  route.final = validate_or_project(input);
+  route.accepted = route.final.accepted;
+  route.reason = route.final.reason;
+  if (route.accepted) {
+    route.waypoint_tcp.push_back(route.final.commanded_tcp);
+  } else if (status == OA_ROUTE_ENOPATH) {
+    route.reason = "native-C route graph found no exact path; " + route.reason;
+    route.final.reason = route.reason;
+  } else if (status != OA_ROUTE_OK) {
+    route.reason = "native-C route planner rejected the request with status " +
+      std::to_string(status) + "; " + route.reason;
+    route.final.reason = route.reason;
+  }
+  return route;
+}
+
+GuardResult NominalPathGuard::validate_convergence_contact(
+  GuardInput & input, const std::array<Point, 2> & measured_tcp,
+  const double nominal_stop_distance, const double minimum_progress) const
+{
+  GuardInput base = input;
+  base.contact_policy = OA_COLLISION_CONTACT_TERMINAL_CAPS;
+  base.require_terminal_contact = true;
+  base.terminal_retreat = false;
+  const MoveRequest midpoint_request = base.request;
+  GuardResult best;
+  double best_gap_error = std::numeric_limits<double>::infinity();
+  MoveRequest best_request{};
+  bool have_accepted = false;
+  std::string preparation_failure;
+
+  auto evaluate = [&](const double stop_distance, GuardResult & result,
+      MoveRequest & prepared) {
+      prepared = midpoint_request;
+      std::string reason;
+      if (!prepare_convergence_guard_targets(
+          prepared, measured_tcp, stop_distance, minimum_progress, reason))
+      {
+        result = GuardResult{};
+        result.reason = reason;
+        preparation_failure = reason;
+        return false;
+      }
+      GuardInput candidate = base;
+      candidate.request = prepared;
+      result = validate(candidate);
+      result.contact_stop_distance_m = stop_distance;
+      if (result.accepted) {
+        const double error = std::abs(result.claw_hand_gap_m - kContactTargetGapM);
+        if (!have_accepted || error < best_gap_error) {
+          best = result;
+          best_request = prepared;
+          best_gap_error = error;
+          have_accepted = true;
+        }
+      }
+      return true;
+    };
+
+  if (!std::isfinite(nominal_stop_distance) || nominal_stop_distance < 0.0 ||
+    !std::isfinite(minimum_progress) || minimum_progress < 0.0)
+  {
+    best.reason = "contact stop parameters must be finite and non-negative";
+    return best;
+  }
+
+  // Use signed triangle distance as feedback, not a guessed fixed claw width.
+  // For a pure radial translation, changing both stop radii by dr can change
+  // separation by at most 2*dr. The bounded correction below converges quickly
+  // for both redundant IK branches used by Heart and Clap.
+  double radius = std::clamp(
+    nominal_stop_distance, kContactSearchMinimumRadiusM,
+    kContactSearchMaximumRadiusM);
+  GuardResult last;
+  for (std::size_t iteration = 0; iteration < kContactSearchIterations; ++iteration) {
+    MoveRequest prepared;
+    if (!evaluate(radius, last, prepared)) {break;}
+    if (last.accepted &&
+      std::abs(last.claw_hand_gap_m - kContactTargetGapM) <=
+      kContactTargetGapToleranceM)
+    {
+      input = base;
+      input.request = prepared;
+      return last;
+    }
+    if (std::isfinite(last.claw_hand_gap_m)) {
+      const double correction = std::clamp(
+        (kContactTargetGapM - last.claw_hand_gap_m) * 0.5, -0.005, 0.005);
+      const double next = std::clamp(
+        radius + correction, kContactSearchMinimumRadiusM,
+        kContactSearchMaximumRadiusM);
+      if (std::abs(next - radius) >= 1.0e-5) {
+        radius = next;
+        continue;
+      }
+    }
+    break;
+  }
+
+  // Numerical IK or a non-monotonic orientation change can make the signed
+  // gap feedback unavailable at one candidate. Scan the bounded physical
+  // corridor as a fail-safe; every retained result still independently proves
+  // the complete 17-sample path and every non-contact keepout.
+  constexpr double scan_step = 0.0005;
+  for (double candidate_radius = kContactSearchMaximumRadiusM;
+    candidate_radius >= kContactSearchMinimumRadiusM - 0.5 * scan_step;
+    candidate_radius -= scan_step)
+  {
+    GuardResult candidate;
+    MoveRequest prepared;
+    if (!evaluate(candidate_radius, candidate, prepared)) {continue;}
+    if (candidate.accepted &&
+      std::abs(candidate.claw_hand_gap_m - kContactTargetGapM) <=
+      kContactTargetGapToleranceM)
+    {
+      input = base;
+      input.request = prepared;
+      return candidate;
+    }
+  }
+  if (have_accepted) {
+    input = base;
+    input.request = best_request;
+    best.reason += "; exact mesh search selected the closest available endpoint to the "
+      "24 mm physical rail-clearance target";
+    return best;
+  }
+  best = last;
+  best.accepted = false;
+  best.contact_stop_distance_m = 0.0;
+  best.reason = "no branch-specific expanded rail-envelope endpoint was proved in the "
+    "15-70 mm stop corridor" +
+    (best.reason.empty() ?
+    (preparation_failure.empty() ? std::string{} : ": " + preparation_failure) :
+    ": " + best.reason);
+  return best;
+}
+
 bool fresh_at_use(
   const FreshnessEvidence & evidence, std::int64_t now_time_ns,
   std::int64_t now_steady_ns, std::int64_t maximum_age_ns)
@@ -912,8 +1252,13 @@ bool fresh_at_use(
 bool guard_handoff_valid(
   const GuardInput & guarded, const GuardHandoffEvidence & current,
   std::int64_t now_time_ns, std::int64_t now_steady_ns,
-  std::int64_t state_maximum_age_ns, std::int64_t diagnostic_maximum_age_ns)
+  std::int64_t state_maximum_age_ns, std::int64_t diagnostic_maximum_age_ns,
+  std::string * failure_reason)
 {
+  const auto fail = [failure_reason](const char * reason) {
+      if (failure_reason != nullptr) {*failure_reason = reason;}
+      return false;
+    };
   auto monotonic_generation = [](
       std::uint64_t guarded_sequence, const FreshnessEvidence & guarded_freshness,
       std::uint64_t current_sequence, const FreshnessEvidence & current_freshness)
@@ -926,21 +1271,23 @@ bool guard_handoff_valid(
       return current_freshness.producer_time_ns > guarded_freshness.producer_time_ns &&
              current_freshness.receipt_steady_ns > guarded_freshness.receipt_steady_ns;
     };
-  if (!current.have_state || !current.diagnostic_valid ||
-    !fresh_at_use(
-      current.state_freshness, now_time_ns, now_steady_ns, state_maximum_age_ns) ||
-    !fresh_at_use(
+  if (!current.have_state) {return fail("encoder state is unavailable");}
+  if (!current.diagnostic_valid) {return fail("controller diagnostics are not healthy");}
+  if (!fresh_at_use(
+      current.state_freshness, now_time_ns, now_steady_ns, state_maximum_age_ns))
+  {return fail("encoder state is stale at action handoff");}
+  if (!fresh_at_use(
       current.diagnostic_freshness, now_time_ns, now_steady_ns,
-      diagnostic_maximum_age_ns) ||
-    !monotonic_generation(
+      diagnostic_maximum_age_ns))
+  {return fail("controller diagnostics are stale at action handoff");}
+  if (!monotonic_generation(
       guarded.state_sequence, guarded.state_freshness,
-      current.state_sequence, current.state_freshness) ||
-    !monotonic_generation(
+      current.state_sequence, current.state_freshness))
+  {return fail("encoder generation was replayed or reordered");}
+  if (!monotonic_generation(
       guarded.diagnostic_sequence, guarded.diagnostic_freshness,
       current.diagnostic_sequence, current.diagnostic_freshness))
-  {
-    return false;
-  }
+  {return fail("diagnostic generation was replayed or reordered");}
   for (std::size_t side = 0; side < current.measured_q.size(); ++side) {
     const oa_model * model = side == 0 ? oa_model_left_v10_bimanual() :
       oa_model_right_v10_bimanual();
@@ -950,14 +1297,28 @@ bool guard_handoff_valid(
       double lower = 0.0;
       double upper = 0.0;
       if (!std::isfinite(guarded_value) || !std::isfinite(current_value) ||
-        oa_model_limits(model, joint, &lower, &upper) != OA_MODEL_OK ||
-        current_value < lower || current_value > upper ||
-        std::abs(current_value - guarded_value) > kGuardJointEquivalenceTolerance)
+        oa_model_limits(model, joint, &lower, &upper) != OA_MODEL_OK)
       {
-        return false;
+        return fail("encoder state or model joint limits are non-finite");
+      }
+      // The route guard accepts a measured endpoint by one DaMiao encoder
+      // code because a mathematically in-bounds goal can quantize just past a
+      // joint limit.  Apply the identical tolerance at the final handoff;
+      // otherwise the guard can prove a route and then permanently strand the
+      // portal at that route's quantized endpoint.  Planned IK states remain
+      // strictly in bounds. Handoff equivalence below accepts only the same or
+      // an adjacent quantized code and rejects a displacement of two codes.
+      if (current_value < lower - kMeasuredLimitTolerance ||
+        current_value > upper + kMeasuredLimitTolerance)
+      {
+        return fail("newest encoder state is outside the pinned model joint limits");
+      }
+      if (std::abs(current_value - guarded_value) > kGuardJointEquivalenceTolerance) {
+        return fail("an encoder joint changed while the nominal path was being guarded");
       }
     }
   }
+  if (failure_reason != nullptr) {failure_reason->clear();}
   return true;
 }
 
@@ -982,17 +1343,76 @@ bool normalise_move_to_metres(
   return true;
 }
 
+double nominal_contact_stop_distance_m()
+{
+  // The adaptive pinned-mesh search starts with each TCP 45 mm from the shared
+  // midpoint, then solves for the 25 mm expanded rail-envelope boundary.
+  return 0.045;
+}
+
+bool prepare_convergence_guard_targets(
+  MoveRequest & request, const std::array<Point, 2> & measured_tcp,
+  const double stop_distance_m, const double minimum_progress_m, std::string & reason)
+{
+  if (!std::isfinite(stop_distance_m) || stop_distance_m < 0.0 ||
+    !std::isfinite(minimum_progress_m) || minimum_progress_m < 0.0 ||
+    !std::all_of(request.target.begin(), request.target.end(), [](const double value) {
+      return std::isfinite(value);
+    }))
+  {
+    reason = "convergence target and stop parameters must be finite and non-negative";
+    return false;
+  }
+  std::array<Point, 2> guard_target{};
+  for (std::size_t side = 0; side < measured_tcp.size(); ++side) {
+    Point ray{};
+    for (std::size_t axis = 0; axis < ray.size(); ++axis) {
+      if (!std::isfinite(measured_tcp[side][axis])) {
+        reason = "measured TCP is non-finite";
+        return false;
+      }
+      ray[axis] = request.target[axis] - measured_tcp[side][axis];
+    }
+    const double distance = std::hypot(ray[0], ray[1], ray[2]);
+    const double travel = distance - stop_distance_m;
+    if (!std::isfinite(distance) || !(distance > 0.0) ||
+      !std::isfinite(travel) || travel < minimum_progress_m)
+    {
+      reason = "each claw needs a finite convergence prefix longer than the contact stop radius";
+      return false;
+    }
+    const double scale = travel / distance;
+    for (std::size_t axis = 0; axis < ray.size(); ++axis) {
+      guard_target[side][axis] = measured_tcp[side][axis] + scale * ray[axis];
+      if (!std::isfinite(guard_target[side][axis])) {
+        reason = "convergence guard target overflowed";
+        return false;
+      }
+    }
+  }
+  request.dual = true;
+  request.dual_target = guard_target;
+  return true;
+}
+
 bool map_canonical_joint_state(
   const std::vector<std::string> & names, const std::vector<double> & positions,
   std::array<JointVector, 2> & output)
 {
   constexpr std::size_t kJointCount = OA_DOF * 2U;
-  if (names.size() != kJointCount || positions.size() != kJointCount) {
+  static constexpr std::array<std::string_view, 4> kFingerJoints{{
+    "openarm_left_finger_joint1", "openarm_left_finger_joint2",
+    "openarm_right_finger_joint1", "openarm_right_finger_joint2",
+  }};
+  if (names.size() != positions.size() || names.size() < kJointCount ||
+    names.size() > kJointCount + kFingerJoints.size())
+  {
     return false;
   }
   std::array<bool, kJointCount> seen{};
+  std::array<bool, kFingerJoints.size()> seen_finger{};
   std::array<JointVector, 2> mapped{};
-  for (std::size_t input = 0; input < kJointCount; ++input) {
+  for (std::size_t input = 0; input < names.size(); ++input) {
     if (!std::isfinite(positions[input])) {
       return false;
     }
@@ -1007,11 +1427,23 @@ bool map_canonical_joint_state(
         }
       }
     }
-    if (canonical == kJointCount || seen[canonical]) {
+    if (canonical != kJointCount) {
+      if (seen[canonical]) {
+        return false;
+      }
+      seen[canonical] = true;
+      mapped[canonical / OA_DOF][canonical % OA_DOF] = positions[input];
+      continue;
+    }
+    const auto finger = std::find(kFingerJoints.begin(), kFingerJoints.end(), names[input]);
+    if (finger == kFingerJoints.end()) {
       return false;
     }
-    seen[canonical] = true;
-    mapped[canonical / OA_DOF][canonical % OA_DOF] = positions[input];
+    const std::size_t finger_index = static_cast<std::size_t>(finger - kFingerJoints.begin());
+    if (seen_finger[finger_index]) {
+      return false;
+    }
+    seen_finger[finger_index] = true;
   }
   if (!std::all_of(seen.begin(), seen.end(), [](bool value) {return value;})) {
     return false;

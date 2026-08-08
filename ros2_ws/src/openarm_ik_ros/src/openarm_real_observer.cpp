@@ -25,8 +25,10 @@
 //     the reading failed.
 //   - that the arm assignment is safe to command from. It is good enough to
 //     label a view; it is not a commissioning record.
+#include "openarm_ik_ros/display_calibration.hpp"
 #include "openarm_ik_ros/real_observer_core.hpp"
 
+#include <openarm_control_msgs/srv/adjust_display_joint.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -34,8 +36,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
-#include <fstream>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -49,6 +51,10 @@ using openarm_ik_ros::real::ArmAssignment;
 using openarm_ik_ros::real::BusReading;
 using openarm_ik_ros::real::ObserverConfig;
 using openarm_ik_ros::real::RealObserver;
+using AdjustDisplayJoint = openarm_control_msgs::srv::AdjustDisplayJoint;
+
+constexpr double kRadiansPerDegree = 0.017453292519943295769236907684886;
+constexpr double kDegreesPerRadian = 57.295779513082320876798154814105;
 
 class RealObserverNode : public rclcpp::Node
 {
@@ -72,12 +78,12 @@ public:
       declare_parameter<std::string>("interface_a_side", "");
 
     const char * home = std::getenv("HOME");
-    zero_path_ = declare_parameter<std::string>(
+    calibration_path_ = declare_parameter<std::string>(
       "zero_file", std::string(home != nullptr ? home : "/tmp") + "/.openarm_real_zero");
     invert_gripper_ = !declare_parameter<bool>("gripper_opens_with_increasing_angle", false);
-    capture_zero_on_connect_ = declare_parameter<bool>("capture_zero_on_connect", true);
+    capture_zero_on_connect_ = declare_parameter<bool>("capture_zero_on_connect", false);
     const bool connect_on_start = declare_parameter<bool>("connect_on_start", false);
-    load_zero();
+    load_calibration();
 
     observer_ = std::make_unique<RealObserver>(config);
 
@@ -120,6 +126,7 @@ public:
         std_srvs::srv::Trigger::Response::SharedPtr response)
       {
         observer_->disconnect();
+        latest_raw_valid_ = {};
         response->success = true;
         response->message = "disconnected; sockets closed and publishing stopped";
         publish_status();
@@ -132,6 +139,7 @@ public:
         std_srvs::srv::Trigger::Response::SharedPtr response)
       {
         observer_->swap_sides();
+        latest_raw_valid_ = {};
         response->success = true;
         response->message = observer_->assignment().reason;
         publish_status();
@@ -153,9 +161,15 @@ public:
       [this](const std_srvs::srv::Trigger::Request::SharedPtr,
         std_srvs::srv::Trigger::Response::SharedPtr response)
       {
-        clear_zero();
-        response->success = true;
-        response->message = "cleared the captured zero; showing raw motor angles again";
+        response->success = clear_zero(response->message);
+      });
+
+    adjust_display_service_ = create_service<AdjustDisplayJoint>(
+      "/openarm_real/adjust_display_joint",
+      [this](const AdjustDisplayJoint::Request::SharedPtr request,
+        AdjustDisplayJoint::Response::SharedPtr response)
+      {
+        adjust_display_joint(*request, *response);
       });
 
     for (const auto & entry : {std::pair<const char *, std::size_t>{"left", 0U},
@@ -168,12 +182,20 @@ public:
             const std_srvs::srv::Trigger::Request::SharedPtr,
             std_srvs::srv::Trigger::Response::SharedPtr response)
           {
-            arm_sign_[side] = -arm_sign_[side];
-            save_zero();
-            response->success = true;
-            response->message = "the " + name + " arm now moves " +
-            (arm_sign_[side] < 0.0 ? "inverted" : "normally") +
-            " on screen; saved, so it persists across restarts";
+            const auto previous = display_calibration_;
+            for (std::size_t joint = 0; joint < 7U; ++joint) {
+              (void)display_calibration_.flip_direction(side, joint);
+            }
+            std::string save_error;
+            const bool saved = display_calibration_.save(calibration_path_, save_error);
+            if (!saved) {
+              display_calibration_ = previous;
+            }
+            response->success = saved;
+            response->message = "flipped all seven " + name +
+              " joint display directions" +
+              (saved ? "; saved, so it persists across restarts" :
+              "; no change was applied because saving failed: " + save_error);
             RCLCPP_INFO(get_logger(), "%s", response->message.c_str());
           }));
     }
@@ -200,9 +222,8 @@ public:
       get_logger(),
       "Real-arm observer is READ ONLY and starts passive. It transmits only "
       "DaMiao refresh-status and register-query frames and has no path to "
-      "enable, zero, or move a motor. Joint angles use an uncommissioned "
-      "mapping: a pose that looks wrong in RViz means the mapping needs "
-      "commissioning.");
+      "enable, zero, or move a motor. Per-joint display direction/reference/offset "
+      "calibration is local to RViz and does not alter a motor.");
   }
 
 private:
@@ -257,28 +278,33 @@ private:
     state.velocity.assign(state.name.size(), 0.0);
     state.effort.assign(state.name.size(), 0.0);
     if (usable) {
-      for (std::size_t bus = 0; bus < 2U; ++bus) {
-        if (!readings[bus].complete) {
-          continue;   // Unpopulated bus: leave that arm at the rest pose.
+      // Start from the most recent exact-ID encoder values. If one motor misses
+      // this sample, only that joint holds its last known pose; a never-seen
+      // joint stays neutral. Velocity and effort remain zero until fresh.
+      for (std::size_t side = 0; side < 2U; ++side) {
+        for (std::size_t joint = 0; joint < 7U; ++joint) {
+          if (latest_raw_valid_[side][joint]) {
+            state.position[side * 7U + joint] = display_calibration_.position(
+              side, joint, latest_raw_[side][joint]);
+          }
         }
+      }
+      for (std::size_t bus = 0; bus < 2U; ++bus) {
         const std::size_t side = assignment.side_of_interface[bus];
         for (std::size_t joint = 0; joint < 7U; ++joint) {
+          if (!readings[bus].joint_valid[joint]) {
+            continue;
+          }
           const std::size_t index = side * 7U + joint;
-          // Motor space to URDF space: subtract the captured reference, then
-          // apply this arm's direction sign. Order matters -- the reference was
-          // captured in motor space, so it must come off before the sign.
-          //
-          // The sign is operator-set, not derived. The virtual manifest's
-          // q_scale was tried and did not match this hardware, which is not
-          // surprising: that manifest carries a uniform 0.125 q_offset for
-          // every joint, so its per-joint values are placeholders rather than
-          // measurements. Nothing on the bus reports mounting orientation
-          // either. So this is settled by looking at the robot and pressing a
-          // button, and the result is persisted.
-          state.position[index] = arm_sign_[side] *
-            (readings[bus].position_rad[joint] - zero_offset_[side][joint]);
-            state.velocity[index] = arm_sign_[side] * readings[bus].velocity_rad_s[joint];
-          state.effort[index] = arm_sign_[side] * readings[bus].torque_nm[joint];
+          latest_raw_[side][joint] = readings[bus].position_rad[joint];
+          latest_raw_valid_[side][joint] = true;
+          latest_raw_time_[side][joint] = std::chrono::steady_clock::now();
+          state.position[index] = display_calibration_.position(
+            side, joint, readings[bus].position_rad[joint]);
+          state.velocity[index] = display_calibration_.signed_value(
+            side, joint, readings[bus].velocity_rad_s[joint]);
+          state.effort[index] = display_calibration_.signed_value(
+            side, joint, readings[bus].torque_nm[joint]);
         }
         if (readings[bus].has_gripper) {
           const double metres = gripper_metres(bus, readings[bus].gripper_rad);
@@ -364,77 +390,153 @@ private:
         "would be stored against the wrong sides";
       return false;
     }
+    const auto previous = display_calibration_;
     std::size_t captured = 0;
     for (std::size_t bus = 0; bus < 2U; ++bus) {
       if (!readings[bus].complete) {
         continue;
       }
       const std::size_t side = assignment.side_of_interface[bus];
-      for (std::size_t joint = 0; joint < 7U; ++joint) {
-        zero_offset_[side][joint] = readings[bus].position_rad[joint];
-      }
+      (void)display_calibration_.capture_current_as_zero(side, readings[bus].position_rad);
+      latest_raw_[side] = readings[bus].position_rad;
+      latest_raw_valid_[side].fill(true);
+      latest_raw_time_[side].fill(std::chrono::steady_clock::now());
       ++captured;
     }
-    save_zero();
+    if (captured == 0U) {
+      out_message = "no complete arm reading was available to capture";
+      return false;
+    }
+    std::string save_error;
+    if (!display_calibration_.save(calibration_path_, save_error)) {
+      display_calibration_ = previous;
+      out_message = "the reference was not changed because it could not be saved: " + save_error;
+      return false;
+    }
     out_message = "captured the current pose as zero for " + std::to_string(captured) +
-      " arm(s); RViz now shows movement relative to it. Saved to " + zero_path_;
+      " arm(s); RViz now shows movement relative to it. Saved to " + calibration_path_;
+    return captured > 0U;
+  }
+
+  bool clear_zero(std::string & message)
+  {
+    const auto previous = display_calibration_;
+    display_calibration_.clear_references_and_offsets();
+    std::string error;
+    if (!display_calibration_.save(calibration_path_, error)) {
+      display_calibration_ = previous;
+      message = "no change was applied because saving failed: " + error;
+      return false;
+    }
+    message = "cleared joint references and offsets; directions were preserved and saved";
     return true;
   }
 
-  void clear_zero()
+  void load_calibration()
   {
-    zero_offset_ = {};
-    save_zero();
-  }
-
-  void save_zero() const
-  {
-    std::ofstream file(zero_path_);
-    if (!file) {
-      RCLCPP_WARN(get_logger(), "could not write %s; the zero will not survive a restart",
-        zero_path_.c_str());
+    std::string detail;
+    if (!display_calibration_.load(calibration_path_, detail)) {
+      RCLCPP_INFO(get_logger(), "%s (%s)", detail.c_str(), calibration_path_.c_str());
       return;
     }
-    for (const auto & side : zero_offset_) {
-      for (const double value : side) {
-        file << value << ' ';
+    RCLCPP_INFO(get_logger(), "%s from %s", detail.c_str(), calibration_path_.c_str());
+    if (detail.find("migrated") != std::string::npos) {
+      std::string save_error;
+      if (!display_calibration_.save(calibration_path_, save_error)) {
+        RCLCPP_WARN(get_logger(), "legacy calibration is active but V2 save failed: %s",
+          save_error.c_str());
       }
-      file << '\n';
     }
-    file << arm_sign_[0] << ' ' << arm_sign_[1] << '\n';
   }
 
-  void load_zero()
+  void adjust_display_joint(
+    const AdjustDisplayJoint::Request & request, AdjustDisplayJoint::Response & response)
   {
-    std::ifstream file(zero_path_);
-    if (!file) {
+    std::size_t side = 0U;
+    if (request.side == "left" || request.side == "robot-left") {
+      side = 0U;
+    } else if (request.side == "right" || request.side == "robot-right") {
+      side = 1U;
+    } else {
+      response.message = "side must be robot-left or robot-right";
       return;
     }
-    for (auto & side : zero_offset_) {
-      for (double & value : side) {
-        if (!(file >> value)) {
-          zero_offset_ = {};   // A truncated file is worse than none.
-          return;
-        }
+    if (request.joint < 1U || request.joint > 7U) {
+      response.message = "joint must be in the inclusive range J1..J7";
+      return;
+    }
+    const std::size_t joint_index = static_cast<std::size_t>(request.joint - 1U);
+    const bool has_live_reading = has_fresh_live_reading(side, joint_index);
+    const auto previous = display_calibration_;
+    bool mutated = false;
+
+    if (request.operation == AdjustDisplayJoint::Request::QUERY) {
+      // No mutation.
+    } else if (request.operation == AdjustDisplayJoint::Request::FLIP_DIRECTION) {
+      mutated = display_calibration_.flip_direction(side, joint_index);
+    } else if (request.operation == AdjustDisplayJoint::Request::ADD_OFFSET_DEGREES) {
+      mutated = display_calibration_.add_offset(
+        side, joint_index, request.value_degrees * kRadiansPerDegree);
+    } else if (request.operation == AdjustDisplayJoint::Request::SET_CURRENT_DEGREES) {
+      if (!has_live_reading) {
+        response.message = "cannot set the displayed angle without a current encoder reading";
+        return;
+      }
+      mutated = display_calibration_.set_current_position(
+        side, joint_index, latest_raw_[side][joint_index],
+        request.value_degrees * kRadiansPerDegree);
+    } else {
+      response.message = "unknown display calibration operation";
+      return;
+    }
+
+    if (request.operation != AdjustDisplayJoint::Request::QUERY && !mutated) {
+      response.message = "display calibration value was invalid";
+      return;
+    }
+    if (mutated) {
+      std::string save_error;
+      if (!display_calibration_.save(calibration_path_, save_error)) {
+        display_calibration_ = previous;
+        response.message = "calibration was not changed because it could not be saved: " +
+          save_error;
+        return;
       }
     }
-    // Signs were added after the first release of this file, so a file without
-    // them must still load rather than being discarded.
-    double left_sign = 1.0;
-    double right_sign = 1.0;
-    if (file >> left_sign >> right_sign) {
-      arm_sign_[0] = left_sign < 0.0 ? -1.0 : 1.0;
-      arm_sign_[1] = right_sign < 0.0 ? -1.0 : 1.0;
+
+    const auto & calibration = display_calibration_.joint(side, joint_index);
+    response.direction = static_cast<std::int8_t>(calibration.direction);
+    response.reference_degrees = calibration.reference_rad * kDegreesPerRadian;
+    response.offset_degrees = calibration.offset_rad * kDegreesPerRadian;
+    response.has_live_reading = has_live_reading;
+    if (has_live_reading) {
+      response.raw_encoder_degrees = latest_raw_[side][joint_index] * kDegreesPerRadian;
+      response.displayed_degrees = display_calibration_.position(
+        side, joint_index, latest_raw_[side][joint_index]) * kDegreesPerRadian;
     }
-    RCLCPP_INFO(get_logger(), "loaded a saved zero from %s", zero_path_.c_str());
+    response.success = true;
+    response.message = (request.side.find("right") != std::string::npos ?
+      "robot-right J" : "robot-left J") + std::to_string(request.joint) +
+      ": direction " + (calibration.direction > 0 ? "+1" : "-1") +
+      ", offset " + std::to_string(response.offset_degrees) + " deg" +
+      (mutated ? "; saved" : "");
+    RCLCPP_INFO(get_logger(), "%s", response.message.c_str());
   }
 
-  std::array<std::array<double, 7>, 2> zero_offset_{};
-  /// Direction of each arm, +1 or -1, applied to every joint on that arm.
-  std::array<double, 2> arm_sign_{1.0, 1.0};
-  std::string zero_path_;
+  bool has_fresh_live_reading(const std::size_t side, const std::size_t joint) const
+  {
+    constexpr auto kMaximumAge = std::chrono::milliseconds(250);
+    return observer_->connected() && latest_raw_valid_[side][joint] &&
+           std::chrono::steady_clock::now() - latest_raw_time_[side][joint] <= kMaximumAge;
+  }
+
+  openarm_ik_ros::real::DisplayCalibration display_calibration_;
+  std::array<std::array<double, 7>, 2> latest_raw_{};
+  std::array<std::array<bool, 7>, 2> latest_raw_valid_{};
+  std::array<std::array<std::chrono::steady_clock::time_point, 7>, 2> latest_raw_time_{};
+  std::string calibration_path_;
   bool invert_gripper_{true};
-  bool capture_zero_on_connect_{true};
+  bool capture_zero_on_connect_{false};
 
   void publish_status()
   {
@@ -451,6 +553,7 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr swap_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr capture_zero_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_zero_service_;
+  rclcpp::Service<AdjustDisplayJoint>::SharedPtr adjust_display_service_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr startup_timer_;
   std::vector<rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr> flip_services_;

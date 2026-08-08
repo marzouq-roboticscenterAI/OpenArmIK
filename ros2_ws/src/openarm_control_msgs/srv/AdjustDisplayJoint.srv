@@ -1,0 +1,20 @@
+# Read or adjust the read-only encoder-to-RViz mapping for one arm joint.
+# These operations affect display calibration only; they never write a motor.
+uint8 QUERY=0
+uint8 FLIP_DIRECTION=1
+uint8 ADD_OFFSET_DEGREES=2
+uint8 SET_CURRENT_DEGREES=3
+
+string side
+uint8 joint
+uint8 operation
+float64 value_degrees
+---
+bool success
+string message
+int8 direction
+float64 reference_degrees
+float64 offset_degrees
+bool has_live_reading
+float64 raw_encoder_degrees
+float64 displayed_degrees

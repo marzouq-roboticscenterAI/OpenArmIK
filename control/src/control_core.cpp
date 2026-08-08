@@ -79,6 +79,33 @@ double decode_field(const std::uint32_t value, const double span,
 
 std::atomic<std::uint64_t> next_controller_instance{1U};
 
+bool configure_contact_thresholds(
+    const Manifest &manifest, const double request_threshold_nm[7],
+    const double request_fraction, const std::uint32_t request_persistence_cycles,
+    MotionPlan &plan) noexcept {
+    plan.contact_monitored = true;
+    plan.contact_persistence_cycles =
+        request_persistence_cycles == 0U
+            ? oa_control_default_contact_persistence_cycles()
+            : request_persistence_cycles;
+    const double fraction = request_fraction > 0.0
+                                ? request_fraction
+                                : oa_control_default_contact_torque_fraction();
+    for (std::size_t side = 0; side < 2U; ++side) {
+        for (std::size_t joint = 0; joint < 7U; ++joint) {
+            double threshold = request_threshold_nm[joint];
+            if (!std::isfinite(threshold) || threshold <= 0.0) {
+                threshold = fraction * manifest.config().arm[side].motor[joint].tmax_nm;
+            }
+            if (!std::isfinite(threshold) || threshold <= 0.0) {
+                return false;
+            }
+            plan.contact_threshold_nm[side][joint] = threshold;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 Manifest::Manifest(const oa_manifest_config &config) : config_(config) {
@@ -781,6 +808,7 @@ oa_control_status Controller::plan_paired_common(
     plan->manifest_revision = manifest_->config().manifest_revision;
     plan->model_revision = manifest_->config().model_revision;
     plan->collision_scene_revision = request.collision_scene_revision;
+    plan->contact_geometry_policy = request.contact_geometry_policy;
     plan->controller_instance = instance_id_;
     plan->verify_epoch = verify_epoch_;
     plan->expiry_ns = request.expiry_ns;
@@ -835,6 +863,52 @@ oa_control_status Controller::plan_paired_common(
                 plan->achieved_tcp[side] = ik.achieved;
                 plan->tcp_residual[side] = ik.residual;
             }
+        }
+    }
+
+    /* A proved terminal-cap contact must have one safe way out. Ordinary
+     * paired planning normally carries no contact exception, but a command can
+     * begin at the deliberate tangent pose left by converge. In that one
+     * state, recognize a retreat only after checking every planned waypoint:
+     * all protected pairs remain above the real-time floor, terminal
+     * clearance never decreases while the pair is active, and the path ends
+     * completely outside the scoped corridor. This is controller-side proof;
+     * it does not trust the portal guard and it cannot authorize an approach. */
+    if (request.contact_geometry_policy == OA_COLLISION_CONTACT_NONE) {
+        KeepoutStatus strict_start{};
+        KeepoutStatus scoped_start{};
+        const std::array<JointVector, 2> start{plan->start_q[0], plan->start_q[1]};
+        const bool strict_clear = keepout_clear(
+            start, strict_start, OA_COLLISION_CONTACT_NONE);
+        const bool scoped_clear = keepout_clear(
+            start, scoped_start, OA_COLLISION_CONTACT_TERMINAL_CAPS);
+        if (!strict_clear && scoped_clear && scoped_start.terminal_pair_active) {
+            constexpr double kRetreatMonotonicEpsilonM = 1.0e-6;
+            bool terminal_cleared = false;
+            double previous_terminal_clearance =
+                scoped_start.terminal_pair_clearance_m;
+            for (std::size_t waypoint = 1U; waypoint < plan->waypoint_count; ++waypoint) {
+                const std::array<JointVector, 2> q{
+                    plan->waypoint_q[0][waypoint], plan->waypoint_q[1][waypoint]};
+                KeepoutStatus scoped{};
+                if (!keepout_clear(q, scoped, OA_COLLISION_CONTACT_TERMINAL_CAPS)) {
+                    return OA_CONTROL_ECOLLISION;
+                }
+                if (scoped.terminal_pair_active) {
+                    if (terminal_cleared ||
+                        scoped.terminal_pair_clearance_m <
+                            previous_terminal_clearance - kRetreatMonotonicEpsilonM) {
+                        return OA_CONTROL_ECOLLISION;
+                    }
+                    previous_terminal_clearance = scoped.terminal_pair_clearance_m;
+                } else {
+                    terminal_cleared = true;
+                }
+            }
+            if (!terminal_cleared) {
+                return OA_CONTROL_ECOLLISION;
+            }
+            plan->contact_geometry_policy = OA_COLLISION_CONTACT_TERMINAL_CAPS;
         }
     }
     plan->collision_checked = false;
@@ -1011,32 +1085,16 @@ oa_control_status Controller::plan_converge(const oa_converge_tcp_move &request,
     common.collision_scene_revision = request.collision_scene_revision;
     common.max_branch_step_rad = request.max_branch_step_rad;
     common.min_singular_value = request.min_singular_value;
+    common.contact_geometry_policy = OA_COLLISION_CONTACT_TERMINAL_CAPS;
     const oa_control_status status = plan_paired_common(common, out);
     if (status != OA_CONTROL_OK) {
         return status;
     }
-    out->contact_monitored = true;
-    out->contact_persistence_cycles =
-        request.contact_persistence_cycles == 0U
-            ? oa_control_default_contact_persistence_cycles()
-            : request.contact_persistence_cycles;
-    const double fraction = request.contact_torque_fraction > 0.0
-                                ? request.contact_torque_fraction
-                                : oa_control_default_contact_torque_fraction();
-    for (std::size_t side = 0; side < 2U; ++side) {
-        for (std::size_t joint = 0; joint < 7U; ++joint) {
-            const double explicit_threshold = request.contact_torque_nm[joint];
-            const auto &motor = manifest_->config().arm[side].motor[joint];
-            double threshold = explicit_threshold;
-            if (!std::isfinite(threshold) || threshold <= 0.0) {
-                threshold = fraction * motor.tmax_nm;
-            }
-            if (!std::isfinite(threshold) || threshold <= 0.0) {
-                out.reset();
-                return OA_CONTROL_EINVAL;
-            }
-            out->contact_threshold_nm[side][joint] = threshold;
-        }
+    if (!configure_contact_thresholds(*manifest_, request.contact_torque_nm,
+                                      request.contact_torque_fraction,
+                                      request.contact_persistence_cycles, *out)) {
+        out.reset();
+        return OA_CONTROL_EINVAL;
     }
     return OA_CONTROL_OK;
 }
@@ -1099,8 +1157,8 @@ oa_control_status Controller::execute(const MotionPlan &plan, const oa_execute_r
         plan.duration_ns > request.expiry_ns - start_ns) {
         return OA_CONTROL_EINVAL;
     }
-    reset_contact_report();
     executing_ = plan;
+    reset_contact_report(*executing_);
     command_id_ = next_command_id_++;
     command_start_ns_ = start_ns;
     command_expiry_ns_ = request.expiry_ns;
@@ -1118,37 +1176,37 @@ oa_control_status Controller::execute(const MotionPlan &plan, const oa_execute_r
 }
 
 bool Controller::keepout_clear(const std::array<JointVector, 2> &q,
-                               KeepoutStatus &status) const noexcept {
+                               KeepoutStatus &status,
+                               const std::uint32_t contact_geometry_policy) const noexcept {
     status = {};
     status.minimum_clearance_m = -std::numeric_limits<double>::infinity();
-    oa_collision_scene scene{};
-    scene.abi_version = OA_COLLISION_ABI_VERSION;
-    scene.struct_size = static_cast<std::uint32_t>(sizeof(scene));
+    std::array<oa_fk_result, 2> fk{};
     for (std::size_t side = 0; side < 2U; ++side) {
-        KinematicResult fk{};
-        if (!forward(static_cast<std::uint32_t>(side), q[side], fk)) {
+        const oa_model *model = side == 0U ? oa_model_left_v10_bimanual()
+                                            : oa_model_right_v10_bimanual();
+        if (oa_fk(model, q[side].data(), &fk[side]) != OA_MODEL_OK) {
             return false;
-        }
-        for (std::size_t joint = 0; joint < 7U; ++joint) {
-            for (std::size_t axis = 0; axis < 3U; ++axis) {
-                scene.point[side][joint][axis] = fk.joint_xyz[joint][axis];
-            }
-        }
-        for (std::size_t axis = 0; axis < 3U; ++axis) {
-            scene.point[side][7][axis] = fk.tcp_xyz[axis];
         }
     }
     /* Monitor at the intervention floor, not the planning gate: a planner may
      * legitimately accept a path sitting exactly on the planning clearance, and
      * the measured arm always trails its reference. */
     oa_collision_report report{};
-    const oa_model_status evaluated = oa_collision_evaluate_with_threshold(
-        &scene, oa_collision_intervention_clearance_m(), &report);
+    oa_collision_contact_evidence evidence{};
+    const oa_model_status evaluated = oa_collision_evaluate_scoped_fk_with_threshold(
+        &fk[0], &fk[1], oa_collision_intervention_clearance_m(), contact_geometry_policy,
+        &report, &evidence);
     status.violation = report.violation;
     status.side = report.side;
     status.segment_a = report.segment_a;
     status.segment_b = report.segment_b;
     status.minimum_clearance_m = report.minimum_clearance_m;
+    status.terminal_pair_active = evidence.terminal_pair_active != 0U;
+    status.terminal_pair_clearance_m = evidence.terminal_pair_clearance_m;
+    status.tcp_separation_m = evidence.tcp_separation_m;
+    status.claw_contact_active = evidence.claw_contact_active != 0U;
+    status.claw_hand_gap_m = evidence.claw_hand_gap_m;
+    status.minimum_other_claw_gap_m = evidence.minimum_other_claw_gap_m;
     if (evaluated != OA_MODEL_OK) {
         return false;
     }
@@ -1169,9 +1227,35 @@ bool Controller::monitor_keepout() noexcept {
     KeepoutStatus status{};
     const double previous = last_clearance_m_;
     last_clearance_m_ = status.minimum_clearance_m;
-    if (keepout_clear(measured, status)) {
+    const std::uint32_t policy = !executing_.has_value()
+                                     ? OA_COLLISION_CONTACT_NONE
+                                     : executing_->contact_geometry_policy;
+    if (keepout_clear(measured, status, policy)) {
         contact_report_.minimum_clearance_m = status.minimum_clearance_m;
         last_clearance_m_ = status.minimum_clearance_m;
+        /* Stop a converge command when measured FK reaches the expanded rail
+         * safety envelope. This applies to virtual and physical backends: the
+         * pinned STL meshes remain 25 mm apart instead of relying on physical
+         * resistance after contact. */
+        if (executing_->contact_monitored &&
+            policy == OA_COLLISION_CONTACT_TERMINAL_CAPS &&
+            status.terminal_pair_active &&
+            status.claw_contact_active) {
+            contact_report_.cause = OA_STOP_CAUSE_CONTACT;
+            contact_report_.contact_detected = 1U;
+            contact_report_.stop_monotonic_ns = now_ns_;
+            for (std::size_t side = 0; side < 2U; ++side) {
+                contact_report_.stop_feedback_seq[side] = arm_[side].feedback_sequence();
+                const auto q = arm_[side].measured_q();
+                std::copy(q.begin(), q.end(), contact_report_.stopped_q_rad[side]);
+                KinematicResult fk{};
+                if (forward(static_cast<std::uint32_t>(side), q, fk)) {
+                    std::copy(fk.tcp_xyz.begin(), fk.tcp_xyz.end(),
+                              contact_report_.stopped_tcp_m[side]);
+                }
+            }
+            return false;
+        }
         return true;
     }
     last_clearance_m_ = status.minimum_clearance_m;
@@ -1290,7 +1374,7 @@ void Controller::apply_sim_contact() noexcept {
     }
 }
 
-void Controller::reset_contact_report() noexcept {
+void Controller::reset_contact_report(const MotionPlan &plan) noexcept {
     contact_report_ = {};
     contact_report_.struct_size = static_cast<std::uint32_t>(sizeof(contact_report_));
     contact_report_.abi_version = OA_CONTROL_ABI_V1;
@@ -1300,7 +1384,8 @@ void Controller::reset_contact_report() noexcept {
     /* Seed from the pose the command actually starts in, so a command that
      * begins inside the floor is judged on whether it improves from there. */
     KeepoutStatus start{};
-    (void)keepout_clear({arm_[0].measured_q(), arm_[1].measured_q()}, start);
+    (void)keepout_clear({arm_[0].measured_q(), arm_[1].measured_q()}, start,
+                        plan.contact_geometry_policy);
     last_clearance_m_ = start.minimum_clearance_m;
 }
 
@@ -1528,6 +1613,7 @@ oa_control_status Controller::advance(const std::uint64_t monotonic_ns) noexcept
             if (settle_feedback_intervals_ >= 3U &&
                 now_ns_ - settle_start_ns_ >= options_.cycle_ns * 3U) {
                 const auto completed_id = command_id_;
+                contact_report_.cause = OA_STOP_CAUSE_PLAN_COMPLETE;
                 executing_.reset();
                 command_id_ = 0U;
                 lifecycle_ = OA_LIFECYCLE_ARMED_IDLE;

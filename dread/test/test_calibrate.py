@@ -8,7 +8,7 @@ from m1_can_tools import dm_protocol as dm
 from m1_can_tools.calibrate import (
     _validate_adapter_properties,
     build_calibrated_map, commit_maps, joint_name, run, parser, rollback,
-    validate_map_shape,
+    current_gripper_mapping, validate_map_shape,
 )
 from m1_can_tools.motor_bus import MotorBus, load_map
 from m1_can_tools.transport import FakeTransport
@@ -69,18 +69,27 @@ def test_build_map_uses_identity_arms_and_measured_grippers():
     assert result[joint_name("left", 1)]["offset"] == pytest.approx(-0.1)
     left = result[joint_name("left", 8)]
     right = result[joint_name("right", 8)]
-    assert left["dir"] == -1 and right["dir"] == 1
-    assert left["scale"] == pytest.approx(0.7854 / 1.05)
-    assert right["scale"] == pytest.approx(0.7854 / 1.05)
+    assert left["dir"] == -1 and right["dir"] == -1
+    assert left["scale"] == pytest.approx(0.044 / 1.05)
+    assert right["scale"] == pytest.approx(0.044 / 1.05)
     assert any("J2" in n and "no historical" in n for n in notes)
     validate_map_shape(result)
 
 
 def test_map_rejects_wrong_variant_decode():
     wrong = base_map()
-    wrong[joint_name("right", 8)]["model"] = "DM4310"
-    with pytest.raises(ValueError, match="DM4310P"):
+    wrong[joint_name("right", 8)]["model"] = "DM3507"
+    with pytest.raises(ValueError, match="OpenArm v1.0 model"):
         validate_map_shape(wrong)
+
+
+def test_only_current_prismatic_gripper_map_can_be_preserved():
+    info = base_map()[joint_name("left", 8)]
+    assert not current_gripper_mapping(info, "left")
+    info["soft_limits"]["pos"] = [0.0, 0.044]
+    assert current_gripper_mapping(info, "left")
+    info["soft_limits"]["pos"] = [-0.7854, 0.0]
+    assert not current_gripper_mapping(info, "left")
 
 
 def test_adapter_identity_is_role_specific():

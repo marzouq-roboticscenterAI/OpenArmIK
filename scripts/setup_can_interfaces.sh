@@ -59,7 +59,10 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
   }
   printf 'Elevating with sudo to configure the CAN interfaces...\n'
-  exec sudo -- "$0" "$@"
+  # This helper is intentionally usable even when a checkout loses executable
+  # mode bits (for example after copying from a FAT/NTFS volume). Invoke it via
+  # Bash under sudo instead of asking sudo to execute the file directly.
+  exec sudo -- bash "$0" "$@"
 fi
 
 for interface in "${interfaces[@]}"; do

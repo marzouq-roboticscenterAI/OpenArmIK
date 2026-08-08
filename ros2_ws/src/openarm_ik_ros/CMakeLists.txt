@@ -80,11 +80,29 @@ target_compile_options(openarm_virtual_control_session PRIVATE -Wall -Wextra -Wp
 target_link_libraries(openarm_virtual_control_session PUBLIC
   OpenArm::Runtime Threads::Threads)
 
+add_library(openarm_display_calibration STATIC
+  src/display_calibration.cpp
+  src/gripper_calibration.cpp)
+target_include_directories(openarm_display_calibration PUBLIC include)
+target_compile_options(openarm_display_calibration PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_display_calibration PUBLIC OpenArm::Can)
+
+add_library(openarm_real_control_session STATIC src/real_control_session.cpp)
+target_include_directories(openarm_real_control_session PUBLIC include)
+target_compile_options(openarm_real_control_session PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_real_control_session PUBLIC
+  openarm_display_calibration
+  OpenArm::Can
+  OpenArm::Runtime
+  openarm_model::openarm_model
+  Threads::Threads)
+
 add_executable(openarm_ik_ros_node src/openarm_ik_ros_node.cpp)
 target_include_directories(openarm_ik_ros_node PRIVATE include)
 target_compile_options(openarm_ik_ros_node PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_ik_ros_node PRIVATE
   openarm_virtual_control_session
+  openarm_real_control_session
   openarm_model::openarm_model
   visualization_msgs::visualization_msgs
   diagnostic_msgs::diagnostic_msgs
@@ -94,6 +112,7 @@ target_link_libraries(openarm_ik_ros_node PRIVATE
   rclcpp_action::rclcpp_action
   sensor_msgs::sensor_msgs
   std_msgs::std_msgs
+  std_srvs::std_srvs
   tf2::tf2
   tf2_geometry_msgs::tf2_geometry_msgs
   tf2_ros::tf2_ros)
@@ -107,6 +126,27 @@ target_link_libraries(openarm_control_cli PRIVATE
   rclcpp::rclcpp
   rclcpp_action::rclcpp_action)
 
+add_library(openarm_real_c SHARED src/openarm_real_c_api.cpp)
+target_include_directories(openarm_real_c PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_options(openarm_real_c PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_real_c PUBLIC
+  openarm_model::openarm_model
+  openarm_control_msgs::openarm_control_msgs
+  rclcpp::rclcpp
+  rclcpp_action::rclcpp_action
+  sensor_msgs::sensor_msgs
+  std_msgs::std_msgs
+  std_srvs::std_srvs)
+set_target_properties(openarm_real_c PROPERTIES OUTPUT_NAME openarm_real)
+
+add_executable(openarm_real_cli src/openarm_real_cli.c)
+target_compile_options(openarm_real_cli PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_real_cli PRIVATE openarm_real_c)
+set_target_properties(openarm_real_cli PROPERTIES
+  C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+
 add_library(openarm_real_observer_core STATIC src/real_observer_core.cpp)
 target_include_directories(openarm_real_observer_core PUBLIC include)
 target_compile_options(openarm_real_observer_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -117,10 +157,19 @@ add_executable(openarm_real_observer src/openarm_real_observer.cpp)
 target_include_directories(openarm_real_observer PRIVATE include)
 target_compile_options(openarm_real_observer PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(openarm_real_observer PRIVATE
+  openarm_display_calibration
   openarm_real_observer_core
+  openarm_control_msgs::openarm_control_msgs
   rclcpp::rclcpp
   sensor_msgs::sensor_msgs
   std_msgs::std_msgs
+  std_srvs::std_srvs)
+
+add_executable(openarm_display_calibration_cli src/openarm_display_calibration_cli.cpp)
+target_compile_options(openarm_display_calibration_cli PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(openarm_display_calibration_cli PRIVATE
+  openarm_control_msgs::openarm_control_msgs
+  rclcpp::rclcpp
   std_srvs::std_srvs)
 
 add_executable(close_rviz_window src/close_rviz_window.cpp)
@@ -175,15 +224,21 @@ target_link_libraries(openarm_portal PRIVATE
   Threads::Threads)
 
 if(OPENARM_IK_ROS_COVERAGE)
-  foreach(target openarm_virtual_control_session openarm_ik_ros_node openarm_control_cli openarm_portal_core openarm_portal)
+  foreach(target openarm_virtual_control_session openarm_real_control_session openarm_ik_ros_node openarm_control_cli openarm_portal_core openarm_portal)
     target_compile_options(${target} PRIVATE --coverage -O0)
     target_link_options(${target} PRIVATE --coverage)
   endforeach()
 endif()
 
-install(TARGETS openarm_ik_ros_node openarm_control_cli close_rviz_window openarm_portal
-  openarm_real_observer openarm_calibrate_gui
+install(TARGETS openarm_ik_ros_node openarm_control_cli openarm_real_cli close_rviz_window openarm_portal
+  openarm_real_observer openarm_display_calibration_cli openarm_calibrate_gui
   DESTINATION lib/${PROJECT_NAME})
+install(TARGETS openarm_real_c EXPORT export_openarm_real_c
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib
+  RUNTIME DESTINATION bin
+  INCLUDES DESTINATION include)
+install(FILES include/openarm_real.h DESTINATION include)
 install(DIRECTORY launch rviz DESTINATION share/${PROJECT_NAME})
 install(FILES package.xml README.md DESTINATION share/${PROJECT_NAME})
 install(FILES "${openarm_model_GENERATED_URDF}" DESTINATION share/${PROJECT_NAME}/urdf)
@@ -206,11 +261,24 @@ if(BUILD_TESTING)
     openarm_virtual_control_session openarm_portal_core)
   target_include_directories(test_virtual_control_session PRIVATE include)
   target_compile_options(test_virtual_control_session PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  set_tests_properties(test_virtual_control_session PROPERTIES TIMEOUT 300)
+  # This binary deliberately executes the complete measured-feedback target
+  # table plus both intentional-contact demo corridors. On slower laptops that
+  # exceeds five minutes even though each command remains individually bounded.
+  set_tests_properties(test_virtual_control_session PROPERTIES TIMEOUT 420)
   ament_add_gtest(test_real_observer_core test/test_real_observer_core.cpp)
   target_link_libraries(test_real_observer_core openarm_real_observer_core)
   target_include_directories(test_real_observer_core PRIVATE include)
   target_compile_options(test_real_observer_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+  ament_add_gtest(test_display_calibration test/test_display_calibration.cpp)
+  target_link_libraries(test_display_calibration openarm_display_calibration)
+  target_include_directories(test_display_calibration PRIVATE include)
+  target_compile_options(test_display_calibration PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+  ament_add_gtest(test_real_control_session test/test_real_control_session.cpp)
+  target_link_libraries(test_real_control_session openarm_real_control_session)
+  target_include_directories(test_real_control_session PRIVATE include)
+  target_compile_options(test_real_control_session PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
   ament_add_gtest(test_portal_core test/test_portal_core.cpp)
   target_link_libraries(test_portal_core
@@ -220,7 +288,8 @@ if(BUILD_TESTING)
   target_compile_options(test_portal_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
   target_compile_definitions(test_portal_core PRIVATE
     OPENARM_VIEWER_JS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/web/viewer.js"
-    OPENARM_PORTAL_JS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/web/portal.js")
+    OPENARM_PORTAL_JS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/web/portal.js"
+    OPENARM_NODE_CPP_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/openarm_ik_ros_node.cpp")
   if(OPENARM_IK_ROS_COVERAGE)
     target_compile_options(test_virtual_control_session PRIVATE --coverage -O0)
     target_link_options(test_virtual_control_session PRIVATE --coverage)
@@ -265,6 +334,8 @@ if(BUILD_TESTING)
     PkgConfig::LIBXML2 PkgConfig::JSONC PkgConfig::LIBCRYPTO m)
   openarm_add_c_test(test_no_can_linkage)
   openarm_add_c_test(test_invalid_expiry_parameter)
+  openarm_add_c_test(test_real_c_abi)
+  target_link_libraries(test_real_c_abi_c PRIVATE openarm_real_c)
 
   # Actions are only exposed through rclcpp_action, so the two action-driven
   # harnesses are C++ while the rest of the ports are C.
@@ -310,6 +381,7 @@ if(BUILD_TESTING)
     COMMAND test_no_can_linkage_c
       --executable $<TARGET_FILE:openarm_ik_ros_node>
       --session-library $<TARGET_FILE:openarm_virtual_control_session>)
+  add_test(NAME test_real_c_abi COMMAND test_real_c_abi_c)
   add_test(NAME test_openarm_control_cli_help COMMAND openarm_control_cli --help)
   set_tests_properties(test_openarm_control_cli_help PROPERTIES
     PASS_REGULAR_EXPRESSION
@@ -351,7 +423,8 @@ if(BUILD_TESTING)
     NAME test_active_sigint
     COMMAND test_active_sigint_cpp)
   set_tests_properties(test_ros_contract test_active_sigint test_cli_server_lifecycle
-    test_no_can_linkage test_invalid_expiry_parameter
+    test_real_control_session
+    test_no_can_linkage test_invalid_expiry_parameter test_real_c_abi
     PROPERTIES RUN_SERIAL TRUE)
   add_test(NAME test_close_rviz_window_help COMMAND close_rviz_window --help)
   add_test(NAME test_close_rviz_window_invalid_pid COMMAND close_rviz_window 0)
@@ -360,4 +433,7 @@ if(BUILD_TESTING)
     PROPERTIES WILL_FAIL TRUE)
 endif()
 
+ament_export_targets(export_openarm_real_c HAS_LIBRARY_TARGET)
+ament_export_dependencies(
+  openarm_control_msgs openarm_model rclcpp rclcpp_action sensor_msgs std_msgs std_srvs)
 ament_package()

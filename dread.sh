@@ -50,7 +50,7 @@ for interface in can0 can1; do
   }
   if [[ "$(ip -br link show "$interface" | awk '{print $2}')" != UP ]]; then
     printf 'Bringing %s up (needs sudo)...\n' "$interface"
-    "$root_dir/scripts/setup_can_interfaces.sh"
+    bash "$root_dir/scripts/setup_can_interfaces.sh"
     break
   fi
 done
@@ -84,19 +84,27 @@ set -u
 # through `ros2 run`, so it does not need to be built into the ROS workspace.
 export PYTHONPATH="$root_dir/dread:${PYTHONPATH:-}"
 
+# The operator confirmed this installed pair by moving each physical arm while
+# the read-only observer streamed encoder deltas: can0 is robot-right and can1
+# is robot-left. The dual-channel DM-USB2FDCAN exposes one USB identity for both
+# netdevs, so sysfs cannot rediscover this fact. Keep the commissioned assignment
+# explicit while allowing an operator override after rewiring.
+export M1_CAN_RIGHT="${OPENARM_RIGHT_CAN_INTERFACE:-can0}"
+export M1_CAN_LEFT="${OPENARM_LEFT_CAN_INTERFACE:-can1}"
+
 # The wizard reads ~/.config/m1/motor_map.yaml and refuses to start without it.
-# Seed it from the committed m1robot map rather than the blank template: the
-# template describes a different 27-DOF machine, whereas the m1robot map's joint
-# names, CAN IDs, motor models and soft limits already match this URDF exactly.
-# Its offsets and scales belong to that robot, but those are precisely what the
-# wizard measures and overwrites, so they are only a starting structure.
+# Seed it from the current OpenArm v1.0 map. The collected M1/Ranger maps use a
+# different rotary gripper and must never seed this prismatic 0..44 mm URDF.
 config_dir="$HOME/.config/m1"
 if [[ ! -f "$config_dir/motor_map.yaml" ]]; then
   mkdir -p "$config_dir"
-  cp "$root_dir/dread/config/motor_map.m1robot.yaml" "$config_dir/motor_map.yaml"
-  printf 'Seeded %s from the DREAD m1robot map.\n' "$config_dir/motor_map.yaml"
-  printf 'Its offsets are from another robot and will be replaced as you calibrate.\n\n'
+  cp "$root_dir/dread/config/motor_map.openarm_v10.yaml" "$config_dir/motor_map.yaml"
+  printf 'Seeded %s from the current OpenArm v1.0 URDF map.\n\n' \
+    "$config_dir/motor_map.yaml"
 fi
+export M1_MOTOR_MAP="$config_dir/motor_map.yaml"
+export M1_REPO_MAP="$root_dir/dread/config/motor_map.openarm_v10.yaml"
+export M1_BACKUP_ROOT="$config_dir/calibration-backups"
 
 urdf="$root_dir/ros2_ws/install/openarm_ik_ros/share/openarm_ik_ros/urdf/openarm_v10_bimanual.urdf"
 [[ -r "$urdf" ]] || {
@@ -129,4 +137,4 @@ sleep 4
 printf '\n'
 printf 'THE MOTORS WILL BE POWERED at zero gains. The arm should stay limp and\n'
 printf 'hand-movable. Keep the hardware e-stop within reach.\n\n'
-exec python3 -m m1_can_tools.calibrate_live "$side"
+python3 -m m1_can_tools.calibrate_live "$side"

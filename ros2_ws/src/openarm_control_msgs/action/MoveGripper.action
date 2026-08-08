@@ -1,0 +1,35 @@
+builtin_interfaces/Time stamp
+uint8 SIDE_LEFT=1
+uint8 SIDE_RIGHT=2
+uint8 SIDE_BOTH=3
+uint8 side_mask
+float64 target_opening_m
+float64 maximum_opening_speed_m_s
+float64 maximum_motor_torque_nm
+bool stop_on_contact
+---
+uint8 OUTCOME_COMPLETED=1
+uint8 OUTCOME_CANCELED=2
+uint8 OUTCOME_REJECTED=3
+uint8 OUTCOME_ABORTED=4
+uint8 outcome
+uint32 control_status
+unique_identifier_msgs/UUID goal_id
+uint64 command_id
+uint64 left_seed_feedback_seq
+uint64 right_seed_feedback_seq
+uint64 plan_duration_ns
+uint64 left_terminal_feedback_seq
+uint64 right_terminal_feedback_seq
+uint32 lifecycle
+uint32 event
+uint32 cause
+bool collision_checked
+string reason
+---
+uint32 lifecycle
+uint32 event
+uint64 command_id
+uint64 left_feedback_seq
+uint64 right_feedback_seq
+float64 measured_progress

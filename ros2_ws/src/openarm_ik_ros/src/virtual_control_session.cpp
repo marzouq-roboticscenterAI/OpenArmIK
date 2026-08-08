@@ -154,6 +154,7 @@ public:
       return false;
     }
     if (command.kind != SessionCommand::Kind::joint &&
+      command.kind != SessionCommand::Kind::gripper &&
       !valid_motion_limit_scale(command.motion_limit_scale))
     {
       reason = "invalid_motion_limit_scale";
@@ -526,7 +527,9 @@ private:
 
   bool publish_measured()
   {
-    const auto callback_status = invoke_state_callback(MeasuredState{snapshot_, runtime_now_ns_});
+    MeasuredState measured{snapshot_, runtime_now_ns_};
+    measured.gripper = virtual_gripper_;
+    const auto callback_status = invoke_state_callback(measured);
     if (callback_status != OA_RUNTIME_OK) {
       fault_local(
         callback_status, callback_status == OA_RUNTIME_ETIMEOUT ?
@@ -575,6 +578,48 @@ private:
       }
       if (!terminal_ok) {
         fault_local(OA_RUNTIME_EFAULT, "terminal_callback_failed");
+      }
+      return;
+    }
+
+    if (pending->kind == SessionCommand::Kind::gripper) {
+      const bool valid = pending->gripper_side_mask >= 1U &&
+        pending->gripper_side_mask <= 3U && std::isfinite(pending->gripper_opening_m) &&
+        pending->gripper_opening_m >= 0.0 && pending->gripper_opening_m <= 0.044 &&
+        std::isfinite(pending->gripper_speed_m_s) && pending->gripper_speed_m_s > 0.0 &&
+        std::isfinite(pending->gripper_torque_limit_nm) &&
+        pending->gripper_torque_limit_nm > 0.0;
+      if (!valid) {
+        reject_on_owner(std::move(*pending), OA_RUNTIME_EINVAL, "invalid_gripper_command");
+        return;
+      }
+      for (std::size_t side = 0U; side < 2U; ++side) {
+        virtual_gripper_[side].calibrated = true;
+        if ((pending->gripper_side_mask & (1U << side)) != 0U) {
+          virtual_gripper_[side].opening_m = pending->gripper_opening_m;
+          virtual_gripper_[side].velocity_m_s = 0.0;
+        }
+      }
+      if (!publish_measured()) {return;}
+      CommandResult result = make_result(OA_RUNTIME_OK);
+      result.outcome = CommandResult::Outcome::completed;
+      result.command_id = ++virtual_gripper_command_id_;
+      result.seed_feedback_seq[0] = snapshot_.arm[0].feedback_seq;
+      result.seed_feedback_seq[1] = snapshot_.arm[1].feedback_seq;
+      copy_terminal_snapshot(result);
+      result.event = OA_RUNTIME_EVENT_COMPLETED;
+      result.collision_checked = false;
+      result.motion_authorized = true;
+      result.reason = "virtual_gripper_completed";
+      const bool terminal_ok = invoke_terminal_callback(*pending, result);
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (health_.owner == pending->owner) {health_.owner.clear();}
+        health_.adapter_state = terminal_ok ? AdapterState::idle : AdapterState::fault;
+        health_.reason = terminal_ok ? result.reason : "terminal_callback_failed";
+        health_.terminal_feedback_seq[0] = result.terminal_feedback_seq[0];
+        health_.terminal_feedback_seq[1] = result.terminal_feedback_seq[1];
+        notify_health_unlocked();
       }
       return;
     }
@@ -643,9 +688,9 @@ private:
           health_.capabilities.coordinate_identity_sha256);
         move.maximum_branch_step_rad = 2.0;
         move.minimum_singular_value = 0.0;
-        // Centroid and converge share this base request; the runtime adapters
-        // derive both claw targets from it, so every identity, revision and
-        // freshness field above applies unchanged.
+        // Centroid, mirrored, and converge share this base request; their
+        // runtime adapters derive or monitor around the pair, so every
+        // identity, revision, and freshness field above applies unchanged.
         if (pending->kind == SessionCommand::Kind::centroid_tcp) {
           oa_runtime_centroid_tcp_move centroid{};
           centroid.struct_size = sizeof(centroid);
@@ -655,6 +700,14 @@ private:
             pending->target_m.begin(), pending->target_m.end(),
             centroid.target_centroid_m);
           status = oa_runtime_plan_centroid_tcp_body(runtime_, &centroid, &plan);
+        } else if (pending->kind == SessionCommand::Kind::mirrored_tcp) {
+          oa_runtime_mirrored_tcp_move mirrored{};
+          mirrored.struct_size = sizeof(mirrored);
+          mirrored.abi_version = OA_RUNTIME_MOTION_ABI_VERSION;
+          mirrored.base = move;
+          mirrored.lead_side = pending->side;
+          std::copy(pending->left_tcp_m.begin(), pending->left_tcp_m.end(), mirrored.lead_tcp_m);
+          status = oa_runtime_plan_mirrored_tcp_body(runtime_, &mirrored, &plan);
         } else if (pending->kind == SessionCommand::Kind::converge_tcp) {
           oa_runtime_converge_tcp_move converge{};
           converge.struct_size = sizeof(converge);
@@ -867,6 +920,13 @@ private:
   {
     CommandResult result;
     SessionCommand command;
+    oa_runtime_contact_report stop_report{};
+    bool stop_report_valid = false;
+    stop_report.struct_size = sizeof(stop_report);
+    stop_report.abi_version = OA_RUNTIME_MOTION_ABI_VERSION;
+    if (event.kind == OA_RUNTIME_EVENT_STOPPED && runtime_ != nullptr) {
+      stop_report_valid = oa_runtime_get_contact_report(runtime_, &stop_report) == OA_RUNTIME_OK;
+    }
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!active_ || event.command_id != active_->command_id) {
@@ -874,14 +934,14 @@ private:
       }
       command = active_->command;
       result = make_result_unlocked(OA_RUNTIME_OK);
-      // A real-time monitor stop is only a success for converge, whose whole
-      // purpose is to advance until something stops it. For every other kind
-      // the arms halted short of the commanded target, and reporting that as
-      // plain completion hides a keepout abort behind an exit code of zero.
+      // A converge succeeds only on proved contact. A keepout intervention,
+      // missing report, or simply reaching the planned endpoint without
+      // resistance is not the requested outcome and must fail closed.
       const bool halted_by_monitor = event.kind == OA_RUNTIME_EVENT_STOPPED;
-      const bool stop_is_the_goal =
-        command.kind == SessionCommand::Kind::converge_tcp;
-      result.outcome = (!halted_by_monitor || stop_is_the_goal) ?
+      const bool converge = command.kind == SessionCommand::Kind::converge_tcp;
+      const bool proved_contact = halted_by_monitor && stop_report_valid &&
+        stop_report.cause == OA_RUNTIME_STOP_CAUSE_CONTACT;
+      result.outcome = (converge ? proved_contact : !halted_by_monitor) ?
         CommandResult::Outcome::completed : CommandResult::Outcome::aborted;
       result.command_id = event.command_id;
       result.seed_feedback_seq[0] = active_->report.seed_feedback_seq[0];
@@ -891,11 +951,14 @@ private:
       result.terminal_feedback_seq[1] = snapshot_.arm[1].feedback_seq;
       result.lifecycle = event.lifecycle;
       result.event = event.kind;
-      result.cause = event.source_status;
+      result.cause = halted_by_monitor && stop_report_valid ? stop_report.cause : event.source_status;
       result.collision_checked = active_->report.collision_checked != 0U;
       result.motion_authorized = active_->report.motion_authorized != 0U;
-      result.reason = !halted_by_monitor ? "completed_measured_feedback" :
-        (stop_is_the_goal ? "converge_halted_on_measured_resistance" :
+      result.reason = converge ?
+        (proved_contact ? "converge_halted_on_proved_contact" :
+        (halted_by_monitor ? "converge_halted_without_contact" :
+        "converge_ended_without_contact")) :
+        (!halted_by_monitor ? "completed_measured_feedback" :
         "halted_short_of_target_by_realtime_monitor");
       terminalizing_owner_ = command.owner;
     }
@@ -1411,6 +1474,10 @@ private:
   oa_runtime * runtime_{};
   oa_runtime_snapshot snapshot_{};
   std::uint64_t runtime_now_ns_{};
+  std::array<MeasuredState::Gripper, 2> virtual_gripper_{{
+    MeasuredState::Gripper{true, 0.0, 0.0, 0.0, 0.0, 0.0},
+    MeasuredState::Gripper{true, 0.0, 0.0, 0.0, 0.0, 0.0}}};
+  std::uint64_t virtual_gripper_command_id_{};
 };
 
 VirtualControlSession::VirtualControlSession(

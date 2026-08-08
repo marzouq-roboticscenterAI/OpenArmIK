@@ -7,9 +7,9 @@
  * additive and lives in its own header, exactly as openarm_runtime_units.h
  * does. Nothing in V1 changes layout, meaning, or behaviour.
  *
- * Centroid and mirrored motion are header-only adapters: they derive the two
- * claw targets from measured kinematics and delegate to the V1 paired planner,
- * so they add no new exported symbols and inherit every V1 guarantee
+ * Centroid and mirrored motion are header-only adapters: they derive the claw
+ * targets from measured kinematics and delegates to the V1 paired planner, so
+ * it adds no new exported symbol and inherits every V1 guarantee
  * (all-or-nothing planning, identity binding, freshness, expiry).
  *
  * Converge-until-resistance and the emergency stop need runtime state and are

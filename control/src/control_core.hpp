@@ -175,6 +175,10 @@ public:
     /* Contact monitoring is requested by converge plans. When set, exceeding a
      * per-joint measured torque threshold ends the command successfully. */
     bool contact_monitored{};
+    /* Internal oa_collision_contact_policy value. Kept private so the public
+     * control ABI cannot turn an arbitrary command into an allow-collision
+     * request. */
+    std::uint32_t contact_geometry_policy{};
     std::uint32_t contact_persistence_cycles{};
     std::array<JointVector, 2> contact_threshold_nm{};
     std::size_t waypoint_count{};
@@ -252,6 +256,7 @@ private:
         std::uint64_t collision_scene_revision{};
         double max_branch_step_rad{};
         double min_singular_value{};
+        std::uint32_t contact_geometry_policy{};
     };
     oa_control_status plan_paired_common(const PairedPlanRequest &request,
                                          std::unique_ptr<MotionPlan> &out) noexcept;
@@ -265,15 +270,22 @@ private:
         std::uint32_t segment_a{};
         std::uint32_t segment_b{};
         double minimum_clearance_m{};
+        bool terminal_pair_active{};
+        double terminal_pair_clearance_m{};
+        double tcp_separation_m{};
+        bool claw_contact_active{};
+        double claw_hand_gap_m{};
+        double minimum_other_claw_gap_m{};
     };
     /* Real-time keepout evaluation from the supplied joint state. */
     [[nodiscard]] bool keepout_clear(const std::array<JointVector, 2> &q,
-                                     KeepoutStatus &status) const noexcept;
+                                     KeepoutStatus &status,
+                                     std::uint32_t contact_geometry_policy) const noexcept;
     /* Per-cycle monitors. Return false when the caller must stop this cycle. */
     [[nodiscard]] bool monitor_keepout() noexcept;
     [[nodiscard]] bool monitor_contact() noexcept;
     void apply_sim_contact() noexcept;
-    void reset_contact_report() noexcept;
+    void reset_contact_report(const MotionPlan &plan) noexcept;
     [[nodiscard]] oa_control_status complete_on_contact() noexcept;
 
     std::shared_ptr<const Manifest> manifest_;

@@ -44,40 +44,42 @@ std::string targets_json()
 // The closed poses sit at y = +/-0.15. Below +/-0.13 the left tool passes
 // inside the central shaft gate, by as little as half a millimetre at
 // +/-0.11, which is where the earlier values sat.
-/* The heart is traced in the Y-Z plane at a fixed X, symmetric about Y = 0, so
- * both claws mirror and a single pass up and back down draws both lobes at once.
+/* The heart is traced symmetrically in the Y-Z plane. Its top dip and bottom
+ * cusp use the same intentional-contact route as clap: each TCP advances toward
+ * the shared midpoint. The guard searches the pinned hand/finger triangles for
+ * a branch-specific endpoint just inside an expanded 25 mm rail envelope,
+ * rather than guessing claw width from a fixed TCP offset. The real-time
+ * monitor stops while the physical STL meshes remain separated.
  *
- * It deliberately does NOT close at Y = 0. A real heart's bottom cusp and centre
- * dip both sit on the axis, which would put the two claws in the same place; the
- * outline is pinched to +/-0.15 m at those two points instead, which is the same
- * closest approach the clap demo settled on. It still reads as a heart and it
- * clears the guard.
+ * That exception is deliberately tiny. Only the mutually approaching
+ * hand.stl pair may enter only the safety envelope; the STL meshes retain at
+ * least 23 mm even at the furthest authorized planned endpoint. The
+ * other eight hand/finger mesh pairs, every other arm pair, and the pole retain
+ * the 25 mm planning gate at every sample. The following waypoint is an
+ * explicitly guarded, monotonically opening retreat, after which ordinary
+ * strict motion resumes. This is exact nominal mesh geometry, not physical
+ * force/contact certification.
  *
- * Every coordinate here sits inside the envelope of presets already known to
- * pass: Y in [0.15, 0.26], Z in [0.22, 0.62], X = 0.30. That matters because the
- * guard checked is the 25 mm planning gate, not the 10 mm real-time floor, and
- * eight of the original fourteen presets were rejected for being tuned against
- * the wrong one.
- *
- * The bottom point's midpoint is (0.30, 0, 0.24), which is 72 mm from the box at
- * (0.34, 0, 0.30) and so outside its 50 mm grasp radius. Without that margin the
- * heart would pick the box up on its way past, which is how the clap demo
- * originally stole it.
+ * The shoulder and inner-lobe waypoints keep the straight-line sequence looking
+ * like a heart rather than a kite. The box prop is disabled for this demo, so it
+ * cannot be accidentally grasped while either contact corridor is traversed.
  */
 std::string demo_targets_json()
 {
   return R"JSON([
-{"id":"clap_open","label":"Clap: open","left":[0.30,0.26,0.35],"right":[0.30,-0.26,0.35]},
-{"id":"clap_closed","label":"Clap: closed","left":[0.30,0.15,0.35],"right":[0.30,-0.15,0.35]},
+{"id":"clap_open","label":"Clap: open","left":[0.34,0.22,0.86],"right":[0.34,-0.22,0.86]},
+{"id":"clap_closed","label":"Clap: claw contact","left":[0.34,0.045,0.86],"right":[0.34,-0.045,0.86],"contact_target":[0.34,0.0,0.86]},
 {"id":"cross_open","label":"Cross: open","left":[0.30,0.26,0.45],"right":[0.30,-0.26,0.45]},
 {"id":"cross_half","label":"Cross: part heights","left":[0.30,0.26,0.55],"right":[0.30,-0.26,0.30]},
 {"id":"cross_split","label":"Cross: stack heights","left":[0.30,0.26,0.62],"right":[0.30,-0.26,0.22]},
 {"id":"cross_over","label":"Cross: claws swapped (mid-sequence)","left":[0.30,-0.04,0.62],"right":[0.30,0.04,0.22]},
-{"id":"heart_bottom","label":"Heart: bottom point","left":[0.30,0.15,0.24],"right":[0.30,-0.15,0.24]},
-{"id":"heart_lower","label":"Heart: lower curve","left":[0.30,0.24,0.34],"right":[0.30,-0.24,0.34]},
-{"id":"heart_outer","label":"Heart: widest","left":[0.30,0.26,0.46],"right":[0.30,-0.26,0.46]},
-{"id":"heart_lobe","label":"Heart: top of lobe","left":[0.30,0.22,0.58],"right":[0.30,-0.22,0.58]},
-{"id":"heart_dip","label":"Heart: centre dip","left":[0.30,0.15,0.52],"right":[0.30,-0.15,0.52]},
+{"id":"heart_bottom_ready","label":"Heart: bottom approach","left":[0.30,0.22,0.74],"right":[0.30,-0.22,0.74]},
+{"id":"heart_bottom","label":"Heart: bottom claw contact","left":[0.30,0.045,0.74],"right":[0.30,-0.045,0.74],"contact_target":[0.30,0.0,0.74]},
+{"id":"heart_lower","label":"Heart: lower curve","left":[0.31,0.18,0.78],"right":[0.31,-0.18,0.78]},
+{"id":"heart_shoulder","label":"Heart: shoulder","left":[0.32,0.25,0.82],"right":[0.32,-0.25,0.82]},
+{"id":"heart_outer","label":"Heart: outer sweep","left":[0.33,0.28,0.86],"right":[0.33,-0.28,0.86]},
+{"id":"heart_lobe","label":"Heart: top of lobe","left":[0.34,0.26,0.90],"right":[0.34,-0.26,0.90]},
+{"id":"heart_dip","label":"Heart: centre claw contact","left":[0.34,0.045,0.86],"right":[0.34,-0.045,0.86],"contact_target":[0.34,0.0,0.86]},
 {"id":"mirror","label":"Mirrored pair","left":[0.30,0.22,0.40],"right":[0.30,-0.22,0.40]},
 {"id":"forward_mid","label":"Forward mid","left":[0.30,0.22,0.30],"right":[0.30,-0.22,0.30]},
 {"id":"neutral_low","label":"Near low","left":[0.15,0.22,0.15],"right":[0.15,-0.22,0.15]},
@@ -101,10 +103,10 @@ std::string demo_targets_json()
 std::string demo_sequences_json()
 {
   return R"JSON([
-{"id":"clap","label":"Run clap","steps":["clap_open","clap_closed","clap_open","clap_closed","clap_open"]},
+{"id":"clap","label":"Run clap","entry_steps":["neutral_low","forward_mid","cross_open","heart_bottom_ready","heart_lower","heart_shoulder","heart_outer","heart_lobe"],"steps":["clap_open","clap_closed","clap_open","clap_closed","clap_open"]},
 {"id":"cross","label":"Run cross","steps":["clap_open","cross_open","cross_half","cross_split","cross_over","cross_split","cross_half","cross_open","clap_open"]},
 {"id":"pick_place","label":"Run pick and place","steps":["box_approach","box_grasp","box_lift","box_carry","box_place","box_release","box_approach"]},
-{"id":"heart","label":"Run heart","steps":["clap_open","heart_bottom","heart_lower","heart_outer","heart_lobe","heart_dip","heart_lobe","heart_outer","heart_lower","heart_bottom","clap_open"]}
+{"id":"heart","label":"Run heart","entry_steps":["neutral_low","forward_mid","cross_open","heart_bottom_ready","heart_lower","heart_shoulder","heart_outer","heart_lobe"],"steps":["clap_open","heart_dip","clap_open","heart_lobe","heart_outer","heart_shoulder","heart_lower","heart_bottom_ready","heart_bottom","heart_bottom_ready","heart_lower","heart_shoulder","heart_outer","heart_lobe","clap_open","heart_dip","clap_open"]}
 ])JSON";
 }
 
@@ -115,12 +117,12 @@ std::string portal_page(std::string_view csrf)
 <meta name="portal-csrf" content=")HTML") + std::string(csrf) + R"HTML(">
 <title>OpenArm virtual portal</title><link rel="stylesheet" href="/web/portal.css">
 <script defer src="/web/portal.js"></script></head><body>
-<main><section class="viewer"><h2>RViz</h2><div class="frame"><img id="rviz-stream" src="/api/rviz/stream" alt="Live RViz 3D view"></div><div class="caption">These are real <strong>RViz</strong> pixels, captured from the running rviz2 process and streamed as MJPEG. The view is cropped to the 3D render area, so the Qt menus and toolbars are not shown. Drag to orbit, right-drag or scroll to zoom, middle-drag to pan: pointer events are replayed into the real RViz window, so the on-screen cursor moves with your drag. Input is refused if another window is stacked over RViz.</div><div class="caption">RViz renders the measured pose of the pinned model. It is not collision checking, and its freshness is never used as control feedback.</div></section><section class="controls"><h1>OpenArm virtual portal</h1>
+<main><section class="viewer"><h2>RViz</h2><div class="frame"><img id="rviz-stream" src="/api/rviz/stream" alt="Live RViz 3D view"></div><div class="caption">This is the unfiltered <strong>RViz</strong> render, captured from the running rviz2 process and streamed as MJPEG. It is cropped to the 3D render area, so the Qt menus, toolbars, and option panels are not shown. Drag to orbit, right-drag or scroll to zoom, and middle-drag to pan; pointer events are replayed into the real RViz window.</div><div class="caption">RViz renders the measured pose of the pinned model. It is not collision checking, and its freshness is never used as control feedback.</div></section><section class="controls"><h1>OpenArm virtual portal</h1>
 <div class="truth"><strong>Virtual simulation only.</strong><br>Controller collision checked: <strong>NO</strong>.<br>The portal uses sampled nominal capsules and a central keepout. This is not physical collision certification. Impossible or unsafe requests are shortened to the farthest validated straight-line prefix; the first sampled keepout stops the search.</div>
 <div class="card"><h2>Measured TCP / target — <span id="unit-heading">centimetres (cm)</span>, openarm_body_link0</h2><div class="caption">+X forward, +Y left, +Z up. Presets span a wide, virtual-model-validated workspace but are not physically certified coordinates. Preset buttons only fill fields; they never submit motion.</div><fieldset class="units"><legend>Coordinate display/input units</legend><div class="unit-options"><label><input type="radio" name="coordinate-unit" value="cm" checked>Centimetres (cm)</label><label><input type="radio" name="coordinate-unit" value="in">Inches (in)</label><label><input type="radio" name="coordinate-unit" value="m">Metres (m)</label></div></fieldset><div class="caption">All control coordinates remain IEEE-754 binary64. ROS and visualization geometry remain metric. The proxy has no portal-switchable coordinate grid.</div><div id="age" class="caption">Waiting for encoder-derived joint state…</div></div>
-<div class="card"><h2>Movement limits — <span id="motion-limit-value">80%</span></h2><label class="motion-limit" for="motion-limit-scale">Configured velocity, acceleration, and jerk limit scale</label><input id="motion-limit-scale" type="range" min="50" max="100" step="5" value="80"><div class="caption">50% is the previous portal behavior; 100% is the virtual model's configured maximum. The smooth seventh-order trajectory remains bounded. This percentage scales three limits equally, so travel time is not linear.</div></div>
+<div class="card"><h2>Movement limits — <span id="motion-limit-value">100%</span></h2><label class="motion-limit" for="motion-limit-scale">Configured velocity, acceleration, and jerk limit scale</label><input id="motion-limit-scale" type="range" min="50" max="100" step="5" value="100"><div class="caption">50% provides a slower test motion; 100% uses the virtual model's commissioned velocity, acceleration, and jerk limits. The smooth seventh-order trajectory remains bounded. This percentage scales all three limits equally, so travel time is not linear.</div></div>
 <div class="card"><h2>Virtual guard test inputs (cm)</h2><div class="caption"><strong>Near-full audited reach:</strong> use the High far preset: Left [28, 67, 52], Right [28, -67, 52].<br><strong>Impossible/reach projection:</strong> Left [5000, 5000, 5000], Right [5000, -5000, 5000]. From neutral, each makes a large best-effort move instead of commanding 50 m.<br><strong>Pole mitigation:</strong> Left [40, 5, 40], Right [40, -5, 40]. The sampled guard stops at its 2.5 cm nominal gate.<br><strong>Inter-arm mitigation:</strong> move both arms to their own Near-max forward presets, then request Left [48, -17, 35]. The left arm stops before the right-arm capsule gate.<br>These are virtual regression inputs, not physically certified poses.</div></div>
-<div class="card"><h2>Demo poses</h2><div class="caption">Each button fills <strong>both</strong> the left and right target fields with one waypoint of a demo. Buttons only fill fields; they never submit motion. Every waypoint was measured against the real-time keepout monitor. Run a full sequence with <code>openarm_control_cli clap</code>, <code>cross</code>, or <code>pick-place</code>. The box is a visualization aid: it is not part of the keepout model.</div><div id="demo-presets" class="presets"></div>
+<div class="card"><h2>Demo poses</h2><div class="caption">Each button fills <strong>both</strong> the left and right target fields with one waypoint of a demo. Buttons only fill fields; they never submit motion. Ordinary waypoints retain the 25 mm nominal guard; Clap and Heart stop at an expanded 25 mm gripper-rail envelope, so no physical STL meshes touch, then immediately retreat. Run a full sequence with the portal buttons or <code>openarm_control_cli clap</code>, <code>cross</code>, <code>heart</code>, or <code>pick-place</code>. The box is a visualization aid: it is not part of the keepout model and is removed after Pick/place finishes or stops.</div><div id="demo-presets" class="presets"></div>
 <h2>Run a whole demo</h2><div class="caption">Runs the waypoints in order, waiting for each to finish before sending the next. Several poses are only reachable a step at a time, so the sequences include lead-in and settle steps. Press the software stop to interrupt one. Poses marked mid-sequence are only reachable partway through their demo, so filling one and pressing Move Both Arms on its own will be refused by the guard; use the sequence button instead.</div><div id="demo-sequences" class="presets"></div><div id="demo-progress" class="caption"></div></div>
 <div class="card"><h2>Left target (orientation unconstrained)</h2><div class="xyz"><label><span id="lx-label">X (cm)</span><input class="coordinate" id="lx" type="text" inputmode="decimal" required aria-labelledby="lx-label"></label><label><span id="ly-label">Y (cm)</span><input class="coordinate" id="ly" type="text" inputmode="decimal" required aria-labelledby="ly-label"></label><label><span id="lz-label">Z (cm)</span><input class="coordinate" id="lz" type="text" inputmode="decimal" required aria-labelledby="lz-label"></label></div><div id="left-presets" class="presets"></div><button id="left" disabled>Move Left (Right target = freshest measured TCP)</button></div>
 <div class="card"><h2>Right target (orientation unconstrained)</h2><div class="xyz"><label><span id="rx-label">X (cm)</span><input class="coordinate" id="rx" type="text" inputmode="decimal" required aria-labelledby="rx-label"></label><label><span id="ry-label">Y (cm)</span><input class="coordinate" id="ry" type="text" inputmode="decimal" required aria-labelledby="ry-label"></label><label><span id="rz-label">Z (cm)</span><input class="coordinate" id="rz" type="text" inputmode="decimal" required aria-labelledby="rz-label"></label></div><div id="right-presets" class="presets"></div><button id="right" disabled>Move Right (Left target = freshest measured TCP)</button></div>

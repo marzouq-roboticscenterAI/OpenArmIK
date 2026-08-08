@@ -1,0 +1,58 @@
+# OpenArm v1.0 bimanual calibration seed for the current pinned URDF.
+#
+# Each arm has motor IDs 1..8 with replies at 0x11..0x18. J1/J2 are DM8009,
+# J3/J4 are DM4340, and J5..J8 are DM4310. The parallel gripper is prismatic:
+# closed=0 m and open=0.044 m. Its nominal motor travel is 0 -> -1.0472 rad;
+# DREAD replaces these seed transforms with this unit's measured hardstops.
+
+openarm_left_joint1:
+  {id: 1, master_id: 17, model: DM8009, kp: 70.0, kd: 2.75, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-3.490659, 1.396263], vel: 16.754666, effort: 40.0}}
+openarm_left_joint2:
+  {id: 2, master_id: 18, model: DM8009, kp: 70.0, kd: 2.5, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-3.3161253267948965, 0.17453267320510335], vel: 16.754666, effort: 40.0}}
+openarm_left_joint3:
+  {id: 3, master_id: 19, model: DM4340, kp: 70.0, kd: 2.0, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-1.570796, 1.570796], vel: 5.445426, effort: 27.0}}
+openarm_left_joint4:
+  {id: 4, master_id: 20, model: DM4340, kp: 60.0, kd: 2.0, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [0.0, 2.443461], vel: 5.445426, effort: 27.0}}
+openarm_left_joint5:
+  {id: 5, master_id: 21, model: DM4310, kp: 10.0, kd: 0.7, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-1.570796, 1.570796], vel: 20.943946, effort: 7.0}}
+openarm_left_joint6:
+  {id: 6, master_id: 22, model: DM4310, kp: 10.0, kd: 0.6, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-0.785398, 0.785398], vel: 20.943946, effort: 7.0}}
+openarm_left_joint7:
+  {id: 7, master_id: 23, model: DM4310, kp: 10.0, kd: 0.5, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-1.570796, 1.570796], vel: 20.943946, effort: 7.0}}
+openarm_left_finger_joint1:
+  {id: 8, master_id: 24, model: DM4310, kp: 5.0, kd: 0.1, dir: -1,
+   scale: 0.042016806722689079, offset: 0.0,
+   soft_limits: {pos: [0.0, 0.044], vel: 10.0, effort: 333.0}}
+
+openarm_right_joint1:
+  {id: 1, master_id: 17, model: DM8009, kp: 70.0, kd: 2.75, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-1.396263, 3.490659], vel: 16.754666, effort: 40.0}}
+openarm_right_joint2:
+  {id: 2, master_id: 18, model: DM8009, kp: 70.0, kd: 2.5, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-0.17453267320510335, 3.3161253267948965], vel: 16.754666, effort: 40.0}}
+openarm_right_joint3:
+  {id: 3, master_id: 19, model: DM4340, kp: 70.0, kd: 2.0, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-1.570796, 1.570796], vel: 5.445426, effort: 27.0}}
+openarm_right_joint4:
+  {id: 4, master_id: 20, model: DM4340, kp: 60.0, kd: 2.0, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [0.0, 2.443461], vel: 5.445426, effort: 27.0}}
+openarm_right_joint5:
+  {id: 5, master_id: 21, model: DM4310, kp: 10.0, kd: 0.7, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-1.570796, 1.570796], vel: 20.943946, effort: 7.0}}
+openarm_right_joint6:
+  {id: 6, master_id: 22, model: DM4310, kp: 10.0, kd: 0.6, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-0.785398, 0.785398], vel: 20.943946, effort: 7.0}}
+openarm_right_joint7:
+  {id: 7, master_id: 23, model: DM4310, kp: 10.0, kd: 0.5, dir: 1, scale: 1.0, offset: 0.0,
+   soft_limits: {pos: [-1.570796, 1.570796], vel: 20.943946, effort: 7.0}}
+openarm_right_finger_joint1:
+  {id: 8, master_id: 24, model: DM4310, kp: 5.0, kd: 0.1, dir: -1,
+   scale: 0.042016806722689079, offset: 0.0,
+   soft_limits: {pos: [0.0, 0.044], vel: 10.0, effort: 333.0}}

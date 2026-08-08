@@ -1,4 +1,4 @@
-"""m1_calibrate_live -- one guided, LIVE, foolproof arm calibration wizard.
+"""m1_calibrate_live -- guided live OpenArm v1.0 encoder calibration.
 
 Why this exists
 ---------------
@@ -75,6 +75,7 @@ from m1_can_tools.calibrate import (
     _conflicting_processes,
     _iface_preflight,
     commit_maps,
+    current_gripper_mapping,
     joint_name,
     side_map,
     validate_map_shape,
@@ -92,7 +93,7 @@ MAP_PATH = Path(_os.environ.get(
     "M1_MOTOR_MAP", Path.home() / ".config/m1/motor_map.yaml"))
 REPO_MAP = Path(_os.environ.get(
     "M1_REPO_MAP",
-    Path.cwd() / "ros2_ws/src/m1_can_tools/config/motor_map.m1robot.yaml"))
+    Path.cwd() / "dread/config/motor_map.openarm_v10.yaml"))
 BACKUP_ROOT = Path(_os.environ.get(
     "M1_BACKUP_ROOT", Path.home() / ".config/m1/calibration-backups"))
 LIFT_HEIGHT = 0.62865
@@ -155,6 +156,24 @@ class LiveCalibrator(Node):
         return SocketCanTransport(SIDES[side], fd=False)
 
     def enable(self):
+        # Prove all eight IDs on every selected bus before energizing anything.
+        # A partial arm is a wiring fault, not a calibration session.
+        for side in self.sides:
+            replies = self._read_complete(side, deadline=0.5)
+            missing = sorted(set(self.sm[side]) - set(replies))
+            if missing:
+                raise RuntimeError(
+                    f"{side}: refusing to enable; no status reply from "
+                    + ", ".join(missing))
+
+        # Prime a zero-gain MIT frame while disabled, then repeat it immediately
+        # after enable. This avoids relying on whatever target/gains a motor may
+        # have retained from an earlier program. kp=kd=tau=0 commands no motion
+        # or holding torque; q and dq are consequently inert.
+        for side in self.sides:
+            for joint in self.sm[side]:
+                self.bus[side].jog(
+                    joint, pos=0.0, vel=0.0, kp=0.0, kd=0.0, tau=0.0)
         # Arm the disable guard BEFORE sending any enable frame: if a CAN write
         # raises partway through, shutdown() must still de-energize the motors
         # that did get enabled (the "every exit path disables" guarantee).
@@ -162,8 +181,19 @@ class LiveCalibrator(Node):
         for s in self.sides:
             for j in self.sm[s]:
                 self.bus[s].enable(j)
-        time.sleep(0.05)
+                self.bus[s].jog(
+                    j, pos=0.0, vel=0.0, kp=0.0, kd=0.0, tau=0.0)
+        time.sleep(0.02)
         self.pump()
+        for side in self.sides:
+            missing = sorted(set(self.sm[side]) - set(self.raw_latest[side]))
+            errors = sorted(
+                name for name, feedback in self.raw_latest[side].items()
+                if int(feedback.get("err", 0)) != 0)
+            if missing or errors:
+                raise RuntimeError(
+                    f"{side}: enabled-state telemetry failed; "
+                    f"missing={missing}, motor_errors={errors}")
 
     def disable_all(self):
         for _ in range(3):
@@ -325,20 +355,28 @@ class LiveCalibrator(Node):
         results = {}
         for mid in range(1, 8):
             lo, hi = URDF_LIMITS[side][mid - 1]
+            entry = self.full_map[joint_name(side, mid)]
+            seed_dir = int(entry.get("dir", 1))
+            seed_scale = float(entry.get("scale", 1.0))
             print(f"\n-- {JOINT_DESC[mid]}   URDF range [{lo:+.3f}, {hi:+.3f}]")
             if mid in solve.SINGLE_STOP_JOINTS:
                 end = solve.SINGLE_STOP_URDF_END[mid]
                 which = "OPEN/straight" if end == "lo" else "fully bent"
                 raw = self._capture_stop(side, mid, f"SAFE stop (elbow {which})")
-                r = solve.solve_single_stop_joint(1, lo, hi, raw, end)
-                r["stops"] = {"lo": lo, "hi": hi, "raw_stop": raw, "end": end}
-                print(f"    (single safe stop; front stop not approached)")
+                r = solve.solve_single_stop_joint(
+                    seed_dir, lo, hi, raw, end, seed_scale)
+                r["stops"] = {"lo": lo, "hi": hi, "raw_stop": raw,
+                              "end": end, "scale": seed_scale}
+                print("    (single safe stop; retained prior scale because the "
+                      "front stop is not safely approached)")
             else:
                 r1 = self._capture_stop(side, mid, "hardstop #1")
                 r2 = self._capture_stop(side, mid, "hardstop #2 (opposite)")
                 rmin, rmax = min(r1, r2), max(r1, r2)
-                r = solve.solve_arm_joint(1, lo, hi, rmin, rmax)
+                r = solve.solve_arm_joint(seed_dir, lo, hi, rmin, rmax)
                 r["stops"] = {"lo": lo, "hi": hi, "r_min": rmin, "r_max": rmax}
+                print(f"    measured encoder span {r['span_measured']:.4f} rad; "
+                      f"full-range scale {r['scale']:.12f}")
                 if r["span_mismatch"] > solve.SPAN_MISMATCH_TOL:
                     print(f"    WARNING: measured span {r['span_measured']:.3f} vs "
                           f"URDF {r['span_urdf']:.3f} (off by {r['span_mismatch']:.3f}). "
@@ -367,14 +405,22 @@ class LiveCalibrator(Node):
                     "and seed a default (arm joints keep their calibration):"
                 ).lower()
                 if ans.startswith("s"):
-                    dir_ = 1 if GRIPPER_TRAVEL[side] > 0 else -1
-                    g = {"dir": dir_, "scale": 1.0,
-                         "offset": -dir_ * raw_closed,
-                         "stops": {"lo": lo, "hi": hi, "raw_stop": raw_closed,
-                                   "end": "closed"},
-                         "seeded": True}
-                    print("    gripper: seeded default (dir per side, scale=1.0, "
-                          "closed->URDF zero). Arm joints unaffected.")
+                    previous = self.full_map[joint_name(side, 8)]
+                    if not current_gripper_mapping(previous, side):
+                        print("    cannot skip: the prior gripper map belongs to "
+                              "the old rotary-gripper URDF, not the current "
+                              "0..44 mm OpenArm v1.0 joint. Re-capture is required.")
+                        continue
+                    g = {"dir": int(previous["dir"]),
+                         "scale": float(previous["scale"]),
+                         "offset": float(previous["offset"]),
+                         "stops": ((previous.get("calibration") or {}).get("stops")
+                                   or {"lo": lo, "hi": hi,
+                                       "raw_stop": raw_closed, "end": "closed",
+                                       "scale": float(previous["scale"])}),
+                         "preserved": True}
+                    print("    gripper: preserved the prior mapping; arm joints "
+                          "remain calibrated.")
                     break
         results[8] = g
         self._apply_results(side, results)

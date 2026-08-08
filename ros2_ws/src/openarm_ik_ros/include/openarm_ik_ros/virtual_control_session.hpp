@@ -39,6 +39,16 @@ struct MeasuredState
 {
   oa_runtime_snapshot snapshot{};
   std::uint64_t runtime_now_ns{};
+  struct Gripper
+  {
+    bool calibrated{false};
+    double opening_m{};
+    double velocity_m_s{};
+    double motor_position_rad{};
+    double motor_velocity_rad_s{};
+    double motor_torque_nm{};
+  };
+  std::array<Gripper, 2> gripper{};
 };
 
 struct CommandFeedback
@@ -75,7 +85,7 @@ struct CommandResult
 
 struct SessionCommand
 {
-  enum class Kind {joint, paired_tcp, centroid_tcp, converge_tcp};
+  enum class Kind {joint, paired_tcp, centroid_tcp, mirrored_tcp, converge_tcp, neutral, gripper};
   Kind kind{Kind::joint};
   std::string owner;
   std::uint32_t side{kLeftSide};
@@ -90,6 +100,15 @@ struct SessionCommand
   double contact_torque_fraction{0.0};
   double minimum_progress_m{0.001};
   double motion_limit_scale{kLegacyMotionLimitScale};
+  // -1 moves both arms; 0/1 preserves robot-left/right at the exact measured
+  // start joint vector throughout Cartesian routing.
+  int preserved_side{-1};
+  // Gripper commands use bit 0 for robot-left and bit 1 for robot-right.
+  std::uint32_t gripper_side_mask{};
+  double gripper_opening_m{};
+  double gripper_speed_m_s{};
+  double gripper_torque_limit_nm{};
+  bool gripper_stop_on_contact{false};
   std::function<bool(const CommandFeedback &)> feedback;
   std::function<bool(const CommandResult &)> terminal;
 #ifdef OPENARM_IK_ROS_TESTING
@@ -117,23 +136,38 @@ struct SessionHealth
   std::string reason;
 };
 
-class VirtualControlSession final
+class ControlSession
 {
 public:
   using StateCallback = std::function<bool(const MeasuredState &)>;
   using HealthCallback = std::function<void()>;
+
+  virtual ~ControlSession() = default;
+  virtual bool reserve(const std::string & owner, std::string & reason) = 0;
+  virtual bool submit(SessionCommand command, std::string & reason) = 0;
+  virtual bool cancel(const std::string & owner) = 0;
+  virtual void release(const std::string & owner, const std::string & reason) = 0;
+  virtual SessionHealth health() const = 0;
+  virtual void close() noexcept = 0;
+};
+
+class VirtualControlSession final : public ControlSession
+{
+public:
+  using StateCallback = ControlSession::StateCallback;
+  using HealthCallback = ControlSession::HealthCallback;
 
   explicit VirtualControlSession(StateCallback state_callback, HealthCallback health_callback);
   ~VirtualControlSession();
   VirtualControlSession(const VirtualControlSession &) = delete;
   VirtualControlSession & operator=(const VirtualControlSession &) = delete;
 
-  bool reserve(const std::string & owner, std::string & reason);
-  bool submit(SessionCommand command, std::string & reason);
-  bool cancel(const std::string & owner);
-  void release(const std::string & owner, const std::string & reason);
-  SessionHealth health() const;
-  void close() noexcept;
+  bool reserve(const std::string & owner, std::string & reason) override;
+  bool submit(SessionCommand command, std::string & reason) override;
+  bool cancel(const std::string & owner) override;
+  void release(const std::string & owner, const std::string & reason) override;
+  SessionHealth health() const override;
+  void close() noexcept override;
 
   static const std::array<std::string, 14> & joint_names();
   static bool map_joint(const std::string & name, std::uint32_t & side, std::uint32_t & joint);

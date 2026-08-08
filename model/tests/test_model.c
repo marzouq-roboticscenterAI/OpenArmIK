@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "openarm_model.h"
+#include "openarm_collision.h"
+#include "openarm_route.h"
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
@@ -290,6 +292,148 @@ static void test_review_bounds_regression(void) {
     if (diagnostics.status == OA_MODEL_OK) CHECK(diagnostics.position_error_m <= options.position_tolerance_m);
 }
 
+static void terminal_scene(oa_collision_scene *scene) {
+    static const double left_x[OA_COLLISION_POINTS] =
+        {-2.0, -1.7, -1.4, -1.1, -0.8, -0.5, -0.2, -0.075};
+    size_t side;
+    size_t point;
+    memset(scene, 0, sizeof(*scene));
+    scene->abi_version = OA_COLLISION_ABI_VERSION;
+    scene->struct_size = (uint32_t)sizeof(*scene);
+    for (side = 0; side < 2u; ++side) {
+        for (point = 0; point < OA_COLLISION_POINTS; ++point) {
+            scene->point[side][point][0] = side == 0u ? left_x[point] : -left_x[point];
+            scene->point[side][point][2] = 2.0;
+        }
+    }
+}
+
+static void test_scoped_terminal_contact(void) {
+    oa_collision_scene scene;
+    oa_collision_report report;
+    oa_collision_contact_evidence evidence;
+    terminal_scene(&scene);
+    CHECK(oa_collision_evaluate(&scene, &report) == OA_MODEL_OK);
+    CHECK(report.clear == 0u);
+    CHECK(report.violation == OA_COLLISION_VIOLATION_ARM_ARM);
+    CHECK(report.segment_a == 6u && report.segment_b == 6u);
+
+    CHECK(oa_collision_evaluate_scoped_with_threshold(
+              &scene, oa_collision_required_clearance_m(),
+              OA_COLLISION_CONTACT_TERMINAL_CAPS, &report, &evidence) == OA_MODEL_OK);
+    CHECK(report.clear != 0u);
+    CHECK(evidence.terminal_pair_active != 0u);
+    CHECK(evidence.terminal_parameter_left > 0.999999);
+    CHECK(evidence.terminal_parameter_right > 0.999999);
+    CHECK(fabs(evidence.tcp_separation_m - 0.15) < 1.0e-12);
+    CHECK(report.minimum_clearance_m >= oa_collision_required_clearance_m());
+
+    /* Crossing either TCP behind the opposite terminal plane is never an
+     * allowed contact, even though it is still pair 6/6. */
+    scene.point[0][7][0] = 0.01;
+    scene.point[1][7][0] = -0.01;
+    CHECK(oa_collision_evaluate_scoped_with_threshold(
+              &scene, oa_collision_required_clearance_m(),
+              OA_COLLISION_CONTACT_TERMINAL_CAPS, &report, &evidence) == OA_MODEL_OK);
+    CHECK(report.clear == 0u);
+    CHECK(evidence.terminal_pair_active == 0u);
+
+    terminal_scene(&scene);
+    scene.point[0][0][0] = scene.point[1][0][0] = 1.5;
+    scene.point[0][1][0] = scene.point[1][1][0] = 1.6;
+    CHECK(oa_collision_evaluate_scoped_with_threshold(
+              &scene, oa_collision_required_clearance_m(),
+              OA_COLLISION_CONTACT_TERMINAL_CAPS, &report, &evidence) == OA_MODEL_OK);
+    CHECK(report.clear == 0u);
+    CHECK(report.segment_a != 6u || report.segment_b != 6u);
+    CHECK(evidence.terminal_pair_active != 0u);
+
+    CHECK(oa_collision_evaluate_scoped_with_threshold(
+              &scene, oa_collision_required_clearance_m(), 99u,
+              &report, &evidence) == OA_MODEL_EINVAL);
+}
+
+static void test_claw_rail_clearance(void) {
+    CHECK(isfinite(oa_collision_claw_rail_clearance_m()));
+    CHECK(oa_collision_claw_rail_clearance_m() >=
+          oa_collision_required_clearance_m());
+    CHECK(fabs(oa_collision_claw_rail_clearance_m() - 0.025) < 1.0e-12);
+}
+
+static void test_collision_aware_route(void) {
+    oa_route_request request;
+    oa_route_result result;
+    static const double cross_over[2][3] = {
+        {0.30, -0.04, 0.62}, {0.30, 0.04, 0.22}};
+    size_t waypoint;
+    size_t side;
+    memset(&request, 0, sizeof(request));
+    request.abi_version = OA_ROUTE_ABI_VERSION;
+    request.struct_size = (uint32_t)sizeof(request);
+    request.flags = OA_ROUTE_ALLOW_CLEARANCE_RECOVERY;
+    request.maximum_branch_step_rad = 0.35;
+    memcpy(request.target_tcp_m, cross_over, sizeof(cross_over));
+    memset(&result, 0, sizeof(result));
+    result.abi_version = OA_ROUTE_ABI_VERSION;
+    result.struct_size = (uint32_t)sizeof(result);
+    CHECK(oa_route_plan_paired(&request, &result) == OA_ROUTE_OK);
+    /* A direct neutral-to-crossed sweep is not valid; the C router must use
+     * the audited height-separated corridor rather than approving a shortcut. */
+    CHECK(result.waypoint_count > 1u);
+    CHECK(result.waypoint_count <= OA_ROUTE_MAX_WAYPOINTS);
+    CHECK(result.used_clearance_recovery == 0u);
+    CHECK(result.minimum_clearance_m >= oa_collision_required_clearance_m());
+    for (waypoint = 0u; waypoint < result.waypoint_count; ++waypoint) {
+        for (side = 0u; side < 2u; ++side) {
+            oa_fk_result fk;
+            CHECK(oa_fk(side == 0u ? oa_model_left_v10_bimanual() :
+                                   oa_model_right_v10_bimanual(),
+                        result.waypoint_q_rad[waypoint][side], &fk) == OA_MODEL_OK);
+            CHECK(fabs(fk.hand_tcp.m[3] -
+                       result.waypoint_tcp_m[waypoint][side][0]) < 1.0e-5);
+            CHECK(fabs(fk.hand_tcp.m[7] -
+                       result.waypoint_tcp_m[waypoint][side][1]) < 1.0e-5);
+            CHECK(fabs(fk.hand_tcp.m[11] -
+                       result.waypoint_tcp_m[waypoint][side][2]) < 1.0e-5);
+        }
+    }
+    CHECK(memcmp(result.waypoint_tcp_m[result.waypoint_count - 1u],
+                 cross_over, sizeof(cross_over)) == 0);
+
+    request.target_tcp_m[0][0] = NAN;
+    result.abi_version = OA_ROUTE_ABI_VERSION;
+    result.struct_size = (uint32_t)sizeof(result);
+    CHECK(oa_route_plan_paired(&request, &result) == OA_ROUTE_ENONFINITE);
+
+    {
+        double left_target_q[OA_DOF] = {0.0};
+        double start_tcp[2][3];
+        left_target_q[3] = 0.10;
+        pose_position(oa_model_left_v10_bimanual(), left_target_q,
+                      request.target_tcp_m[0]);
+        pose_position(oa_model_right_v10_bimanual(), request.start_q_rad[1],
+                      request.target_tcp_m[1]);
+        memcpy(start_tcp, request.target_tcp_m, sizeof(start_tcp));
+        request.flags = OA_ROUTE_ALLOW_CLEARANCE_RECOVERY |
+                        OA_ROUTE_PRESERVE_RIGHT;
+        result.abi_version = OA_ROUTE_ABI_VERSION;
+        result.struct_size = (uint32_t)sizeof(result);
+        CHECK(oa_route_plan_paired(&request, &result) == OA_ROUTE_OK);
+        CHECK(result.waypoint_count > 0u);
+        for (waypoint = 0u; waypoint < result.waypoint_count; ++waypoint) {
+            CHECK(memcmp(result.waypoint_q_rad[waypoint][1],
+                         request.start_q_rad[1],
+                         sizeof(request.start_q_rad[1])) == 0);
+            CHECK(memcmp(result.waypoint_tcp_m[waypoint][1], start_tcp[1],
+                         sizeof(start_tcp[1])) == 0);
+        }
+        request.flags |= OA_ROUTE_PRESERVE_LEFT;
+        result.abi_version = OA_ROUTE_ABI_VERSION;
+        result.struct_size = (uint32_t)sizeof(result);
+        CHECK(oa_route_plan_paired(&request, &result) == OA_ROUTE_EINVAL);
+    }
+}
+
 int main(void) {
     const oa_model *models[2] = {oa_model_left_v10_bimanual(), oa_model_right_v10_bimanual()};
     size_t i;
@@ -302,6 +446,9 @@ int main(void) {
     }
     test_every_status();
     test_review_bounds_regression();
+    test_scoped_terminal_contact();
+    test_claw_rail_clearance();
+    test_collision_aware_route();
     if (failures) {
         fprintf(stderr, "%d failures\n", failures);
         return 1;

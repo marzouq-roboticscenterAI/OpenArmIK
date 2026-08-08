@@ -132,6 +132,19 @@ bool guarded_path_endpoint(
   return true;
 }
 
+double ordinary_pair_clearance(const std::array<portal::JointVector, 2> & q)
+{
+  std::array<oa_fk_result, 2> fk{};
+  EXPECT_EQ(oa_fk(oa_model_left_v10_bimanual(), q[0].data(), &fk[0]), OA_MODEL_OK);
+  EXPECT_EQ(oa_fk(oa_model_right_v10_bimanual(), q[1].data(), &fk[1]), OA_MODEL_OK);
+  oa_collision_report report{};
+  oa_collision_contact_evidence evidence{};
+  EXPECT_EQ(oa_collision_evaluate_scoped_fk_with_threshold(
+      &fk[0], &fk[1], 0.0, OA_COLLISION_CONTACT_NONE, &report, &evidence),
+    OA_MODEL_OK);
+  return report.minimum_clearance_m;
+}
+
 std::string read_file(const char * path)
 {
   std::ifstream input(path);
@@ -310,7 +323,7 @@ TEST(PortalPage, UsesSameOriginExternalAssetsAndSerializedCanonicalTargets)
   EXPECT_NE(page.find("value=\"cm\" checked"), std::string::npos);
   EXPECT_NE(page.find("value=\"in\""), std::string::npos);
   EXPECT_NE(page.find("value=\"m\""), std::string::npos);
-  EXPECT_NE(page.find("id=\"motion-limit-scale\" type=\"range\" min=\"50\" max=\"100\" step=\"5\" value=\"80\""), std::string::npos);
+  EXPECT_NE(page.find("id=\"motion-limit-scale\" type=\"range\" min=\"50\" max=\"100\" step=\"5\" value=\"100\""), std::string::npos);
   EXPECT_NE(page.find("/web/portal.css"), std::string::npos);
   EXPECT_NE(page.find("/web/portal.js"), std::string::npos);
   // The 3D view is a real RViz window, so the page must not reintroduce the
@@ -318,6 +331,8 @@ TEST(PortalPage, UsesSameOriginExternalAssetsAndSerializedCanonicalTargets)
   EXPECT_EQ(page.find("/web/viewer.js"), std::string::npos);
   EXPECT_EQ(page.find("viewer-canvas"), std::string::npos);
   EXPECT_EQ(page.find("viewer-neutral-palette"), std::string::npos);
+  EXPECT_EQ(page.find("rviz-blue-filter"), std::string::npos);
+  EXPECT_EQ(page.find("Regular RViz colors"), std::string::npos);
   EXPECT_EQ(page.find("<style>"), std::string::npos);
   EXPECT_NE(page.find("id=\"portal-targets\""), std::string::npos);
   EXPECT_NE(page.find("\"near_max_forward\""), std::string::npos);
@@ -401,6 +416,333 @@ TEST(NominalPathGuard, DualRequestMovesBothArmsAndIsNeverProjected)
   }
 }
 
+TEST(NominalPathGuard, NativeCRouterUsesHeightSeparatedCrossCorridor)
+{
+  portal::GuardInput input;
+  input.measured_q = {};
+  input.request.dual = true;
+  input.request.dual_target[0] = {0.30, -0.04, 0.62};
+  input.request.dual_target[1] = {0.30, 0.04, 0.22};
+  const portal::GuardedRoute route = portal::NominalPathGuard().route_or_project(input);
+  ASSERT_TRUE(route.accepted) << route.reason;
+  ASSERT_TRUE(route.routed);
+  ASSERT_GT(route.waypoint_tcp.size(), 1U);
+  EXPECT_FALSE(route.final.target_projected);
+  EXPECT_FALSE(route.used_clearance_recovery);
+  EXPECT_GE(route.final.minimum_nominal_clearance_m,
+    oa_collision_required_clearance_m());
+  EXPECT_EQ(route.waypoint_tcp.back()[0], input.request.dual_target[0]);
+  EXPECT_EQ(route.waypoint_tcp.back()[1], input.request.dual_target[1]);
+
+  // Dynamic execution does not trust the originally predicted terminal q.
+  // Reconstruct quantized measured feedback after the first leg, then plan the
+  // entire remaining route again from that measurement and independently
+  // prove the newly selected first edge.
+  std::array<portal::JointVector, 2> measured_after_first{};
+  for (std::size_t side = 0U; side < 2U; ++side) {
+    ASSERT_TRUE(guarded_path_endpoint(
+        side, input.measured_q[side], route.waypoint_tcp.front()[side],
+        measured_after_first[side]));
+  }
+  portal::GuardInput dynamic;
+  dynamic.measured_q = measured_after_first;
+  dynamic.request.dual = true;
+  dynamic.request.dual_target = input.request.dual_target;
+  const portal::NominalPathGuard guard;
+  const portal::GuardedRoute remaining = guard.route_or_project(dynamic);
+  ASSERT_TRUE(remaining.accepted) << remaining.reason;
+  ASSERT_FALSE(remaining.waypoint_tcp.empty());
+  EXPECT_EQ(remaining.waypoint_tcp.back()[0], input.request.dual_target[0]);
+  EXPECT_EQ(remaining.waypoint_tcp.back()[1], input.request.dual_target[1]);
+  const portal::GuardResult next_edge = guard.revalidate_direct_leg(
+    measured_after_first, remaining.waypoint_tcp.front(), false);
+  EXPECT_TRUE(next_edge.accepted) << next_edge.reason;
+}
+
+TEST(NominalPathGuard, NativeCRouterEscapesAMeasuredPoseInsideThePlanningGate)
+{
+  // Reconstruct a deterministic near-pole pose from the pinned model rather
+  // than weakening the normal 25 mm gate. The start is still outside the
+  // controller's 10 mm intervention floor; its only admissible first edge is
+  // a monotonically non-worsening retreat that finishes back outside 25 mm.
+  portal::GuardInput input;
+  input.measured_q[0] = solve(0U, {0.30, 0.24, 0.40});
+  input.measured_q[1] = solve(1U, {0.30, -0.24, 0.40});
+  const std::array<portal::Point, 2> safe_tcp{
+    tcp(0U, input.measured_q[0]), tcp(1U, input.measured_q[1])};
+  const portal::Point near_pole{0.40, 0.05, 0.40};
+  const portal::Point begin = safe_tcp[0];
+  bool found_recoverable_start = false;
+  double last_clearance = ordinary_pair_clearance(input.measured_q);
+  std::size_t attempted_samples = 0U;
+  for (std::size_t sample = 1U; sample <= 500U; ++sample) {
+    attempted_samples = sample;
+    const double fraction = static_cast<double>(sample) / 500.0;
+    portal::Point waypoint{};
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+      waypoint[axis] = begin[axis] + fraction * (near_pole[axis] - begin[axis]);
+    }
+    portal::JointVector next{};
+    if (!inverse_from(0U, waypoint, input.measured_q[0], next)) {break;}
+    input.measured_q[0] = next;
+    const double clearance = ordinary_pair_clearance(input.measured_q);
+    last_clearance = clearance;
+    if (clearance >= oa_collision_intervention_clearance_m() + 0.001 &&
+      clearance < oa_collision_required_clearance_m() - 0.001)
+    {
+      found_recoverable_start = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found_recoverable_start) << "begin=[" << begin[0] << "," << begin[1] <<
+    "," << begin[2] << "], attempts=" << attempted_samples <<
+    ", last_clearance=" << last_clearance;
+  input.request.dual = true;
+  input.request.dual_target = safe_tcp;
+  const portal::GuardedRoute escape =
+    portal::NominalPathGuard().route_or_project(input);
+  ASSERT_TRUE(escape.accepted) << escape.reason;
+  EXPECT_TRUE(escape.used_clearance_recovery);
+  EXPECT_GE(escape.final.minimum_nominal_clearance_m,
+    oa_collision_intervention_clearance_m());
+  EXPECT_LT(escape.final.minimum_nominal_clearance_m,
+    oa_collision_required_clearance_m());
+  EXPECT_EQ(escape.waypoint_tcp.back()[0], safe_tcp[0]);
+  EXPECT_EQ(escape.waypoint_tcp.back()[1], safe_tcp[1]);
+}
+
+TEST(NominalPathGuard, ScopedTerminalContactKeepsOrdinaryGuardStrict)
+{
+  // The shared Heart-dip/Clap corridor must pass the scoped policy, while the
+  // exact same path remains forbidden to an ordinary move. The complete
+  // sequence test below covers the branch-continuous Heart bottom corridor.
+  // The reported minimum excludes only the authorized terminal pair, so this
+  // proves every other arm/arm and arm/pole check retained 25 mm clearance.
+  for (const double z : {0.86}) {
+    portal::GuardInput input;
+    for (std::size_t side = 0U; side < 2U; ++side) {
+      const portal::Point high_open{0.34, side == 0U ? 0.22 : -0.22, 0.86};
+      const portal::Point start{0.34, side == 0U ? 0.22 : -0.22, z};
+      const portal::JointVector high_q = solve(side, high_open);
+      if (z == 0.86) {
+        input.measured_q[side] = quantize_endpoint(side, high_q);
+      } else {
+        ASSERT_TRUE(guarded_path_endpoint(
+            side, high_q, start, input.measured_q[side]));
+      }
+    }
+    input.request.target = {0.34, 0.0, z};
+    const std::array<portal::Point, 2> measured_tcp{
+      tcp(0, input.measured_q[0]), tcp(1, input.measured_q[1])};
+    const portal::Point midpoint = input.request.target;
+    const portal::GuardResult scoped =
+      portal::NominalPathGuard().validate_convergence_contact(
+        input, measured_tcp, portal::nominal_contact_stop_distance_m(), 0.001);
+    ASSERT_TRUE(scoped.accepted) << scoped.reason;
+    EXPECT_TRUE(input.request.dual);
+    for (std::size_t side = 0; side < 2U; ++side) {
+      EXPECT_NEAR(std::hypot(
+        input.request.dual_target[side][0] - midpoint[0],
+        input.request.dual_target[side][1] - midpoint[1],
+        input.request.dual_target[side][2] - midpoint[2]),
+        scoped.contact_stop_distance_m, 1.0e-12);
+    }
+
+    portal::GuardInput ordinary_input = input;
+    ordinary_input.contact_policy = OA_COLLISION_CONTACT_NONE;
+    ordinary_input.require_terminal_contact = false;
+    const portal::GuardResult ordinary =
+      portal::NominalPathGuard().validate(ordinary_input);
+    EXPECT_FALSE(ordinary.accepted);
+
+    EXPECT_TRUE(scoped.terminal_pair_active);
+    EXPECT_TRUE(scoped.claw_contact_active);
+    EXPECT_LE(scoped.claw_hand_gap_m, oa_collision_claw_rail_clearance_m());
+    EXPECT_GE(scoped.claw_hand_gap_m,
+      oa_collision_claw_rail_clearance_m() - 0.002);
+    EXPECT_GT(scoped.claw_hand_gap_m, 0.0);
+    EXPECT_GE(scoped.minimum_other_claw_gap_m,
+      oa_collision_required_clearance_m());
+    EXPECT_GE(scoped.minimum_nominal_clearance_m,
+      oa_collision_required_clearance_m());
+    EXPECT_LE(scoped.terminal_pair_clearance_m,
+      oa_collision_required_clearance_m());
+    EXPECT_GE(scoped.terminal_tcp_separation_m, 0.0);
+  }
+}
+
+TEST(NominalPathGuard, HeartAndClapContactSequencesRetainEveryOtherKeepout)
+{
+  using Pair = std::array<portal::Point, 2>;
+  // This is the virtual controller's real startup state. Contact demos must
+  // prove their complete branch-continuous entry path, not only work when a
+  // test seeds the solver directly at the final open pose.
+  std::array<portal::JointVector, 2> measured_q{};
+
+  const auto ordinary = [&measured_q](const Pair & target, const char * label) {
+      SCOPED_TRACE(label);
+      portal::GuardInput input;
+      input.measured_q = measured_q;
+      input.request.dual = true;
+      input.request.dual_target = target;
+      const portal::GuardResult guarded = portal::NominalPathGuard().validate(input);
+      ASSERT_TRUE(guarded.accepted) << guarded.reason;
+      EXPECT_GE(guarded.minimum_nominal_clearance_m,
+        oa_collision_required_clearance_m());
+      for (std::size_t side = 0U; side < 2U; ++side) {
+        portal::JointVector endpoint{};
+        ASSERT_TRUE(guarded_path_endpoint(
+            side, measured_q[side], target[side], endpoint));
+        measured_q[side] = endpoint;
+      }
+    };
+
+  const auto contact = [&measured_q](const portal::Point & midpoint, const char * label) {
+      SCOPED_TRACE(label);
+      portal::GuardInput input;
+      input.measured_q = measured_q;
+      input.request.target = midpoint;
+      const std::array<portal::Point, 2> measured_tcp{{
+        tcp(0U, measured_q[0]), tcp(1U, measured_q[1])}};
+      const portal::GuardResult scoped =
+        portal::NominalPathGuard().validate_convergence_contact(
+          input, measured_tcp, portal::nominal_contact_stop_distance_m(), 0.001);
+      ASSERT_TRUE(scoped.accepted) << scoped.reason <<
+        "; hand_gap=" << scoped.claw_hand_gap_m <<
+        "; other_claw_gap=" << scoped.minimum_other_claw_gap_m;
+
+      // The contact corridor is never available to a normal paired move.
+      portal::GuardInput ordinary_input = input;
+      ordinary_input.contact_policy = OA_COLLISION_CONTACT_NONE;
+      ordinary_input.require_terminal_contact = false;
+      const portal::GuardResult ordinary_guard =
+        portal::NominalPathGuard().validate(ordinary_input);
+      EXPECT_FALSE(ordinary_guard.accepted);
+
+      EXPECT_TRUE(scoped.terminal_pair_active);
+      EXPECT_TRUE(scoped.claw_contact_active);
+      EXPECT_LE(scoped.claw_hand_gap_m, oa_collision_claw_rail_clearance_m());
+      EXPECT_GE(scoped.claw_hand_gap_m,
+        oa_collision_claw_rail_clearance_m() - 0.002);
+      EXPECT_GT(scoped.claw_hand_gap_m, 0.0);
+      EXPECT_GE(scoped.minimum_other_claw_gap_m,
+        oa_collision_required_clearance_m());
+      EXPECT_GE(scoped.minimum_nominal_clearance_m,
+        oa_collision_required_clearance_m());
+      for (std::size_t side = 0U; side < 2U; ++side) {
+        portal::JointVector endpoint{};
+        ASSERT_TRUE(guarded_path_endpoint(
+            side, measured_q[side], input.request.dual_target[side], endpoint));
+        measured_q[side] = endpoint;
+      }
+
+      // DaMiao feedback is quantized. Re-evaluate the resulting measured pose,
+      // rather than relying on the unquantized plan endpoint, and prove that
+      // only the facing terminal pair is inside the normal planning clearance.
+      portal::GuardInput held;
+      held.measured_q = measured_q;
+      held.request.dual = true;
+      held.request.dual_target = {{tcp(0U, measured_q[0]), tcp(1U, measured_q[1])}};
+      held.contact_policy = OA_COLLISION_CONTACT_TERMINAL_CAPS;
+      held.require_terminal_contact = true;
+      const portal::GuardResult measured_contact =
+        portal::NominalPathGuard().validate(held);
+      ASSERT_TRUE(measured_contact.accepted) << measured_contact.reason;
+      EXPECT_TRUE(measured_contact.terminal_pair_active);
+      EXPECT_TRUE(measured_contact.claw_contact_active);
+      EXPECT_GT(measured_contact.claw_hand_gap_m, 0.0);
+      EXPECT_GE(measured_contact.claw_hand_gap_m,
+        oa_collision_claw_rail_clearance_m() - 0.002);
+      EXPECT_GE(measured_contact.minimum_other_claw_gap_m,
+        oa_collision_required_clearance_m());
+      EXPECT_GE(measured_contact.minimum_nominal_clearance_m,
+        oa_collision_required_clearance_m());
+    };
+
+  const auto retreat = [&measured_q](const Pair & target, const char * label) {
+      SCOPED_TRACE(label);
+      portal::GuardInput input;
+      input.measured_q = measured_q;
+      input.request.dual = true;
+      input.request.dual_target = target;
+      input.contact_policy = OA_COLLISION_CONTACT_TERMINAL_CAPS;
+      input.terminal_retreat = true;
+      const portal::NominalPathGuard guard;
+      const portal::GuardResult ordinary_reproof =
+        guard.revalidate_direct_leg(measured_q, target, false);
+      EXPECT_FALSE(ordinary_reproof.accepted)
+        << "a contact start must not pass the ordinary direct-edge proof";
+      const portal::GuardResult guarded =
+        guard.revalidate_direct_leg(measured_q, target, true);
+      ASSERT_TRUE(guarded.accepted) << guarded.reason;
+      EXPECT_FALSE(guarded.terminal_pair_active);
+      EXPECT_GE(guarded.minimum_nominal_clearance_m,
+        oa_collision_required_clearance_m());
+      for (std::size_t side = 0U; side < 2U; ++side) {
+        portal::JointVector endpoint{};
+        ASSERT_TRUE(guarded_path_endpoint(
+            side, measured_q[side], target[side], endpoint));
+        measured_q[side] = endpoint;
+      }
+
+      // Once clear, the same measured pose passes the ordinary strict policy.
+      portal::GuardInput strict;
+      strict.measured_q = measured_q;
+      strict.request.dual = true;
+      strict.request.dual_target = {{tcp(0U, measured_q[0]), tcp(1U, measured_q[1])}};
+      const portal::GuardResult cleared = portal::NominalPathGuard().validate(strict);
+      ASSERT_TRUE(cleared.accepted) << cleared.reason;
+      EXPECT_GE(cleared.minimum_nominal_clearance_m,
+        oa_collision_required_clearance_m());
+    };
+
+  const Pair clap_open{{{0.34, 0.22, 0.86}, {0.34, -0.22, 0.86}}};
+  const Pair heart_lobe{{{0.34, 0.26, 0.90}, {0.34, -0.26, 0.90}}};
+  const Pair heart_outer{{{0.33, 0.28, 0.86}, {0.33, -0.28, 0.86}}};
+  const Pair heart_shoulder{{{0.32, 0.25, 0.82}, {0.32, -0.25, 0.82}}};
+  const Pair heart_lower{{{0.31, 0.18, 0.78}, {0.31, -0.18, 0.78}}};
+  const Pair heart_bottom_ready{{{0.30, 0.22, 0.74}, {0.30, -0.22, 0.74}}};
+  const Pair neutral_low{{{0.15, 0.22, 0.15}, {0.15, -0.22, 0.15}}};
+  const Pair forward_mid{{{0.30, 0.22, 0.30}, {0.30, -0.22, 0.30}}};
+  const Pair cross_open{{{0.30, 0.26, 0.45}, {0.30, -0.26, 0.45}}};
+
+  // The browser prepends this entry on a fresh launch. It is intentionally
+  // the same route exercised through the live HTTP portal.
+  ordinary(neutral_low, "contact demo entry low");
+  ordinary(forward_mid, "contact demo entry mid");
+  ordinary(cross_open, "contact demo entry cross");
+  ordinary(heart_bottom_ready, "contact demo entry bottom ready");
+  ordinary(heart_lower, "contact demo entry lower");
+  ordinary(heart_shoulder, "contact demo entry shoulder");
+  ordinary(heart_outer, "contact demo entry outer");
+  ordinary(heart_lobe, "contact demo entry lobe");
+  ordinary(clap_open, "contact demo entry open");
+
+  // Full clap: touch twice, retreat after every touch.
+  contact({0.34, 0.0, 0.86}, "clap contact 1");
+  retreat(clap_open, "clap retreat 1");
+  contact({0.34, 0.0, 0.86}, "clap contact 2");
+  retreat(clap_open, "clap retreat 2");
+
+  // Full heart sequence, including both top contacts and the bottom cusp.
+  contact({0.34, 0.0, 0.86}, "heart first top contact");
+  retreat(clap_open, "heart first top retreat");
+  ordinary(heart_lobe, "heart lobe down");
+  ordinary(heart_outer, "heart outer down");
+  ordinary(heart_shoulder, "heart shoulder down");
+  ordinary(heart_lower, "heart lower down");
+  ordinary(heart_bottom_ready, "heart bottom approach");
+  contact({0.30, 0.0, 0.74}, "heart bottom contact");
+  retreat(heart_bottom_ready, "heart bottom retreat");
+  ordinary(heart_lower, "heart lower up");
+  ordinary(heart_shoulder, "heart shoulder up");
+  ordinary(heart_outer, "heart outer up");
+  ordinary(heart_lobe, "heart lobe up");
+  ordinary(clap_open, "heart top approach");
+  contact({0.34, 0.0, 0.86}, "heart final top contact");
+  retreat(clap_open, "heart final top retreat");
+}
+
 TEST(PortalPage, CarriesStrictInputAndSafetyContracts)
 {
   const std::string page = portal::portal_page("token");
@@ -410,17 +752,16 @@ TEST(PortalPage, CarriesStrictInputAndSafetyContracts)
   EXPECT_NE(page.find("not a hardwired E-stop"), std::string::npos);
   EXPECT_NE(page.find("/api/rviz/stream"), std::string::npos);
   EXPECT_NE(page.find("id=\"both\""), std::string::npos);
-  EXPECT_NE(page.find("real <strong>RViz</strong> pixels"), std::string::npos);
+  EXPECT_NE(page.find("unfiltered <strong>RViz</strong> render"), std::string::npos);
   // The stream used to be one-way and the page said "display-only". It now
   // replays pointer events into the real RViz window, so that claim would be
   // false and asserting it would pin a lie. What still has to be disclosed is
-  // that input reaches RViz and that it can be refused, so those are checked
-  // instead.
+  // that input reaches the real RViz render and that no Qt controls are shown.
   EXPECT_EQ(page.find("display-only"), std::string::npos)
     << "the page must not claim the RViz stream is display-only now that "
        "pointer events are replayed into it";
   EXPECT_NE(page.find("pointer events are replayed"), std::string::npos);
-  EXPECT_NE(page.find("Input is refused"), std::string::npos);
+  EXPECT_NE(page.find("option panels are not shown"), std::string::npos);
   EXPECT_NE(page.find("not collision checking"), std::string::npos);
   EXPECT_NE(page.find("never used as control feedback"), std::string::npos);
   EXPECT_NE(page.find("no portal-switchable coordinate grid"), std::string::npos);
@@ -543,7 +884,7 @@ TEST(ViewerSnapshot, SerializesStrictJointOrderAndBinary64Positions)
   EXPECT_EQ(absent.find("position_rad"), std::string::npos);
 }
 
-TEST(JointStateMapping, RequiresExactUnambiguousCanonicalSet)
+TEST(JointStateMapping, RequiresCanonicalSetAndAllowsKnownFingerExtension)
 {
   std::vector<std::string> names;
   std::vector<double> positions;
@@ -565,6 +906,21 @@ TEST(JointStateMapping, RequiresExactUnambiguousCanonicalSet)
   ASSERT_TRUE(portal::map_canonical_joint_state(names, positions, mapped));
   EXPECT_DOUBLE_EQ(mapped[0][0], 0.125);
   EXPECT_DOUBLE_EQ(mapped[1][6], 13.125);
+
+  auto observer_names = names;
+  auto observer_positions = positions;
+  for (const char * finger : {"openarm_left_finger_joint1", "openarm_left_finger_joint2",
+      "openarm_right_finger_joint1", "openarm_right_finger_joint2"})
+  {
+    observer_names.emplace_back(finger);
+    observer_positions.push_back(0.002);
+  }
+  ASSERT_TRUE(portal::map_canonical_joint_state(observer_names, observer_positions, mapped));
+  EXPECT_DOUBLE_EQ(mapped[0][0], 0.125);
+  EXPECT_DOUBLE_EQ(mapped[1][6], 13.125);
+
+  observer_names.back() = observer_names[observer_names.size() - 2U];
+  EXPECT_FALSE(portal::map_canonical_joint_state(observer_names, observer_positions, mapped));
 
   auto invalid_names = names;
   auto invalid_positions = positions;
@@ -678,10 +1034,28 @@ TEST(ViewerScript, UsesSequentialThirtyHertzPollingAndLocalOnlyCameraEvents)
   EXPECT_NE(page.find("post('/api/v3/move'"), std::string::npos);
   EXPECT_NE(page.find("motion_limit_scale"), std::string::npos);
   EXPECT_NE(page.find("renderPresets('left'); renderPresets('right')"), std::string::npos);
+  EXPECT_EQ(page.find("function initRvizPalette()"), std::string::npos);
+  EXPECT_EQ(page.find("blue-filter"), std::string::npos);
   EXPECT_NE(page.find("result.projected"), std::string::npos);
   EXPECT_NE(page.find("result.achieved_fraction"), std::string::npos);
   EXPECT_NE(page.find("guard queued only"), std::string::npos);
   EXPECT_EQ(page.find("guard moved only"), std::string::npos);
+}
+
+TEST(ScenePropLifecycle, PickPlaceAlwaysDeletesTheExactPublishedMarker)
+{
+  const std::string page = read_file(OPENARM_PORTAL_JS_PATH);
+  const std::string node = read_file(OPENARM_NODE_CPP_PATH);
+  ASSERT_FALSE(page.empty());
+  ASSERT_FALSE(node.empty());
+  const std::size_t finally_clause = page.find("} finally {");
+  ASSERT_NE(finally_clause, std::string::npos);
+  EXPECT_NE(page.find(
+      "if (sequence.id === 'pick_place') await setSceneBox(false);",
+      finally_clause), std::string::npos);
+  EXPECT_NE(node.find("removal.id = kBoxMarkerId;"), std::string::npos);
+  EXPECT_NE(node.find("marker.id = kBoxMarkerId;"), std::string::npos);
+  EXPECT_EQ(node.find("removal.id = 1;"), std::string::npos);
 }
 
 TEST(NominalPathGuard, RejectsNonfiniteAndUnprovenStates)
@@ -1197,6 +1571,61 @@ TEST(GuardHandoff, AcceptsEquivalentNewerHealthyGenerations)
   EXPECT_TRUE(portal::guard_handoff_valid(guarded, current, 10500, 20500, 1000, 1000));
 }
 
+TEST(GuardHandoff, AcceptsOneEncoderCodeOfIdleQuantizationButRejectsTwo)
+{
+  constexpr double encoder_code_rad = 25.0 / 65535.0;
+  portal::GuardInput guarded;
+  guarded.state_sequence = 4;
+  guarded.diagnostic_sequence = 7;
+  guarded.state_freshness = {9000, 19000};
+  guarded.diagnostic_freshness = {9000, 19000};
+  portal::GuardHandoffEvidence current;
+  current.measured_q = guarded.measured_q;
+  current.measured_q[0][4] += encoder_code_rad;
+  current.state_sequence = 5;
+  current.diagnostic_sequence = 8;
+  current.state_freshness = {10000, 20000};
+  current.diagnostic_freshness = {10000, 20000};
+  current.have_state = true;
+  current.diagnostic_valid = true;
+  EXPECT_TRUE(portal::guard_handoff_valid(
+      guarded, current, 10500, 20500, 1000, 1000));
+
+  current.measured_q[0][4] = 2.0 * encoder_code_rad;
+  EXPECT_FALSE(portal::guard_handoff_valid(
+      guarded, current, 10500, 20500, 1000, 1000));
+}
+
+TEST(GuardHandoff, AcceptsOneEncoderCodePastLimitButRejectsMore)
+{
+  portal::GuardInput guarded;
+  guarded.state_sequence = 4;
+  guarded.diagnostic_sequence = 7;
+  guarded.state_freshness = {9000, 19000};
+  guarded.diagnostic_freshness = {9000, 19000};
+  double lower = 0.0;
+  double upper = 0.0;
+  ASSERT_EQ(oa_model_limits(oa_model_left_v10_bimanual(), 0U, &lower, &upper), OA_MODEL_OK);
+  constexpr double encoder_code_rad = 25.0 / 65535.0;
+  guarded.measured_q[0][0] = upper + encoder_code_rad;
+
+  portal::GuardHandoffEvidence current;
+  current.measured_q = guarded.measured_q;
+  current.state_sequence = 5;
+  current.diagnostic_sequence = 8;
+  current.state_freshness = {10000, 20000};
+  current.diagnostic_freshness = {10000, 20000};
+  current.have_state = true;
+  current.diagnostic_valid = true;
+  EXPECT_TRUE(portal::guard_handoff_valid(
+      guarded, current, 10500, 20500, 1000, 1000));
+
+  guarded.measured_q[0][0] = upper + 4.0e-4;
+  current.measured_q = guarded.measured_q;
+  EXPECT_FALSE(portal::guard_handoff_valid(
+      guarded, current, 10500, 20500, 1000, 1000));
+}
+
 TEST(GuardHandoff, RejectsOneJointDriftAndReplayedEvidence)
 {
   portal::GuardInput guarded;
@@ -1206,7 +1635,7 @@ TEST(GuardHandoff, RejectsOneJointDriftAndReplayedEvidence)
   guarded.diagnostic_freshness = {9000, 19000};
   portal::GuardHandoffEvidence current;
   current.measured_q = guarded.measured_q;
-  current.measured_q[0][3] += 2.0e-6;
+  current.measured_q[0][3] += 2.0 * (25.0 / 65535.0);
   current.state_sequence = 5;
   current.diagnostic_sequence = 8;
   current.state_freshness = {10000, 20000};

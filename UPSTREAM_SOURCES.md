@@ -50,6 +50,23 @@ The active manifest deliberately uses one coherent current audited baseline; it 
 
 `openarm_teleop`, `openarm_isaac_lab`, and the audited `dora-openarm` HEAD had no exact release tag observed at ingestion.
 
+## 2026-08-06 remote-history refresh
+
+All ten origins and tags were fetched again without changing the audited
+detached worktrees. Five remote HEADs were unchanged. The others advanced to:
+
+| Repository | Fetched remote HEAD | Relevance to this v1.0 integration |
+|---|---|---|
+| `openarm` | `2176cccd6402345432da15d4386c5e0d9767fef7` | website dependency updates only |
+| `openarm_description` | `1fba2cbc05001f05b4514120b70130b4ac06f409` | removed redundant top-level URDFs; no v1.0 subtree change |
+| `openarm_can` | `98666042b5e9cd5b55d0bd1d7fc3aa5c42caae4d` | OpenArm Cell calibration support; no v1.0 motor-map change |
+| `openarm_mujoco` | `396c88d87fc7eb485e4497ac043c4d95f526139e` (`2.1.0`) | new Cell simulation scenes |
+| `openarm_dataset` | `7c412acd8a7f30f88b1a95d556f71e12e2e1eea5` | dataset metadata/validity fields |
+
+The complete new history is present locally through the updated remote refs.
+The active audited checkouts remain pinned so the generated URDF, collision
+meshes, and test evidence cannot silently change beneath this project.
+
 ## Transfer record
 
 The first concurrent full-clone attempts for `openarm` and `openarm_isaac_lab` terminated before producing a checkout; Git removed their incomplete destination directories, and the execution layer surfaced no terminal error text beyond the missing checkout. After the other original transfers completed, both repositories were retried one at a time as full `--recurse-submodules` clones and succeeded at the commits in the active manifest. There are no final clone failures or incomplete repositories.

@@ -17,6 +17,10 @@
 namespace
 {
 using openarm_ik_ros::real::joint_limit_misfit;
+using openarm_ik_ros::real::map_motor_records_by_id;
+using openarm_ik_ros::real::reply_matches_expected;
+using openarm_ik_ros::real::BusReading;
+using openarm_ik_ros::real::MotorRecord;
 using openarm_ik_ros::real::kJointsPerArm;
 using openarm_ik_ros::real::kLeftSide;
 using openarm_ik_ros::real::kRightSide;
@@ -24,8 +28,8 @@ using openarm_ik_ros::real::kRightSide;
 using Pose = std::array<double, kJointsPerArm>;
 
 /// The pose actually measured on can1 from the connected arm, 2026-08-04. That
-/// bus is the RIGHT arm; this was confirmed physically by energizing a motor and
-/// watching which arm's LED turned green.
+/// bus is the LEFT arm; this was confirmed on 2026-08-06 by moving each physical
+/// arm while the strictly read-only observer streamed encoder deltas.
 ///
 /// Joint 4 sits outside [0, 2.443] because the motor zeros are not commissioned
 /// to the URDF zeros; that is deliberate, and a test below pins the fact that
@@ -42,33 +46,22 @@ Pose mirrored(const Pose & pose)
   return out;
 }
 
-TEST(RealObserverIdentification, TheHeuristicIsKnownToGetRealHardwareWrong)
+TEST(RealObserverIdentification, TheMeasuredCan1PosePrefersTheConfirmedLeftSide)
 {
-  // Ground truth, established by enabling a motor and looking at which arm's
-  // LED lit: the bus carrying this pose is the RIGHT arm. The scorer says left.
-  //
-  // This test pins the falsification rather than the answer. The heuristic is
-  // not broken arithmetic -- the checks below show it is exactly mirror
-  // symmetric -- it is being fed absolute angles from motors whose zeros are
-  // not commissioned to the URDF zeros, so the input carries no dependable side
-  // information. Applying the manifest's q_scale/q_offset/direction was tried
-  // and does not rescue it: every sign convention still answers "left".
-  //
-  // Hence the observer reports this as confidence "low" and the portal presents
-  // it as an unverified guess with a Swap arms control. If someone later makes
-  // this heuristic authoritative again, this test fails and says why.
+  // The observed pose and operator-confirmed side agree for this sample. This
+  // does not make absolute-angle identification authoritative: the encoder
+  // zeros are not commissioned to the URDF zeros, so another pose or rebuilt
+  // arm need not retain this signature. The observer therefore keeps heuristic
+  // confidence low and launchers pin the operator-confirmed channel mapping.
   EXPECT_LT(joint_limit_misfit(kMeasured, kLeftSide), joint_limit_misfit(kMeasured, kRightSide))
-    << "the scorer no longer prefers the left side for the measured pose; if the "
-       "input space changed (commissioned zeros, applied mapping), re-verify "
-       "against hardware before trusting the result";
+    << "the measured can1 pose should prefer its operator-confirmed left side";
 }
 
 TEST(RealObserverIdentification, MirroringTheSamePoseFlipsTheAnswer)
 {
   // Establishes that the scorer is directional rather than constant. Note what
   // this does and does not buy: it proves the arithmetic responds to its input,
-  // not that the input means what we want. The scorer was directional and still
-  // got the real arm backwards.
+  // not that an uncommissioned absolute encoder angle is a side identity.
   const Pose reflected = mirrored(kMeasured);
   EXPECT_GT(joint_limit_misfit(reflected, kLeftSide), joint_limit_misfit(reflected, kRightSide));
 }
@@ -131,5 +124,61 @@ TEST(RealObserverIdentification, JointsWithSharedLimitsCannotDecideAnything)
       joint_limit_misfit(pose, kLeftSide), joint_limit_misfit(pose, kRightSide), 1.0e-12)
       << "joint index " << joint << " must not influence the side decision";
   }
+}
+
+TEST(RealObserverMapping, MissingJointCannotShiftGripperIntoJ7)
+{
+  std::vector<MotorRecord> records;
+  for (std::uint16_t id : {1U, 3U, 4U, 5U, 6U, 7U, 8U}) {
+    MotorRecord record;
+    record.send_id = id;
+    record.position_rad = static_cast<double>(id);
+    records.push_back(record);
+  }
+  BusReading reading;
+  EXPECT_FALSE(map_motor_records_by_id(records, reading));
+  EXPECT_FALSE(reading.complete);
+  EXPECT_TRUE(reading.joint_valid[0]);
+  EXPECT_FALSE(reading.joint_valid[1]);
+  EXPECT_TRUE(reading.joint_valid[6]);
+  EXPECT_DOUBLE_EQ(reading.position_rad[6], 7.0);
+  EXPECT_TRUE(reading.has_gripper);
+  EXPECT_DOUBLE_EQ(reading.gripper_rad, 8.0);
+}
+
+TEST(RealObserverMapping, ExactIdsMapToTheirJointAndGripperSlots)
+{
+  std::vector<MotorRecord> records;
+  for (std::uint16_t id = 8U; id >= 1U; --id) {
+    MotorRecord record;
+    record.send_id = id;
+    record.position_rad = static_cast<double>(id) * 0.1;
+    record.velocity_rad_s = static_cast<double>(id) * 0.2;
+    record.torque_nm = static_cast<double>(id) * 0.3;
+    records.push_back(record);
+  }
+  BusReading reading;
+  ASSERT_TRUE(map_motor_records_by_id(records, reading));
+  ASSERT_TRUE(reading.complete);
+  ASSERT_TRUE(reading.has_gripper);
+  for (std::size_t joint = 0; joint < kJointsPerArm; ++joint) {
+    EXPECT_DOUBLE_EQ(reading.position_rad[joint], static_cast<double>(joint + 1U) * 0.1);
+    EXPECT_TRUE(reading.joint_valid[joint]);
+  }
+  EXPECT_DOUBLE_EQ(reading.gripper_rad, 0.8);
+}
+
+TEST(RealObserverMapping, LocalLoopbackRefreshCannotBecomeJointFeedback)
+{
+  const std::vector<std::uint16_t> expected{1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U};
+
+  // This is the arbitration ID of every DaMiao refresh-status command. A
+  // second local raw-CAN socket receives it through loopback, but it is never
+  // encoder feedback even though byte zero contains the requested motor ID.
+  EXPECT_FALSE(reply_matches_expected(0x7ffU, 2U, expected, 0x10U));
+
+  EXPECT_TRUE(reply_matches_expected(0x12U, 2U, expected, 0x10U));
+  EXPECT_FALSE(reply_matches_expected(0x12U, 1U, expected, 0x10U));
+  EXPECT_FALSE(reply_matches_expected(0x19U, 9U, expected, 0x10U));
 }
 }  // namespace

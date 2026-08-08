@@ -2,11 +2,15 @@
 #include "openarm_can.h"
 #include "openarm_units.h"
 #include "openarm_model.h"
+#include "openarm_route.h"
 #include "openarm_commission.h"
 #include "openarm_transport.h"
 #include "openarm_control.h"
 #include "openarm_runtime.h"
 #include "openarm_runtime_units.h"
+
+_Static_assert(sizeof(((oa_route_request *)0)->target_tcp_m[0][0]) == sizeof(double),
+               "route coordinates narrowed");
 
 #include <stddef.h>
 #include <stdio.h>

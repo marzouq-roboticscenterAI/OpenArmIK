@@ -8,6 +8,7 @@ from m1_can_tools.calibrate_live_solve import (
     URDF_LIMITS,
     offset_from_stops,
     recompute_offset,
+    scale_from_stops,
     solve_arm_joint,
     solve_gripper,
     solve_single_stop_joint,
@@ -49,6 +50,16 @@ def test_solve_arm_joint_reports_spans():
     assert r["span_mismatch"] == pytest.approx(0.0, abs=1e-4)
 
 
+def test_solve_arm_joint_maps_unequal_encoder_span_to_full_urdf_range():
+    lo, hi = -1.5708, 1.5708
+    r_min, r_max = -0.75, 2.75
+    r = solve_arm_joint(1, lo, hi, r_min, r_max)
+    assert r["scale"] == pytest.approx((hi - lo) / (r_max - r_min))
+    assert verify_maps_to_urdf(1, r["scale"], r["offset"], r_min, lo)
+    assert verify_maps_to_urdf(1, r["scale"], r["offset"], r_max, hi)
+    assert scale_from_stops(lo, hi, r_min, r_max) == pytest.approx(r["scale"])
+
+
 def test_flip_recomputes_offset_exactly_from_stored_stops():
     lo, hi = -1.5708, 1.5708
     r_min, r_max = -1.0, 2.1416
@@ -72,8 +83,14 @@ def test_single_stop_joint_pins_safe_end_only():
     assert off == pytest.approx(r["offset"])
 
 
+def test_single_stop_joint_preserves_commissioned_scale():
+    r = solve_single_stop_joint(1, 0.0, 2.4435, -0.35, "lo", 0.987)
+    assert r["scale"] == pytest.approx(0.987)
+    assert verify_maps_to_urdf(1, r["scale"], r["offset"], -0.35, 0.0)
+
+
 def test_gripper_sign_scale_and_zero():
-    # left: closing->open should move the URDF finger to +0.7854.
+    # Current OpenArm v1.0 URDF: closed=0, open=+0.044 m.
     r = solve_gripper(raw_closed=-1.10, raw_open=-0.01, desired_travel=GRIPPER_TRAVEL["left"])
     assert r["dir"] == 1
     assert 0.0 < r["scale"] < 3.0
@@ -83,9 +100,9 @@ def test_gripper_sign_scale_and_zero():
 
 
 def test_gripper_negative_direction():
-    # right: URDF open is -0.7854; a positive motor delta must give dir=-1.
+    # Both current URDF finger joints open in the positive prismatic direction.
     r = solve_gripper(raw_closed=0.0, raw_open=1.09, desired_travel=GRIPPER_TRAVEL["right"])
-    assert r["dir"] == -1
+    assert r["dir"] == 1
     assert verify_maps_to_urdf(r["dir"], r["scale"], r["offset"], 1.09,
                                GRIPPER_TRAVEL["right"])
 
@@ -107,3 +124,5 @@ def test_urdf_tables_are_consistent_shape():
         assert len(URDF_LIMITS[side]) == 8
         for lo, hi in URDF_LIMITS[side]:
             assert hi > lo
+    assert URDF_LIMITS["left"][7] == (0.0, 0.044)
+    assert URDF_LIMITS["right"][7] == (0.0, 0.044)

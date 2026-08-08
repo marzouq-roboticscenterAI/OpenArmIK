@@ -5,6 +5,7 @@
 #define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1
 #include <openarm_collision.h>
 #include <openarm_model.h>
+#include <openarm_route.h>
 
 #include "openarm_ik_ros/motion_profile.hpp"
 
@@ -55,6 +56,12 @@ struct GuardInput
   FreshnessEvidence state_freshness{};
   FreshnessEvidence diagnostic_freshness{};
   MoveRequest request{};
+  oa_collision_contact_policy contact_policy{OA_COLLISION_CONTACT_NONE};
+  bool require_terminal_contact{false};
+  bool terminal_retreat{false};
+  // Used by dynamic re-planning after a nominally single-arm request has been
+  // represented as paired endpoints. -1 means neither side is preserved.
+  int preserved_side{-1};
 };
 
 struct GuardHandoffEvidence
@@ -83,6 +90,27 @@ struct GuardResult
   double minimum_nominal_clearance_m{0.0};
   double failure_path_fraction{1.0};
   double keepout_barrier_distance_m{0.0};
+  bool terminal_pair_active{false};
+  double terminal_pair_clearance_m{0.0};
+  double terminal_tcp_separation_m{0.0};
+  bool claw_contact_active{false};
+  double claw_hand_gap_m{0.0};
+  double minimum_other_claw_gap_m{0.0};
+  // Common radial stop selected from exact pinned-mesh evidence for a
+  // convergence command. Zero for every non-contact guard result.
+  double contact_stop_distance_m{0.0};
+};
+
+struct GuardedRoute
+{
+  bool accepted{false};
+  bool routed{false};
+  bool used_clearance_recovery{false};
+  std::string reason;
+  GuardResult final;
+  // Ordered paired TCP endpoints in body-frame metres. The measured start is
+  // intentionally omitted; each element is one independently checked edge.
+  std::vector<std::array<Point, 2>> waypoint_tcp;
 };
 
 struct MutationHeaders
@@ -184,6 +212,26 @@ class NominalPathGuard
 public:
   GuardResult validate(const GuardInput & input) const;
   GuardResult validate_or_project(const GuardInput & input) const;
+  // Re-proves one already selected paired endpoint from the newest measured
+  // joints immediately before controller submission. Ordinary legs retain the
+  // native-C route planner's conservative keepout proof. A terminal retreat
+  // instead uses the exact, monotonic contact-exit proof because its measured
+  // start is intentionally inside the ordinary claw keepout.
+  GuardResult revalidate_direct_leg(
+    const std::array<JointVector, 2> & measured_q,
+    const std::array<Point, 2> & endpoint, bool terminal_retreat,
+    int preserved_side = -1) const;
+  // Ordinary commands first try an exact native-C collision-aware route. A
+  // single-arm request retains the legacy best-effort projection only when no
+  // exact graph route can be proven. Scoped contact and terminal retreats stay
+  // on their dedicated, more restrictive validators.
+  GuardedRoute route_or_project(const GuardInput & input) const;
+  // Finds a branch-specific convergence endpoint using the same sampled IK
+  // path and exact hand/finger meshes used by the real-time monitor. `input`
+  // is updated with the accepted paired endpoints only on success.
+  GuardResult validate_convergence_contact(
+    GuardInput & input, const std::array<Point, 2> & measured_tcp,
+    double nominal_stop_distance_m, double minimum_progress_m) const;
 
 private:
   static bool forward(std::size_t side, const JointVector & q, oa_fk_result & result);
@@ -196,7 +244,8 @@ private:
     std::size_t side, const JointVector & q, std::string & reason,
     double tolerance_rad = 0.0);
   static bool scene_clear(
-    const std::array<oa_fk_result, 2> & fk, double & clearance, std::string & reason);
+    const std::array<oa_fk_result, 2> & fk, oa_collision_contact_policy contact_policy,
+    double & clearance, oa_collision_contact_evidence & contact, std::string & reason);
 };
 
 bool fresh_at_use(
@@ -205,9 +254,14 @@ bool fresh_at_use(
 bool guard_handoff_valid(
   const GuardInput & guarded, const GuardHandoffEvidence & current,
   std::int64_t now_time_ns, std::int64_t now_steady_ns,
-  std::int64_t state_maximum_age_ns, std::int64_t diagnostic_maximum_age_ns);
+  std::int64_t state_maximum_age_ns, std::int64_t diagnostic_maximum_age_ns,
+  std::string * failure_reason = nullptr);
 bool normalise_move_to_metres(
   const UnitMoveRequest & input, MoveRequest & output, std::string & reason);
+double nominal_contact_stop_distance_m();
+bool prepare_convergence_guard_targets(
+  MoveRequest & request, const std::array<Point, 2> & measured_tcp,
+  double stop_distance_m, double minimum_progress_m, std::string & reason);
 bool map_canonical_joint_state(
   const std::vector<std::string> & names, const std::vector<double> & positions,
   std::array<JointVector, 2> & output);

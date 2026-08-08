@@ -18,6 +18,7 @@ geometry_msgs/Point target_m
 uint8 lead_side
 # MODE_CONVERGE only.
 float64 stop_distance_m
+# MODE_CONVERGE may stop early on measured torque strain.
 float64 contact_torque_fraction
 float64 motion_limit_scale
 ---

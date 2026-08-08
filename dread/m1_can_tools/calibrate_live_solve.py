@@ -32,15 +32,15 @@ URDF_LIMITS: Dict[str, list] = {
     "left": [
         (-3.4907, 1.3963), (-3.3161, 0.17453), (-1.5708, 1.5708),
         (0.0, 2.4435), (-1.5708, 1.5708), (-0.7854, 0.7854),
-        (-1.5708, 1.5708), (0.0, 0.7854),
+        (-1.5708, 1.5708), (0.0, 0.044),
     ],
     "right": [
         (-1.3963, 3.4907), (-0.17453, 3.3161), (-1.5708, 1.5708),
         (0.0, 2.4435), (-1.5708, 1.5708), (-0.7854, 0.7854),
-        (-1.5708, 1.5708), (-0.7854, 0.0),
+        (-1.5708, 1.5708), (0.0, 0.044),
     ],
 }
-GRIPPER_TRAVEL = {"left": 0.7854, "right": -0.7854}
+GRIPPER_TRAVEL = {"left": 0.044, "right": 0.044}
 
 # Joints whose front hardstop is unsafe to reach by hand (the elbow can drive the
 # forearm into the body). They are captured at their ONE safe stop only; the
@@ -56,19 +56,36 @@ SPAN_MISMATCH_TOL = 0.20  # rad; measured stop span vs URDF span before a warnin
 GRIP_MIN, GRIP_MAX = 0.25, 3.0  # plausible gripper motor travel (motor rad)
 
 
+def scale_from_stops(lo: float, hi: float,
+                     r_min: float, r_max: float) -> float:
+    """Fit the complete measured motor span to the current URDF range."""
+    values = (lo, hi, r_min, r_max)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("joint limits and hardstops must be finite")
+    if hi <= lo or r_max <= r_min:
+        raise ValueError("joint and raw hardstop spans must be positive")
+    return (hi - lo) / (r_max - r_min)
+
+
 def offset_from_stops(dir_: int, lo: float, hi: float,
-                      r_min: float, r_max: float) -> float:
+                      r_min: float, r_max: float,
+                      scale: float | None = None) -> float:
     """Offset that maps the two mechanical stops onto the URDF limits.
 
-    The joint transform is ``q = dir*raw + offset`` (scale is 1 for the seven
-    rotary arm joints). ``q`` is monotonic in ``raw``: for ``dir = +1`` it
+    The joint transform is ``q = dir*scale*raw + offset``. ``scale`` defaults
+    to the exact stop-to-stop fit, so both measured extrema map to the current
+    URDF limits rather than assuming every encoder span is exactly 1:1.
+    ``q`` is monotonic in ``raw``: for ``dir = +1`` it
     increases with raw, so the URDF ``lo`` sits at the smaller raw (``r_min``);
     for ``dir = -1`` it decreases, so ``lo`` sits at the larger raw (``r_max``).
     """
     if dir_ not in (1, -1):
         raise ValueError(f"dir must be +1 or -1, got {dir_!r}")
+    fitted_scale = scale_from_stops(lo, hi, r_min, r_max) if scale is None else scale
+    if not math.isfinite(fitted_scale) or fitted_scale <= 0.0:
+        raise ValueError("scale must be finite and positive")
     raw_at_lo = r_min if dir_ > 0 else r_max
-    return lo - dir_ * raw_at_lo
+    return lo - dir_ * fitted_scale * raw_at_lo
 
 
 def span_mismatch(lo: float, hi: float, r_min: float, r_max: float) -> float:
@@ -78,11 +95,12 @@ def span_mismatch(lo: float, hi: float, r_min: float, r_max: float) -> float:
 
 def solve_arm_joint(dir_: int, lo: float, hi: float,
                     r_min: float, r_max: float) -> dict:
-    """Full arm-joint result from a two-stop capture. ``scale`` is fixed at 1."""
-    off = offset_from_stops(dir_, lo, hi, r_min, r_max)
+    """Full-range arm-joint fit from a two-hardstop encoder capture."""
+    scale = scale_from_stops(lo, hi, r_min, r_max)
+    off = offset_from_stops(dir_, lo, hi, r_min, r_max, scale)
     return {
         "dir": int(dir_),
-        "scale": 1.0,
+        "scale": scale,
         "offset": off,
         "span_measured": r_max - r_min,
         "span_urdf": hi - lo,
@@ -91,17 +109,20 @@ def solve_arm_joint(dir_: int, lo: float, hi: float,
 
 
 def solve_single_stop_joint(dir_: int, lo: float, hi: float,
-                            raw_stop: float, which_end: str) -> dict:
+                            raw_stop: float, which_end: str,
+                            scale: float = 1.0) -> dict:
     """Offset for a joint captured at ONE safe hardstop (e.g. J4).
 
     ``which_end`` is ``"lo"`` or ``"hi"`` -- the URDF limit the safe stop is at.
     No span self-check is possible from a single stop.
     """
     end = lo if which_end == "lo" else hi
+    if dir_ not in (1, -1) or not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError("single-stop direction/scale is invalid")
     return {
         "dir": int(dir_),
-        "scale": 1.0,
-        "offset": end - dir_ * raw_stop,
+        "scale": scale,
+        "offset": end - dir_ * scale * raw_stop,
         "single_stop_end": which_end,
     }
 
@@ -138,7 +159,7 @@ def recompute_offset(dir_: int, cal_stops: dict) -> float:
     if "raw_stop" in cal_stops:  # single-stop joint
         return solve_single_stop_joint(
             dir_, lo, hi, float(cal_stops["raw_stop"]),
-            cal_stops["end"])["offset"]
+            cal_stops["end"], float(cal_stops.get("scale", 1.0)))["offset"]
     return offset_from_stops(
         dir_, lo, hi, float(cal_stops["r_min"]), float(cal_stops["r_max"]))
 

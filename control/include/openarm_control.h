@@ -321,6 +321,67 @@ typedef struct oa_converge_tcp_move {
     double min_singular_value;
 } oa_converge_tcp_move;
 
+/* Unit-aware binary64 ingress records. Only the XYZ member is converted once
+ * to canonical metres. Fields whose names end in `_m` remain metres. */
+typedef struct oa_centroid_tcp_move_with_units {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    oa_length_unit coordinate_unit;
+    uint32_t reserved0;
+    uint64_t expiry_ns;
+    uint64_t required_feedback_seq[2];
+    oa_vec3d target_centroid;
+    double velocity_scale;
+    double acceleration_scale;
+    double jerk_scale;
+    double tcp_tol_m;
+    uint64_t collision_scene_revision;
+    double max_branch_step_rad;
+    double min_singular_value;
+} oa_centroid_tcp_move_with_units;
+
+typedef struct oa_mirrored_tcp_move_with_units {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    oa_length_unit coordinate_unit;
+    uint32_t reserved0;
+    uint64_t expiry_ns;
+    uint64_t required_feedback_seq[2];
+    oa_side lead_side;
+    uint32_t reserved1;
+    oa_vec3d lead_tcp;
+    double velocity_scale;
+    double acceleration_scale;
+    double jerk_scale;
+    double tcp_tol_m;
+    uint64_t collision_scene_revision;
+    double max_branch_step_rad;
+    double min_singular_value;
+} oa_mirrored_tcp_move_with_units;
+
+typedef struct oa_converge_tcp_move_with_units {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    oa_length_unit coordinate_unit;
+    uint32_t reserved0;
+    uint64_t expiry_ns;
+    uint64_t required_feedback_seq[2];
+    oa_vec3d target;
+    double contact_torque_nm[7];
+    double contact_torque_fraction;
+    uint32_t contact_persistence_cycles;
+    uint32_t reserved1;
+    double stop_distance_m;
+    double minimum_progress_m;
+    double velocity_scale;
+    double acceleration_scale;
+    double jerk_scale;
+    double tcp_tol_m;
+    uint64_t collision_scene_revision;
+    double max_branch_step_rad;
+    double min_singular_value;
+} oa_converge_tcp_move_with_units;
+
 typedef uint32_t oa_stop_cause;
 #define OA_STOP_CAUSE_NONE UINT32_C(0)
 #define OA_STOP_CAUSE_CONTACT UINT32_C(1)
@@ -553,12 +614,21 @@ oa_control_status oa_controller_plan_paired_tcp_with_units(
 oa_control_status oa_controller_plan_centroid_tcp(oa_controller *controller,
                                                   const oa_centroid_tcp_move *request,
                                                   oa_motion_plan **out);
+oa_control_status oa_controller_plan_centroid_tcp_with_units(
+    oa_controller *controller, const oa_centroid_tcp_move_with_units *request,
+    oa_motion_plan **out);
 oa_control_status oa_controller_plan_mirrored_tcp(oa_controller *controller,
                                                   const oa_mirrored_tcp_move *request,
                                                   oa_motion_plan **out);
+oa_control_status oa_controller_plan_mirrored_tcp_with_units(
+    oa_controller *controller, const oa_mirrored_tcp_move_with_units *request,
+    oa_motion_plan **out);
 oa_control_status oa_controller_plan_converge_tcp(oa_controller *controller,
                                                   const oa_converge_tcp_move *request,
                                                   oa_motion_plan **out);
+oa_control_status oa_controller_plan_converge_tcp_with_units(
+    oa_controller *controller, const oa_converge_tcp_move_with_units *request,
+    oa_motion_plan **out);
 oa_control_status oa_motion_plan_get_report(const oa_motion_plan *plan,
                                             oa_motion_plan_report *out);
 /* Real-time monitor outcome for the most recently executed command. Valid once

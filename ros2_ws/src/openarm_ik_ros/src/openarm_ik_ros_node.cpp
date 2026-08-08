@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openarm_ik_ros/virtual_control_session.hpp"
+#include "openarm_ik_ros/real_control_session.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
@@ -8,6 +9,7 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <openarm_control_msgs/action/move_joint.hpp>
+#include <openarm_control_msgs/action/move_gripper.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp.hpp>
 #include <openarm_control_msgs/action/move_bimanual.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp_scaled.hpp>
@@ -15,6 +17,8 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
 #define OPENARM_DISABLE_LEGACY_GENERIC_STATUS 1
@@ -45,18 +49,23 @@
 namespace
 {
 using MoveJoint = openarm_control_msgs::action::MoveJoint;
+using MoveGripper = openarm_control_msgs::action::MoveGripper;
 using MovePairedTcp = openarm_control_msgs::action::MovePairedTcp;
 using MovePairedTcpScaled = openarm_control_msgs::action::MovePairedTcpScaled;
 using MoveBimanual = openarm_control_msgs::action::MoveBimanual;
 using JointGoalHandle = rclcpp_action::ServerGoalHandle<MoveJoint>;
+using GripperGoalHandle = rclcpp_action::ServerGoalHandle<MoveGripper>;
 using PairedGoalHandle = rclcpp_action::ServerGoalHandle<MovePairedTcp>;
 using ScaledPairedGoalHandle = rclcpp_action::ServerGoalHandle<MovePairedTcpScaled>;
 using BimanualGoalHandle = rclcpp_action::ServerGoalHandle<MoveBimanual>;
 using openarm_ik_ros::CommandFeedback;
 using openarm_ik_ros::CommandResult;
+using openarm_ik_ros::ControlSession;
 using openarm_ik_ros::MeasuredState;
 using openarm_ik_ros::SessionCommand;
 using openarm_ik_ros::VirtualControlSession;
+using openarm_ik_ros::real::RealControlConfig;
+using openarm_ik_ros::real::RealControlSession;
 using openarm_ik_ros::kLegacyMotionLimitScale;
 using openarm_ik_ros::valid_motion_limit_scale;
 
@@ -178,6 +187,7 @@ public:
       throw std::invalid_argument("request_expiry_ms must be in [1, 60000]");
     }
     request_expiry_ns_ = expiry_ms * 1000000LL;
+    physical_hardware_ = declare_parameter<bool>("physical_hardware", false);
 
     const auto qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
     joint_publisher_ = create_publisher<sensor_msgs::msg::JointState>("/joint_states", qos);
@@ -195,9 +205,33 @@ public:
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, *this, false);
 
-    session_ = std::make_unique<VirtualControlSession>(
-      [this](const MeasuredState & state) {return publish_measured(state);},
-      [this]() {diagnostic_dirty_.store(true);});
+    if (physical_hardware_) {
+      RealControlConfig config;
+      config.interface_for_side[0] = declare_parameter<std::string>("left_can_interface", "can1");
+      config.interface_for_side[1] = declare_parameter<std::string>("right_can_interface", "can0");
+      const auto active_side_mask = declare_parameter<std::int64_t>("active_side_mask", 3LL);
+      if (active_side_mask < 1LL || active_side_mask > 3LL) {
+        throw std::invalid_argument("active_side_mask must be 1 (left), 2 (right), or 3 (both)");
+      }
+      config.active_side_mask = static_cast<std::uint32_t>(active_side_mask);
+      const char * home = std::getenv("HOME");
+      config.calibration_path = declare_parameter<std::string>(
+        "zero_file", std::string(home == nullptr ? "/tmp" : home) + "/.openarm_real_zero");
+      config.gripper_calibration_path = declare_parameter<std::string>(
+        "gripper_file", std::string(home == nullptr ? "/tmp" : home) +
+        "/.openarm_real_gripper");
+      auto real = std::make_unique<RealControlSession>(
+        std::move(config),
+        [this](const MeasuredState & state) {return publish_measured(state);},
+        [this]() {diagnostic_dirty_.store(true);});
+      real_session_ = real.get();
+      session_ = std::move(real);
+      configure_real_services();
+    } else {
+      session_ = std::make_unique<VirtualControlSession>(
+        [this](const MeasuredState & state) {return publish_measured(state);},
+        [this]() {diagnostic_dirty_.store(true);});
+    }
 
     joint_server_ = rclcpp_action::create_server<MoveJoint>(
       this, "/openarm_ik/move_joint",
@@ -206,6 +240,16 @@ public:
       },
       [this](const std::shared_ptr<JointGoalHandle> goal) {return on_joint_cancel(goal);},
       [this](const std::shared_ptr<JointGoalHandle> goal) {accept_joint(goal);});
+    gripper_server_ = rclcpp_action::create_server<MoveGripper>(
+      this, "/openarm_ik/move_gripper",
+      [this](const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const MoveGripper::Goal> goal) {
+        return on_gripper_goal(uuid, std::move(goal));
+      },
+      [this](const std::shared_ptr<GripperGoalHandle> goal) {
+        return session_->cancel(uuid_string(goal->get_goal_id())) ?
+          rclcpp_action::CancelResponse::ACCEPT : rclcpp_action::CancelResponse::REJECT;
+      },
+      [this](const std::shared_ptr<GripperGoalHandle> goal) {accept_gripper(goal);});
     paired_server_ = rclcpp_action::create_server<MovePairedTcp>(
       this, "/openarm_ik/move_paired_tcp",
       [this](const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const MovePairedTcp::Goal> goal) {
@@ -248,9 +292,15 @@ public:
         }
       });
     diagnostic_dirty_.store(true);
-    RCLCPP_WARN(
-      get_logger(),
-      "Virtual measured-feedback control active; collision checking is unavailable and physical control is unsupported.");
+    if (physical_hardware_) {
+      RCLCPP_WARN(get_logger(),
+        "Physical controller is passive. Motors remain disabled until /openarm_real/connect; "
+        "software E-stop always sends repeated disable and closes both CAN sockets.");
+    } else {
+      RCLCPP_WARN(
+        get_logger(),
+        "Virtual measured-feedback control active; collision checking is unavailable and physical control is unsupported.");
+    }
   }
 
   ~OpenArmIkRosNode() override
@@ -261,6 +311,100 @@ public:
   }
 
 private:
+  void configure_real_services()
+  {
+    real_status_publisher_ = create_publisher<std_msgs::msg::String>(
+      "/openarm_real/status", rclcpp::QoS(1).reliable().transient_local());
+    real_connect_service_ = create_service<std_srvs::srv::Trigger>(
+      "/openarm_real/connect",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response)
+      {
+        response->success = real_session_->connect_and_enable(response->message);
+        publish_real_status();
+      });
+    real_disconnect_service_ = create_service<std_srvs::srv::Trigger>(
+      "/openarm_real/disconnect",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response)
+      {
+        response->success = real_session_->disconnect_and_disable(response->message);
+        publish_real_status();
+      });
+    real_stop_service_ = create_service<std_srvs::srv::Trigger>(
+      "/openarm_real/stop",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response)
+      {
+        response->success = real_session_->stop_motion(response->message);
+        publish_real_status();
+      });
+    real_estop_service_ = create_service<std_srvs::srv::Trigger>(
+      "/openarm_real/estop",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response)
+      {
+        response->success = real_session_->emergency_stop(response->message);
+        publish_real_status();
+      });
+    real_estop_clear_service_ = create_service<std_srvs::srv::Trigger>(
+      "/openarm_real/estop_clear",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response)
+      {
+        response->success = real_session_->clear_emergency_stop(response->message);
+        publish_real_status();
+      });
+    real_neutral_service_ = create_service<std_srvs::srv::Trigger>(
+      "/openarm_real/neutral",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response)
+      {
+        const std::string owner = "physical-neutral:" + std::to_string(now().nanoseconds());
+        std::string reason;
+        if (!session_->reserve(owner, reason)) {
+          response->message = reason;
+          return;
+        }
+        SessionCommand command;
+        command.kind = SessionCommand::Kind::neutral;
+        command.owner = owner;
+        command.motion_limit_scale = kLegacyMotionLimitScale;
+        command.terminal = [this](const CommandResult & result) {
+            RCLCPP_INFO(get_logger(), "Return to Neutral: %s", result.reason.c_str());
+            publish_real_status();
+            return true;
+          };
+        if (!session_->submit(std::move(command), reason)) {
+          session_->release(owner, reason);
+          response->message = reason;
+          return;
+        }
+        response->success = true;
+        response->message = "collision-aware Return to Neutral accepted";
+      });
+    real_gripper_calibration_service_ = create_service<std_srvs::srv::Trigger>(
+      "/openarm_real/capture_grippers_closed",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response)
+      {
+        response->success = real_session_->capture_grippers_closed(response->message);
+        publish_real_status();
+      });
+    real_status_timer_ = create_wall_timer(std::chrono::milliseconds(250), [this]() {
+        publish_real_status();
+      });
+    publish_real_status();
+  }
+
+  void publish_real_status()
+  {
+    if (!real_session_ || !real_status_publisher_) {return;}
+    std_msgs::msg::String message;
+    message.data = real_session_->status_json();
+    real_status_publisher_->publish(std::move(message));
+  }
+
   bool valid_stamp(const builtin_interfaces::msg::Time & stamp, std::string & reason) const
   {
     const rclcpp::Time request_time(stamp, get_clock()->get_clock_type());
@@ -360,6 +504,88 @@ private:
     }
   }
 
+  rclcpp_action::GoalResponse on_gripper_goal(
+    const rclcpp_action::GoalUUID & uuid, const std::shared_ptr<const MoveGripper::Goal> goal)
+  {
+    std::string reason;
+    const bool valid = valid_stamp(goal->stamp, reason) && goal->side_mask >= 1U &&
+      goal->side_mask <= 3U && std::isfinite(goal->target_opening_m) &&
+      goal->target_opening_m >= 0.0 && goal->target_opening_m <= 0.044 &&
+      std::isfinite(goal->maximum_opening_speed_m_s) &&
+      goal->maximum_opening_speed_m_s > 0.0 &&
+      goal->maximum_opening_speed_m_s <= 0.011 &&
+      std::isfinite(goal->maximum_motor_torque_nm) &&
+      goal->maximum_motor_torque_nm >= 0.05 && goal->maximum_motor_torque_nm <= 1.5;
+    if (!valid) {
+      record_rejection(
+        "move_gripper", uuid_string(uuid), reason.empty() ? "invalid_gripper_goal" : reason);
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+    if (!session_->reserve(uuid_string(uuid), reason)) {
+      record_rejection("move_gripper", uuid_string(uuid), reason);
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+    record_request("move_gripper", uuid_string(uuid), rclcpp::Time(goal->stamp).nanoseconds());
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+  }
+
+  void accept_gripper(const std::shared_ptr<GripperGoalHandle> goal_handle)
+  {
+    const auto goal = goal_handle->get_goal();
+    const std::string owner = uuid_string(goal_handle->get_goal_id());
+    SessionCommand command;
+    command.kind = SessionCommand::Kind::gripper;
+    command.owner = owner;
+    command.gripper_side_mask = goal->side_mask;
+    command.gripper_opening_m = goal->target_opening_m;
+    command.gripper_speed_m_s = goal->maximum_opening_speed_m_s;
+    command.gripper_torque_limit_nm = goal->maximum_motor_torque_nm;
+    command.gripper_stop_on_contact = goal->stop_on_contact;
+    command.feedback = [this, goal_handle](const CommandFeedback & value) {
+        if (!goal_publishable(goal_handle)) {return false;}
+        try {
+          auto feedback = std::make_shared<MoveGripper::Feedback>();
+          feedback->lifecycle = value.lifecycle;
+          feedback->event = value.event;
+          feedback->command_id = value.command_id;
+          feedback->left_feedback_seq = value.feedback_seq[0];
+          feedback->right_feedback_seq = value.feedback_seq[1];
+          feedback->measured_progress = value.measured_progress;
+          goal_handle->publish_feedback(feedback);
+          return true;
+        } catch (...) {
+          return false;
+        }
+      };
+    const auto goal_id = goal_handle->get_goal_id();
+    const auto request_stamp = rclcpp::Time(goal->stamp).nanoseconds();
+    command.terminal = [this, goal_handle, goal_id, owner, request_stamp](
+      const CommandResult & value)
+      {
+        auto result = std::make_shared<MoveGripper::Result>();
+        fill_common_result(*result, value, goal_id);
+        result->left_seed_feedback_seq = value.seed_feedback_seq[0];
+        result->right_seed_feedback_seq = value.seed_feedback_seq[1];
+        result->plan_duration_ns = value.plan_duration_ns;
+        result->left_terminal_feedback_seq = value.terminal_feedback_seq[0];
+        result->right_terminal_feedback_seq = value.terminal_feedback_seq[1];
+        record_terminal("move_gripper", owner, request_stamp, value);
+        return finish_goal(goal_handle, result, value.outcome);
+      };
+    std::string reason;
+    if (!session_->submit(std::move(command), reason)) {
+      session_->release(owner, reason);
+      CommandResult rejected;
+      rejected.outcome = CommandResult::Outcome::rejected;
+      rejected.runtime_status = OA_RUNTIME_EINVAL;
+      rejected.reason = reason;
+      auto result = std::make_shared<MoveGripper::Result>();
+      fill_common_result(*result, rejected, goal_id);
+      record_terminal("move_gripper", owner, request_stamp, rejected);
+      (void)finish_goal(goal_handle, result, rejected.outcome);
+    }
+  }
+
   rclcpp_action::GoalResponse on_paired_goal(
     const rclcpp_action::GoalUUID & uuid, const std::shared_ptr<const MovePairedTcp::Goal> goal)
   {
@@ -392,7 +618,8 @@ private:
     std::string reason;
     if (!valid_stamp(goal->header.stamp, reason) || goal->header.frame_id.empty() ||
       !finite_point(goal->left_tcp_m) || !finite_point(goal->right_tcp_m) ||
-      !valid_motion_limit_scale(goal->motion_limit_scale))
+      !valid_motion_limit_scale(goal->motion_limit_scale) ||
+      goal->preserve_side > MovePairedTcpScaled::Goal::PRESERVE_RIGHT)
     {
       record_rejection("move_paired_tcp_scaled", uuid_string(uuid),
         reason.empty() ? "invalid_scaled_paired_goal" : reason);
@@ -438,6 +665,9 @@ private:
       (needs_pair && !finite_point(goal->right_tcp_m)) ||
       (needs_lead && goal->lead_side > 1U) ||
       (needs_target && !finite_point(goal->target_m)) ||
+      ((goal->mode == MoveBimanual::Goal::MODE_MIRRORED ||
+      goal->mode == MoveBimanual::Goal::MODE_CONVERGE) &&
+      !std::isfinite(goal->contact_torque_fraction)) ||
       (goal->mode == MoveBimanual::Goal::MODE_CONVERGE &&
       !(std::isfinite(goal->stop_distance_m) && goal->stop_distance_m >= 0.0)))
     {
@@ -457,36 +687,45 @@ private:
   void accept_bimanual(const std::shared_ptr<BimanualGoalHandle> goal_handle)
   {
     const auto goal = goal_handle->get_goal();
-    // The mirror is pure arithmetic about the body sagittal plane, so it is
-    // resolved to an ordinary pair here. Centroid and converge need measured
-    // state and the contact monitor, so they are handed to the runtime
-    // adapters by the session instead.
+    // The runtime handles the stateful bimanual modes itself so measured
+    // kinematics, mirrored torque stops, and converge contact monitoring all
+    // stay in one place.
+    /* Transform only the coordinate used by the selected mode. Repeating a
+     * single-point input through the pair helper gives both copies the exact
+     * same TF result, after which the runtime derives the paired targets. */
+    const geometry_msgs::msg::Point * transform_left = &goal->left_tcp_m;
+    const geometry_msgs::msg::Point * transform_right = &goal->right_tcp_m;
+    if (goal->mode == MoveBimanual::Goal::MODE_CENTROID ||
+      goal->mode == MoveBimanual::Goal::MODE_CONVERGE)
+    {
+      transform_left = &goal->target_m;
+      transform_right = &goal->target_m;
+    } else if (goal->mode == MoveBimanual::Goal::MODE_MIRRORED) {
+      transform_right = &goal->left_tcp_m;
+    }
     accept_paired_goal(
       goal_handle, goal->motion_limit_scale, "move_bimanual",
       [goal](SessionCommand & command) {
         switch (goal->mode) {
           case MoveBimanual::Goal::MODE_CENTROID:
             command.kind = SessionCommand::Kind::centroid_tcp;
-            command.target_m = {goal->target_m.x, goal->target_m.y, goal->target_m.z};
+            command.target_m = command.left_tcp_m;
             break;
           case MoveBimanual::Goal::MODE_CONVERGE:
             command.kind = SessionCommand::Kind::converge_tcp;
-            command.target_m = {goal->target_m.x, goal->target_m.y, goal->target_m.z};
+            command.target_m = command.left_tcp_m;
             command.stop_distance_m = goal->stop_distance_m;
             command.contact_torque_fraction = goal->contact_torque_fraction;
             break;
-          case MoveBimanual::Goal::MODE_MIRRORED: {
-            const std::array<double, 3> lead{
-              goal->left_tcp_m.x, goal->left_tcp_m.y, goal->left_tcp_m.z};
-            const std::array<double, 3> mirrored{lead[0], -lead[1], lead[2]};
-            command.left_tcp_m = goal->lead_side == 0U ? lead : mirrored;
-            command.right_tcp_m = goal->lead_side == 0U ? mirrored : lead;
+          case MoveBimanual::Goal::MODE_MIRRORED:
+            command.kind = SessionCommand::Kind::mirrored_tcp;
+            command.side = goal->lead_side;
+            command.contact_torque_fraction = goal->contact_torque_fraction;
             break;
-          }
           default:
             break;
         }
-      });
+      }, transform_left, transform_right);
   }
 
   bool transform_pair(
@@ -519,14 +758,20 @@ private:
   void accept_paired_goal(
     const std::shared_ptr<rclcpp_action::ServerGoalHandle<PairedAction>> goal_handle,
     const double motion_limit_scale, const std::string & diagnostic_action,
-    const std::function<void(SessionCommand &)> & customize = nullptr)
+    const std::function<void(SessionCommand &)> & customize = nullptr,
+    const geometry_msgs::msg::Point * transform_left_override = nullptr,
+    const geometry_msgs::msg::Point * transform_right_override = nullptr)
   {
     const auto goal = goal_handle->get_goal();
     const std::string owner = uuid_string(goal_handle->get_goal_id());
     std::array<double, 3> left{};
     std::array<double, 3> right{};
     std::string reason;
-    if (!transform_pair(goal->header, goal->left_tcp_m, goal->right_tcp_m, left, right, reason)) {
+    const auto & transform_left = transform_left_override == nullptr ?
+      goal->left_tcp_m : *transform_left_override;
+    const auto & transform_right = transform_right_override == nullptr ?
+      goal->right_tcp_m : *transform_right_override;
+    if (!transform_pair(goal->header, transform_left, transform_right, left, right, reason)) {
       abort_paired_before_submit(
         goal_handle, owner, diagnostic_action,
         reason.empty() ? "invalid_transformed_target" : reason);
@@ -588,7 +833,12 @@ private:
   void accept_scaled_paired(const std::shared_ptr<ScaledPairedGoalHandle> goal_handle)
   {
     accept_paired_goal(
-      goal_handle, goal_handle->get_goal()->motion_limit_scale, "move_paired_tcp_scaled");
+      goal_handle, goal_handle->get_goal()->motion_limit_scale, "move_paired_tcp_scaled",
+      [goal = goal_handle->get_goal()](SessionCommand & command) {
+        command.preserved_side = goal->preserve_side ==
+          MovePairedTcpScaled::Goal::PRESERVE_NONE ? -1 :
+          static_cast<int>(goal->preserve_side - 1U);
+      });
   }
 
   template<typename GoalHandle, typename Result>
@@ -741,15 +991,22 @@ private:
     state.header.stamp = rclcpp::Time(stamp, get_clock()->get_clock_type());
     const auto & names = VirtualControlSession::joint_names();
     state.name.assign(names.begin(), names.end());
-    state.position.reserve(14U);
-    state.velocity.reserve(14U);
-    state.effort.reserve(14U);
+    state.name.push_back("openarm_left_finger_joint1");
+    state.name.push_back("openarm_right_finger_joint1");
+    state.position.reserve(16U);
+    state.velocity.reserve(16U);
+    state.effort.reserve(16U);
     for (std::size_t side = 0; side < 2U; ++side) {
       for (std::size_t joint = 0; joint < 7U; ++joint) {
         state.position.push_back(measured.snapshot.arm[side].q_model_rad[joint]);
         state.velocity.push_back(measured.snapshot.arm[side].dq_model_rad_s[joint]);
         state.effort.push_back(measured.snapshot.arm[side].tau_model_nm[joint]);
       }
+    }
+    for (std::size_t side = 0U; side < 2U; ++side) {
+      state.position.push_back(measured.gripper[side].opening_m);
+      state.velocity.push_back(measured.gripper[side].velocity_m_s);
+      state.effort.push_back(measured.gripper[side].motor_torque_nm);
     }
     joint_publisher_->publish(std::move(state));
     publish_scene_box(measured);
@@ -777,7 +1034,7 @@ private:
         removal.header.frame_id = "openarm_body_link0";
         removal.header.stamp = now();
         removal.ns = "openarm_scene";
-        removal.id = 1;
+        removal.id = kBoxMarkerId;
         removal.action = visualization_msgs::msg::Marker::DELETE;
         box_publisher_->publish(removal);
         scene_box_present_ = false;
@@ -832,7 +1089,7 @@ private:
     marker.header.frame_id = "openarm_body_link0";
     marker.header.stamp = now();
     marker.ns = "openarm_scene";
-    marker.id = 0;
+    marker.id = kBoxMarkerId;
     marker.type = visualization_msgs::msg::Marker::CUBE;
     marker.action = visualization_msgs::msg::Marker::ADD;
     marker.pose.position.x = box_position_[0];
@@ -915,13 +1172,18 @@ private:
   {
     const auto health = session_->health();
     diagnostic_msgs::msg::DiagnosticStatus status;
-    status.name = "openarm_ik_ros/virtual_control";
-    status.hardware_id = "openarm_v10_virtual";
+    status.name = physical_hardware_ ?
+      "openarm_ik_ros/physical_control" : "openarm_ik_ros/virtual_control";
+    status.hardware_id = physical_hardware_ ?
+      "openarm_v10_bimanual_can0_can1" : "openarm_v10_virtual";
     const bool error = health.adapter_state == openarm_ik_ros::AdapterState::fault ||
       health.adapter_state == openarm_ik_ros::AdapterState::closing;
     status.level = error ? diagnostic_msgs::msg::DiagnosticStatus::ERROR :
       diagnostic_msgs::msg::DiagnosticStatus::WARN;
-    status.message = error ? health.reason : "virtual backend; collision unchecked";
+    status.message = error ? health.reason : (physical_hardware_ ?
+      (real_session_ != nullptr && real_session_->armed() ?
+      "physical encoder control; nominal sampled and live collision mitigation active" :
+      health.reason) : "virtual backend; collision unchecked");
     const auto now_runtime = health.runtime_now_ns;
     const auto left_time = health.snapshot.arm[0].measurement_runtime_monotonic_ns;
     const auto right_time = health.snapshot.arm[1].measurement_runtime_monotonic_ns;
@@ -929,8 +1191,9 @@ private:
     const auto right_age = now_runtime >= right_time ? now_runtime - right_time : 0U;
     const auto skew = left_time > right_time ? left_time - right_time : right_time - left_time;
     status.values = {
-      field("backend", "virtual"),
-      field("runtime_authority", "openarm_runtime"),
+      field("backend", physical_hardware_ ? "physical" : "virtual"),
+      field("runtime_authority", physical_hardware_ ?
+        "openarm_real_control_session" : "openarm_runtime"),
       field("runtime_backend", std::to_string(health.capabilities.backend)),
       field("capability_bits", std::to_string(health.capabilities.capabilities)),
       field("runtime_clock_id", std::to_string(health.capabilities.clock_id)),
@@ -938,18 +1201,23 @@ private:
       field("runtime_xyz_frame_id", std::to_string(health.capabilities.xyz_frame_id)),
       field("runtime_coordinate_identity_sha256",
         health.capabilities.coordinate_identity_sha256),
-      field("virtual_execution_enabled", "true"),
-      field("physical_motion_authorized", "false"),
-      field("physical_motion_capability", boolean(
+      field("virtual_execution_enabled", boolean(!physical_hardware_)),
+      field("physical_motion_authorized", boolean(
+        physical_hardware_ && real_session_ != nullptr && real_session_->armed())),
+      field("physical_motion_capability", boolean(physical_hardware_ ||
         (health.capabilities.capabilities & OA_RUNTIME_CAP_PHYSICAL_MOTION) != 0U)),
-      field("physical_discovery_endpoint_exposed", "false"),
-      field("single_xyz_capability", boolean(
+      field("physical_discovery_endpoint_exposed", boolean(physical_hardware_)),
+      field("single_xyz_capability", boolean(physical_hardware_ ||
         (health.capabilities.capabilities & OA_RUNTIME_CAP_SINGLE_XYZ_IK) != 0U)),
-      field("collision_policy", "virtual_unchecked"),
-      field("collision_checked", "false"),
+      field("collision_policy", physical_hardware_ ?
+        "pinned_v10_sampled_plan_and_live_measured_mitigation" : "virtual_unchecked"),
+      field("collision_checked", boolean(
+        physical_hardware_ && real_session_ != nullptr && real_session_->armed())),
       field("orientation_constrained", "false"),
-      field("state_source", "oa_snapshot_encoder_feedback"),
-      field("runtime_state_source", "oa_runtime_snapshot_encoder_feedback"),
+      field("state_source", physical_hardware_ ?
+        "damiao_rotary_encoder_feedback" : "oa_snapshot_encoder_feedback"),
+      field("runtime_state_source", physical_hardware_ ?
+        "socketcan_exact_id_encoder_feedback" : "oa_runtime_snapshot_encoder_feedback"),
       field("adapter_state", VirtualControlSession::adapter_state_name(health.adapter_state)),
       field("lifecycle", std::to_string(health.snapshot.lifecycle)),
       field("executing", boolean(health.command_id != 0U)),
@@ -977,9 +1245,13 @@ private:
       field("manifest_authenticated", boolean(health.manifest.authenticated != 0U)),
       field("manifest_checkpoint_authorized",
         boolean(health.manifest.checkpoint_authorized != 0U)),
-      field("persistence_status", "built_in_immutable_manifest_not_persisted"),
-      field("calibration_status", "runtime_capable_ros_endpoint_not_exposed"),
-      field("discovery_status", "virtual_exact_inventory"),
+      field("persistence_status", physical_hardware_ ?
+        "saved_binary64_per_joint_calibration" :
+        "built_in_immutable_manifest_not_persisted"),
+      field("calibration_status", physical_hardware_ ?
+        "loaded_before_connect" : "runtime_capable_ros_endpoint_not_exposed"),
+      field("discovery_status", physical_hardware_ ?
+        "physical_exact_ids_1_through_8_per_bus" : "virtual_exact_inventory"),
       field("inventory_revision", std::to_string(health.inventory.inventory_revision)),
       field("inventory_interface_count", std::to_string(health.inventory.interface_count)),
       field("inventory_motor_count", std::to_string(health.inventory.motor_count)),
@@ -1053,10 +1325,22 @@ private:
 
   AuthorityLock authority_lock_;
   std::int64_t request_expiry_ns_{};
-  std::unique_ptr<VirtualControlSession> session_;
+  std::unique_ptr<ControlSession> session_;
+  bool physical_hardware_{false};
+  RealControlSession * real_session_{nullptr};
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr real_status_publisher_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr real_connect_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr real_disconnect_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr real_stop_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr real_estop_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr real_estop_clear_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr real_neutral_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr real_gripper_calibration_service_;
+  rclcpp::TimerBase::SharedPtr real_status_timer_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_publisher_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_publisher_;
   rclcpp_action::Server<MoveJoint>::SharedPtr joint_server_;
+  rclcpp_action::Server<MoveGripper>::SharedPtr gripper_server_;
   rclcpp_action::Server<MovePairedTcp>::SharedPtr paired_server_;
   rclcpp_action::Server<MovePairedTcpScaled>::SharedPtr scaled_paired_server_;
   rclcpp_action::Server<MoveBimanual>::SharedPtr bimanual_server_;
@@ -1066,6 +1350,7 @@ private:
   // portal's pre-flight guard for passing inside the central shaft gate.
   static constexpr double kBoxGraspSeparation = 0.32;
   static constexpr double kBoxReleaseSeparation = 0.40;
+  static constexpr std::int32_t kBoxMarkerId = 0;
   // Tight enough that only a pose aimed at the box takes it. The clap demo
   // closes its claws to 0.24 m, inside the grasp separation, but its midpoint
   // sits 0.064 m from the box; at 0.12 m it used to pick the box up and carry

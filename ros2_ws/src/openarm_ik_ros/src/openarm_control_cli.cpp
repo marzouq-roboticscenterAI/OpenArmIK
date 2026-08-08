@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <openarm_control_msgs/action/move_joint.hpp>
+#include <openarm_control_msgs/action/move_gripper.hpp>
 #include <openarm_control_msgs/action/move_bimanual.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp_scaled.hpp>
+#include <openarm_collision.h>
 #include <openarm_runtime_motion.h>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -19,11 +21,13 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 
 namespace
 {
 using namespace std::chrono_literals;
 using MoveJoint = openarm_control_msgs::action::MoveJoint;
+using MoveGripper = openarm_control_msgs::action::MoveGripper;
 using MovePairedTcp = openarm_control_msgs::action::MovePairedTcp;
 using MovePairedTcpScaled = openarm_control_msgs::action::MovePairedTcpScaled;
 using MoveBimanual = openarm_control_msgs::action::MoveBimanual;
@@ -230,12 +234,21 @@ int status(const std::shared_ptr<rclcpp::Node> & node)
 template<typename Action>
 int run_goal(
   const std::shared_ptr<rclcpp::Node> & node,
-  const typename Action::Goal & goal, const std::string & action_name)
+  typename Action::Goal goal, const std::string & action_name)
 {
   auto client = rclcpp_action::create_client<Action>(node, action_name);
   if (!client->wait_for_action_server(3s)) {
     std::cerr << "action server unavailable\n";
     return 2;
+  }
+  // DDS discovery can consume most or all of the controller's one-second
+  // request-validity window. Every CLI command is a "move now" request, so
+  // stamp it only after the server is known rather than in main() before
+  // discovery begins.
+  if constexpr (std::is_same_v<Action, MoveJoint> || std::is_same_v<Action, MoveGripper>) {
+    goal.stamp = node->now();
+  } else {
+    goal.header.stamp = node->now();
   }
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(node);
@@ -348,18 +361,25 @@ int run_sequence(
   return 0;
 }
 
-// Both claws swing together and apart in the frontal plane. At the closed
-// waypoint the claws are 24 cm apart with about 31 mm of measured clearance,
-// so they come visibly close without the keepout monitor intervening.
+int run_bimanual(
+  const rclcpp::Node::SharedPtr & node, std::uint8_t mode, double x,
+  double y, double z, double stop_distance = -1.0,
+  std::uint8_t lead_side = 0U);
+
+// Both claws swing together, enter the narrowly scoped expanded rail envelope,
+// then retreat. The physical STL meshes remain separated and every other claw
+// pair, arm pair, and the pole stay monitored.
 int demo_clap(const rclcpp::Node::SharedPtr & node, const int cycles)
 {
-  static const Waypoint open_pose{"open", {0.30, 0.26, 0.35}, {0.30, -0.26, 0.35}};
-  static const Waypoint closed_pose{"clap", {0.30, 0.15, 0.35}, {0.30, -0.15, 0.35}};
+  static const Waypoint open_pose{"open", {0.34, 0.22, 0.86}, {0.34, -0.22, 0.86}};
   int result = run_sequence(node, &open_pose, 1, 1.0);
   if (result != 0) {return result;}
   for (int cycle = 0; cycle < cycles; ++cycle) {
-    const Waypoint beat[] = {closed_pose, open_pose};
-    result = run_sequence(node, beat, 2, 1.0);
+    result = run_bimanual(
+      node, MoveBimanual::Goal::MODE_CONVERGE, 0.34, 0.0, 0.86,
+      0.045 + 0.5 * oa_collision_claw_rail_clearance_m());
+    if (result != 0) {return result;}
+    result = run_sequence(node, &open_pose, 1, 1.0);
     if (result != 0) {return result;}
   }
   return 0;
@@ -420,8 +440,8 @@ int demo_home(const rclcpp::Node::SharedPtr & node)
 // through the node's MoveBimanual action rather than resolved here.
 int run_bimanual(
   const rclcpp::Node::SharedPtr & node, const std::uint8_t mode, const double x,
-  const double y, const double z, const double stop_distance = 0.05,
-  const std::uint8_t lead_side = 0U)
+  const double y, const double z, const double stop_distance,
+  const std::uint8_t lead_side)
 {
   MoveBimanual::Goal goal;
   goal.header.stamp = node->now();
@@ -429,7 +449,8 @@ int run_bimanual(
   goal.mode = mode;
   goal.lead_side = lead_side;
   goal.motion_limit_scale = 1.0;
-  goal.stop_distance_m = stop_distance;
+  goal.stop_distance_m = mode == MoveBimanual::Goal::MODE_CONVERGE && stop_distance < 0.0 ?
+    oa_collision_tool_radius_m() - 0.002 : stop_distance;
   goal.contact_torque_fraction = 0.0;   // library default
   if (mode == MoveBimanual::Goal::MODE_MIRRORED) {
     goal.left_tcp_m.x = x; goal.left_tcp_m.y = y; goal.left_tcp_m.z = z;
@@ -438,8 +459,8 @@ int run_bimanual(
   }
   const int result = run_goal<MoveBimanual>(node, goal, "/openarm_ik/move_bimanual");
   if (result == 0 && mode == MoveBimanual::Goal::MODE_CONVERGE) {
-    std::cout << "converge left the claws close; run 'home' before using the "
-                 "portal, whose pre-flight guard will not plan from here"
+    std::cout << "converge stopped on proved nominal claw-mesh contact; run 'home' "
+                 "or use the portal's guarded retreat before another approach"
               << std::endl;
   }
   return result;
@@ -470,12 +491,9 @@ int demo_mirror(
   const rclcpp::Node::SharedPtr & node, const std::string & lead, const double x,
   const double y, const double z)
 {
-  Waypoint step{"mirrored", {x, y, z}, {x, -y, z}};
-  if (lead == "right") {
-    step.left[1] = -y;
-    step.right[1] = y;
-  }
-  return run_sequence(node, &step, 1, 1.0);
+  return run_bimanual(
+    node, MoveBimanual::Goal::MODE_MIRRORED, x, y, z, 0.05,
+    lead == "right" ? 1U : 0U);
 }
 
 void usage()
@@ -483,6 +501,7 @@ void usage()
   std::cerr << "Usage:\n"
     "  openarm_control_cli status\n"
     "  openarm_control_cli move-joint JOINT_NAME TARGET_RAD\n"
+    "  openarm_control_cli gripper open|close|grasp left|right|both [TORQUE_NM] [SPEED_M_S]\n"
     "  openarm_control_cli move-paired-tcp FRAME LEFT_X_METRES LEFT_Y_METRES LEFT_Z_METRES "
     "RIGHT_X_METRES RIGHT_Y_METRES RIGHT_Z_METRES\n"
     "  openarm_control_cli mirror left|right X_METRES Y_METRES Z_METRES\n"
@@ -514,6 +533,23 @@ int main(int argc, char ** argv)
       goal.joint_name = argv[2];
       goal.target_rad = number(argv[3]);
       result = run_goal<MoveJoint>(node, goal, "/openarm_ik/move_joint");
+    } else if (argc >= 4 && argc <= 6 && std::string(argv[1]) == "gripper") {
+      const std::string operation = argv[2];
+      const std::string side = argv[3];
+      if ((operation != "open" && operation != "close" && operation != "grasp") ||
+        (side != "left" && side != "right" && side != "both"))
+      {
+        throw std::invalid_argument("gripper operation or side is invalid");
+      }
+      MoveGripper::Goal goal;
+      goal.stamp = node->now();
+      goal.side_mask = side == "left" ? MoveGripper::Goal::SIDE_LEFT :
+        (side == "right" ? MoveGripper::Goal::SIDE_RIGHT : MoveGripper::Goal::SIDE_BOTH);
+      goal.target_opening_m = operation == "open" ? 0.044 : 0.0;
+      goal.maximum_motor_torque_nm = argc >= 5 ? number(argv[4]) : 0.25;
+      goal.maximum_opening_speed_m_s = argc >= 6 ? number(argv[5]) : 0.0044;
+      goal.stop_on_contact = operation == "grasp";
+      result = run_goal<MoveGripper>(node, goal, "/openarm_ik/move_gripper");
     } else if (argc == 9 && std::string(argv[1]) == "move-paired-tcp") {
       MovePairedTcp::Goal goal;
       goal.header.stamp = node->now();
@@ -548,7 +584,7 @@ int main(int argc, char ** argv)
     } else if ((argc == 5 || argc == 6) && std::string(argv[1]) == "converge") {
       result = run_bimanual(
         node, MoveBimanual::Goal::MODE_CONVERGE, number(argv[2]), number(argv[3]),
-        number(argv[4]), argc == 6 ? number(argv[5]) : 0.05);
+        number(argv[4]), argc == 6 ? number(argv[5]) : -1.0);
     } else if (argc == 2 && std::string(argv[1]) == "home") {
       result = demo_home(node);
     } else if (argc == 2 && std::string(argv[1]) == "pick-place") {

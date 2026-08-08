@@ -373,6 +373,11 @@ static void test_register_codecs_and_dynamic_profile(void) {
     CHECK(oa_can_make_register_write(&write, &frame) == OA_CAN_OK);
     CHECK(frame.data[3] == 10u && frame.data[4] == 1u && frame.data[5] == 0u &&
           frame.data[6] == 0u && frame.data[7] == 0u);
+    write.register_id = OA_CAN_RID_TIMEOUT;
+    write.value_u32 = 4000u;
+    CHECK(oa_can_make_register_write(&write, &frame) == OA_CAN_OK);
+    CHECK(frame.data[3] == 9u && frame.data[4] == 0xa0u && frame.data[5] == 0x0fu &&
+          frame.data[6] == 0u && frame.data[7] == 0u);
     request.register_id = OA_CAN_RID_CTRL_MODE;
     request.value_type = OA_CAN_REGISTER_U32;
     frame = register_frame(request.receive_id, request.send_id, OA_CAN_REGISTER_WRITE,
@@ -606,6 +611,102 @@ static void test_new_codec_malformed_and_canaries(void) {
     pos_force.current_limit_per_unit = 0.5;
     pos_force.send_id = 0x500u;
     CHECK(oa_can_encode_pos_force(&pos_force, &profile, &guarded_frame.value) == OA_CAN_EINVAL);
+}
+
+static oa_can_mit_profile gripper_profile(void) {
+    oa_can_mit_profile profile;
+    INITIALIZE(profile);
+    profile.target_send_id = 8u;
+    profile.receive_id = 0x18u;
+    profile.pmax_rad = 12.5;
+    profile.vmax_rad_s = 30.0;
+    profile.tmax_nm = 10.0;
+    profile.verified_mask = OA_CAN_PROFILE_ALL_VERIFIED;
+    return profile;
+}
+
+static oa_can_gripper_calibration gripper_calibration(void) {
+    oa_can_gripper_calibration calibration;
+    INITIALIZE(calibration);
+    calibration.closed_motor_position_rad = 0.5;
+    calibration.open_motor_position_rad = -0.5472;
+    calibration.maximum_opening_m = 0.044;
+    return calibration;
+}
+
+static void test_double_precision_gripper_codecs(void) {
+    oa_can_mit_profile profile = gripper_profile();
+    oa_can_gripper_calibration calibration = gripper_calibration();
+    oa_can_gripper_command command;
+    oa_can_frame frame;
+    double motor_position = 99.0;
+    double opening = 99.0;
+    float expected_position;
+    uint32_t expected_bits;
+
+    CHECK(oa_can_gripper_motor_position(&calibration, 0.0, &motor_position) == OA_CAN_OK);
+    CHECK(motor_position == calibration.closed_motor_position_rad);
+    CHECK(oa_can_gripper_motor_position(&calibration, 0.044, &motor_position) == OA_CAN_OK);
+    CHECK(motor_position == calibration.open_motor_position_rad);
+    CHECK(oa_can_gripper_motor_position(&calibration, 0.022, &motor_position) == OA_CAN_OK);
+    CHECK(fabs(motor_position - (-0.0236)) < 1.0e-15);
+    CHECK(oa_can_gripper_opening(&calibration, motor_position, &opening) == OA_CAN_OK);
+    CHECK(fabs(opening - 0.022) < 1.0e-15);
+    CHECK(oa_can_gripper_opening(&calibration,
+                                  calibration.closed_motor_position_rad,
+                                  &opening) == OA_CAN_OK);
+    CHECK(opening == 0.0);
+
+    INITIALIZE(command);
+    INITIALIZE(frame);
+    command.send_id = 8u;
+    command.target_opening_m = 0.022;
+    command.maximum_opening_speed_m_s = 0.0044;
+    command.maximum_motor_torque_nm = 0.5;
+    CHECK(oa_can_encode_gripper_move(&command, &calibration, &profile, &frame) == OA_CAN_OK);
+    CHECK(frame.can_id == 0x308u && frame.dlc == 8u);
+    expected_position = (float)-0.0236;
+    expected_bits = raw_float(expected_position);
+    CHECK(frame.data[0] == (uint8_t)expected_bits);
+    CHECK(frame.data[1] == (uint8_t)(expected_bits >> 8u));
+    CHECK(frame.data[2] == (uint8_t)(expected_bits >> 16u));
+    CHECK(frame.data[3] == (uint8_t)(expected_bits >> 24u));
+    /* 0.0044 m/s maps to 0.10472 motor rad/s, encoded in 0.01 rad/s.
+     * 0.5 Nm / 10 Nm maps to 0.05 per-unit, encoded in 1e-4. */
+    CHECK(frame.data[4] == 10u && frame.data[5] == 0u);
+    CHECK(frame.data[6] == 0xf4u && frame.data[7] == 0x01u);
+
+    CHECK(oa_can_encode_gripper_open(8u, 0.0044, 0.5, &calibration,
+                                     &profile, &frame) == OA_CAN_OK);
+    expected_bits = raw_float((float)calibration.open_motor_position_rad);
+    CHECK(frame.can_id == 0x308u && frame.data[0] == (uint8_t)expected_bits);
+    CHECK(oa_can_encode_gripper_close(8u, 0.0044, 0.5, &calibration,
+                                      &profile, &frame) == OA_CAN_OK);
+    expected_bits = raw_float((float)calibration.closed_motor_position_rad);
+    CHECK(frame.can_id == 0x308u && frame.data[0] == (uint8_t)expected_bits);
+    CHECK(oa_can_encode_gripper_grasp(8u, 0.0044, 0.25, &calibration,
+                                      &profile, &frame) == OA_CAN_OK);
+    CHECK(frame.data[6] == 0xfau && frame.data[7] == 0x00u);
+
+    motor_position = 77.0;
+    CHECK(oa_can_gripper_motor_position(&calibration, -0.001, &motor_position) ==
+          OA_CAN_ERANGE);
+    CHECK(motor_position == 77.0);
+    command.target_opening_m = 0.045;
+    CHECK(oa_can_encode_gripper_move(&command, &calibration, &profile, &frame) ==
+          OA_CAN_ERANGE);
+    command.target_opening_m = 0.022;
+    command.maximum_motor_torque_nm = 10.001;
+    CHECK(oa_can_encode_gripper_move(&command, &calibration, &profile, &frame) ==
+          OA_CAN_ERANGE);
+    command.maximum_motor_torque_nm = 0.5;
+    command.maximum_opening_speed_m_s = NAN;
+    CHECK(oa_can_encode_gripper_move(&command, &calibration, &profile, &frame) ==
+          OA_CAN_EINVAL);
+    command.maximum_opening_speed_m_s = 0.0044;
+    calibration.open_motor_position_rad = calibration.closed_motor_position_rad;
+    CHECK(oa_can_encode_gripper_move(&command, &calibration, &profile, &frame) ==
+          OA_CAN_EINVAL);
 }
 
 static oa_can_arm_manifest manifest_two(void) {
@@ -956,6 +1057,7 @@ int main(void) {
     test_public_integer_widths();
     test_register_codecs_and_dynamic_profile();
     test_new_codec_malformed_and_canaries();
+    test_double_precision_gripper_codecs();
     test_probe_fresh_disabled_only();
     test_probe_rejects_stale_enabled_fault_and_busy();
     test_probe_receive_budget_boundary();

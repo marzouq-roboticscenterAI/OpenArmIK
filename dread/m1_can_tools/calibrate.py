@@ -1,4 +1,4 @@
-"""Guarded, passive-first calibration wizard for the two M1 OpenArm arms.
+"""Guarded, passive-first calibration support for the OpenArm v1.0 pair.
 
 The default action is a read-only preflight.  This module has no set-zero path
 and never sends enable, MIT, velocity, or position commands.  The only CAN
@@ -32,31 +32,19 @@ from m1_can_tools.transport import SimTransport, SocketCanTransport
 # octets* of their sysfs USB path (the parent hub port changes across replugs:
 # seen at ...4.4.4.x, then ...4.3.4.x): `.4.3` and `.4.4`.
 #
-# Ground truth (SUPERSEDES the 2026-07-10 note): `.4.3` (can0) = physical LEFT
-# arm, `.4.4` (can1) = physical RIGHT arm. Confirmed 2026-07-11 by the operator
-# at the robot with motors ENABLED and the brain tracking: hand-moving the
-# physical LEFT arm produced motion in the openarm_right_* /joint_states
-# entries (i.e. the physical left arm is the `.4.3`/can0 bus). The earlier
-# 2026-07-10 "confirmed twice" note asserted the opposite from an energization
-# test whose left/right call did not survive this motors-enabled check; the
-# motor_map payloads were re-fit to their true sides in the same 2026-07-11
-# pass (see calibration.refit in the map). The invariant stands: `openarm_left`
-# MUST equal the physical left arm (the whole stack + Quest cross-map depend on
-# it). If RViz *appears* mirrored, distrust the screen and re-verify with a
-# motors-enabled hand-move against /joint_states NAMES before touching this.
-# NB "left" here is the ROBOT's left (URDF frame, facing along the arms' reach
-# direction). An operator FACING the robot sees robot-left on their right --
-# like facing a person -- so operator speech ("the left arm") is usually the
-# MIRROR of these labels. Validated live 2026-07-11: state (wiggle->names),
-# visual (RViz matches), and command (jog->correct physical arm) all agree.
+# The current dual-channel adapter cannot be separated by USB path. The
+# repository launcher supplies the commissioned assignment explicitly:
+# can0=robot-right and can1=robot-left, confirmed 2026-08-06 by moving each arm
+# under the strictly read-only observer. These hints remain only for the older
+# single-channel PCAN deployment from which DREAD was collected.
 ADAPTER_PATH_HINTS = {"right": ".4.4", "left": ".4.3"}
 # Fallback used only when no matching interface is found (sim / CI / no bus).
-_SIDES_DEFAULT = {"right": "can1", "left": "can0"}
-# Arm adapters are PCAN-USB (kernel driver `peak_usb`). The path hints are
-# substrings, and the lift XCAN's documented path (...4.4.3) also CONTAINS
-# ".4.3" -- so side resolution additionally requires the peak_usb driver, or a
-# reconnected lift adapter could be mistaken for an arm bus.
-_ARM_CAN_DRIVER = "peak_usb"
+_SIDES_DEFAULT = {"right": "can0", "left": "can1"}
+# The current dual-channel DM-USB2FDCAN uses `gs_usb`; the collected deployment
+# used PCAN-USB/`peak_usb`. Keep both accepted for provenance and offline tests,
+# while dread.sh supplies this machine's commissioned side map explicitly.
+_ARM_CAN_DRIVERS = {"peak_usb", "gs_usb"}
+_ARM_CAN_MODELS = {"PCAN-USB_FD", "DM-USB2FDCAN"}
 
 
 _USB_PORT_RE = re.compile(r"^\d+-[\d.]+$")
@@ -81,7 +69,7 @@ def _resolve_iface_by_path(path_hint: str, net_root="/sys/class/net"):
     path_hint, or None.
 
     Kernel canN numbering follows plug order, so it changes across replugs; the
-    PCAN USB *path* is the stable identity. Resolving by path keeps left/right
+    A single-channel adapter's USB *path* is the stable identity. Resolving by path keeps left/right
     correct no matter how the interfaces were renumbered (a left/right swap on
     energized arms is dangerous). Only interfaces driven by ``_ARM_CAN_DRIVER``
     qualify (the lift XCAN's port ``...4.4.3`` also ends with ``.4.3``)."""
@@ -99,7 +87,7 @@ def _resolve_iface_by_path(path_hint: str, net_root="/sys/class/net"):
             driver = (entry / "device" / "driver").resolve().name
         except OSError:
             driver = None
-        if driver is not None and driver != _ARM_CAN_DRIVER:
+        if driver is not None and driver not in _ARM_CAN_DRIVERS:
             continue
         port = _usb_port_component(devpath)
         if port is not None and port.endswith(path_hint):
@@ -110,10 +98,10 @@ def _resolve_iface_by_path(path_hint: str, net_root="/sys/class/net"):
 def resolve_sides():
     """Map side -> live canN from the persistent-label wrapper environment.
 
-    ``deploy/agx-orin/cal.sh`` reads the PEAK labels as root and passes the
-    resolved names as ``M1_CAN_LEFT``/``M1_CAN_RIGHT``.  This is independent of
-    USB topology.  The old USB-path resolver remains only as a compatibility
-    fallback for offline tests and direct legacy invocation.
+    ``dread.sh`` passes this machine's commissioned channels as
+    ``M1_CAN_LEFT``/``M1_CAN_RIGHT``. This is independent of USB topology. The
+    old USB-path resolver remains only as a compatibility fallback for offline
+    tests and direct legacy invocation.
 
     If resolution is AMBIGUOUS (both sides land on one interface -- e.g. an
     adapter re-plugged so only one hint matches and the other side's default
@@ -145,12 +133,14 @@ def resolve_sides():
 SIDES = resolve_sides()
 EXPECTED_IDS = set(range(1, 9))
 EXPECTED_MODELS = (
-    "DM8009", "DM8009", "DM4340_V20", "DM4340_V20",
-    "DM4310P", "DM4310P", "DM4310P", "DM4310P",
+    ("DM8009",), ("DM8009",),
+    ("DM4340", "DM4340_V20"), ("DM4340", "DM4340_V20"),
+    ("DM4310", "DM4310P"), ("DM4310", "DM4310P"),
+    ("DM4310", "DM4310P"), ("DM4310", "DM4310P"),
 )
 MAX_ABS_VEL = 0.08
 MAX_TEMP_C = 65
-GRIPPER_TRAVEL = {"left": 0.7854, "right": -0.7854}
+GRIPPER_TRAVEL = {"left": 0.044, "right": 0.044}
 LEGACY_GRIPPER_MOTOR_SPAN = 1.0472
 
 # This robot's URDF limits.  They are command limits, not inferred hardstops.
@@ -158,12 +148,12 @@ URDF_LIMITS = {
     "left": [
         (-3.4907, 1.3963), (-3.3161, 0.17453), (-1.5708, 1.5708),
         (0.0, 2.4435), (-1.5708, 1.5708), (-0.7854, 0.7854),
-        (-1.5708, 1.5708), (0.0, 0.7854),
+        (-1.5708, 1.5708), (0.0, 0.044),
     ],
     "right": [
         (-1.3963, 3.4907), (-0.17453, 3.3161), (-1.5708, 1.5708),
         (0.0, 2.4435), (-1.5708, 1.5708), (-0.7854, 0.7854),
-        (-1.5708, 1.5708), (-0.7854, 0.0),
+        (-1.5708, 1.5708), (0.0, 0.044),
     ],
 }
 
@@ -179,6 +169,19 @@ def side_map(full_map: dict, side: str) -> dict:
             if k.startswith(prefix) and not k.endswith("finger_joint2")}
 
 
+def current_gripper_mapping(info: dict, side: str) -> bool:
+    """Whether a preserved J8 map uses this URDF's 0..44 mm joint domain."""
+    try:
+        limits = info["soft_limits"]["pos"]
+        expected = URDF_LIMITS[side][7]
+        return (len(limits) == 2 and
+                all(math.isfinite(float(value)) for value in limits) and
+                abs(float(limits[0]) - expected[0]) <= 1.0e-12 and
+                abs(float(limits[1]) - expected[1]) <= 1.0e-12)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def validate_map_shape(m: dict) -> None:
     for side in SIDES:
         sm = side_map(m, side)
@@ -186,11 +189,11 @@ def validate_map_shape(m: dict) -> None:
         if len(sm) != 8 or ids != EXPECTED_IDS:
             raise ValueError(
                 f"{side}: expected exactly motor ids 1..8, got {sorted(ids)}")
-        for mid, model in enumerate(EXPECTED_MODELS, 1):
+        for mid, models in enumerate(EXPECTED_MODELS, 1):
             actual = sm[joint_name(side, mid)].get("model")
-            if actual != model:
+            if actual not in models:
                 raise ValueError(
-                    f"{side} J{mid}: expected observed hardware model {model}, "
+                    f"{side} J{mid}: expected OpenArm v1.0 model in {models}, "
                     f"got {actual!r}")
         masters = {int(v.get("master_id", int(v["id"]) + 0x10)) for v in sm.values()}
         if len(masters) != 8:
@@ -208,9 +211,10 @@ def validate_map_shape(m: dict) -> None:
 
 
 def _validate_adapter_properties(props: str, iface: str, path_hint: str) -> None:
-    if "ID_MODEL=PCAN-USB_FD" not in props or path_hint not in props:
+    if (not any(f"ID_MODEL={model}" in props for model in _ARM_CAN_MODELS)
+            or path_hint not in props):
         raise RuntimeError(
-            f"{iface}: adapter identity mismatch (expected PCAN-USB FD "
+            f"{iface}: adapter identity mismatch (expected OpenArm CAN adapter "
             f"at USB path containing {path_hint})")
 
 
@@ -225,9 +229,9 @@ def _iface_preflight(iface: str, path_hint: str) -> None:
             ["ip", "-details", "link", "show", iface],
             capture_output=True, text=True, timeout=3, check=True)
         text = p.stdout.replace("\n", " ")
-        if "bitrate 1000000" not in text or "fd on" in text:
+        if "bitrate 1000000" not in text:
             raise RuntimeError(
-                f"{iface}: expected classic CAN at 1000000 bit/s")
+                f"{iface}: expected 1000000 bit/s arbitration bitrate")
     except FileNotFoundError:
         pass
     try:
@@ -235,11 +239,11 @@ def _iface_preflight(iface: str, path_hint: str) -> None:
             ["udevadm", "info", "-q", "property", "-p",
              f"/sys/class/net/{iface}"],
             capture_output=True, text=True, timeout=3, check=True)
-        # A wrapper-provided persistent label supersedes the legacy path hint.
-        # Still require the exact PCAN-USB FD adapter model.
+        # A wrapper-provided channel assignment supersedes the legacy path
+        # hint. Still require a supported OpenArm USB-CAN adapter model.
         if iface in (os.environ.get("M1_CAN_LEFT"), os.environ.get("M1_CAN_RIGHT")):
-            if "ID_MODEL=PCAN-USB_FD" not in p.stdout:
-                raise RuntimeError(f"{iface}: expected a PCAN-USB FD adapter")
+            if not any(f"ID_MODEL={model}" in p.stdout for model in _ARM_CAN_MODELS):
+                raise RuntimeError(f"{iface}: expected an OpenArm USB-CAN adapter")
         else:
             _validate_adapter_properties(p.stdout, iface, path_hint)
     except (FileNotFoundError, subprocess.CalledProcessError):
@@ -248,11 +252,11 @@ def _iface_preflight(iface: str, path_hint: str) -> None:
         device = Path(f"/sys/class/net/{iface}/device").resolve()
         driver = Path(f"/sys/class/net/{iface}/device/driver").resolve().name
         props = (
-            f"ID_MODEL={'PCAN-USB_FD' if driver == 'peak_usb' else 'unknown'}\n"
+            f"ID_MODEL={'PCAN-USB_FD' if driver == 'peak_usb' else ('DM-USB2FDCAN' if driver == 'gs_usb' else 'unknown')}\n"
             f"ID_PATH={device}\n")
         if iface in (os.environ.get("M1_CAN_LEFT"), os.environ.get("M1_CAN_RIGHT")):
-            if driver != _ARM_CAN_DRIVER:
-                raise RuntimeError(f"{iface}: expected the peak_usb driver")
+            if driver not in _ARM_CAN_DRIVERS:
+                raise RuntimeError(f"{iface}: unsupported CAN adapter driver {driver}")
         else:
             _validate_adapter_properties(props, iface, path_hint)
 
@@ -572,14 +576,14 @@ def run(args) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    repo = Path.cwd() / "ros2_ws/src/m1_can_tools/config/motor_map.m1robot.yaml"
+    repo = Path.cwd() / "dread/config/motor_map.openarm_v10.yaml"
     hardstops = (
         Path.cwd()
-        / "ros2_ws/src/m1_can_tools/config/openarm_hardstops.m1robot.json"
+        / "dread/config/openarm_hardstops.m1robot.json"
     )
     deployed = Path.home() / ".config/m1/motor_map.yaml"
     p = argparse.ArgumentParser(
-        description="Passive-first M1 dual-arm calibration (never enables motors)")
+        description="Passive-first OpenArm v1.0 calibration support (never enables motors)")
     p.add_argument("--capture-dropped", action="store_true",
                    help="confirm dropped zero, measure grippers, then save")
     p.add_argument("--transport", choices=("socketcan", "sim"), default="socketcan")

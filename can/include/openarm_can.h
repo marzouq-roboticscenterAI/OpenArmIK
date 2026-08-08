@@ -268,6 +268,31 @@ typedef struct oa_can_pos_force_command {
     double current_limit_per_unit;
 } oa_can_pos_force_command;
 
+/* Calibrated OpenArm v1.0 parallel-gripper geometry. opening_m is the
+ * displacement of each URDF finger joint: 0 m is closed and
+ * maximum_opening_m is fully open. The two motor endpoints may have either
+ * sign, so a commissioned gripper direction is never guessed from CAN IDs. */
+typedef struct oa_can_gripper_calibration {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    double closed_motor_position_rad;
+    double open_motor_position_rad;
+    double maximum_opening_m;
+} oa_can_gripper_calibration;
+
+/* A torque-limited gripper request. All public arithmetic remains binary64.
+ * maximum_motor_torque_nm is converted to the DaMiao position-force current
+ * fraction at the final CAN codec boundary using the verified profile tmax. */
+typedef struct oa_can_gripper_command {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint16_t send_id;
+    uint16_t reserved;
+    double target_opening_m;
+    double maximum_opening_speed_m_s;
+    double maximum_motor_torque_nm;
+} oa_can_gripper_command;
+
 typedef struct oa_can_joint_mapping {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -396,6 +421,37 @@ oa_can_status oa_can_encode_pos_vel(const oa_can_pos_vel_command *command,
 oa_can_status oa_can_encode_pos_force(const oa_can_pos_force_command *command,
                                       const oa_can_mit_profile *profile,
                                       oa_can_frame *out_frame);
+/* Double-precision calibration helpers used for feedback and RViz. */
+oa_can_status oa_can_gripper_motor_position(
+    const oa_can_gripper_calibration *calibration, double opening_m,
+    double *out_motor_position_rad);
+oa_can_status oa_can_gripper_opening(
+    const oa_can_gripper_calibration *calibration, double motor_position_rad,
+    double *out_opening_m);
+/* Position-force command builders. These construct one CAN command frame but
+ * do not enable a motor. The caller must retain E-stop/watchdog authority and
+ * continuously consume encoder/torque feedback. `grasp` deliberately has the
+ * same closed-position wire target as `close`; its separate name makes the
+ * required live torque-contact completion policy explicit at the controller. */
+oa_can_status oa_can_encode_gripper_move(
+    const oa_can_gripper_command *command,
+    const oa_can_gripper_calibration *calibration,
+    const oa_can_mit_profile *profile, oa_can_frame *out_frame);
+oa_can_status oa_can_encode_gripper_open(
+    uint16_t send_id, double maximum_opening_speed_m_s,
+    double maximum_motor_torque_nm,
+    const oa_can_gripper_calibration *calibration,
+    const oa_can_mit_profile *profile, oa_can_frame *out_frame);
+oa_can_status oa_can_encode_gripper_close(
+    uint16_t send_id, double maximum_opening_speed_m_s,
+    double maximum_motor_torque_nm,
+    const oa_can_gripper_calibration *calibration,
+    const oa_can_mit_profile *profile, oa_can_frame *out_frame);
+oa_can_status oa_can_encode_gripper_grasp(
+    uint16_t send_id, double maximum_opening_speed_m_s,
+    double maximum_motor_torque_nm,
+    const oa_can_gripper_calibration *calibration,
+    const oa_can_mit_profile *profile, oa_can_frame *out_frame);
 oa_can_status oa_can_make_enable(uint16_t send_id, oa_can_frame *out_frame);
 oa_can_status oa_can_make_disable(uint16_t send_id, oa_can_frame *out_frame);
 /* Commissioning-only primitives: set-zero does not discover physical home. */

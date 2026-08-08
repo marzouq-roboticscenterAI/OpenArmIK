@@ -2,6 +2,13 @@ std_msgs/Header header
 geometry_msgs/Point left_tcp_m
 geometry_msgs/Point right_tcp_m
 float64 motion_limit_scale
+# Keep one arm at its exact measured joint vector while the other follows a
+# Cartesian route. Zero preserves neither side; values are side + 1 so a
+# default-initialized goal retains paired behavior.
+uint8 PRESERVE_NONE=0
+uint8 PRESERVE_LEFT=1
+uint8 PRESERVE_RIGHT=2
+uint8 preserve_side
 ---
 uint8 OUTCOME_COMPLETED=1
 uint8 OUTCOME_CANCELED=2

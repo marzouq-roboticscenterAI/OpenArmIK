@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(openarm_model LANGUAGES C)
+project(openarm_model LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -7,6 +7,11 @@ include(CMakePackageConfigHelpers)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+find_package(fcl REQUIRED)
 
 option(OA_MODEL_BUILD_TESTS "Build model tests" ON)
 option(OA_MODEL_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
@@ -17,7 +22,7 @@ set(OA_XACRO_PYTHONPATH "" CACHE STRING "PYTHONPATH required by xacro")
 set(OA_XACRO_AMENT_PREFIX "" CACHE STRING "Base AMENT_PREFIX_PATH required by xacro")
 
 add_library(openarm_model STATIC src/openarm_model.c src/openarm_units.c
-  src/openarm_collision.c)
+  src/openarm_collision.c src/openarm_route.c src/openarm_claw_mesh.cpp)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   set_source_files_properties(src/openarm_units.c PROPERTIES
     COMPILE_OPTIONS -frounding-math)
@@ -26,10 +31,11 @@ add_library(OpenArm::Model ALIAS openarm_model)
 target_include_directories(openarm_model PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_compile_features(openarm_model PUBLIC c_std_11)
-set_target_properties(openarm_model PROPERTIES C_EXTENSIONS OFF)
+target_compile_features(openarm_model PUBLIC c_std_11 cxx_std_17)
+set_target_properties(openarm_model PROPERTIES
+  C_EXTENSIONS OFF CXX_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
 target_compile_options(openarm_model PRIVATE -Wall -Wextra -Wpedantic -Werror)
-target_link_libraries(openarm_model PUBLIC m)
+target_link_libraries(openarm_model PUBLIC m fcl)
 if(OA_MODEL_SANITIZERS)
   target_compile_options(openarm_model PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_link_options(openarm_model INTERFACE -fsanitize=address,undefined)
@@ -64,7 +70,6 @@ if(OA_MODEL_COVERAGE)
 endif()
 
 if(OA_MODEL_BUILD_TESTS)
-  enable_language(CXX)
   enable_testing()
   add_executable(oa_model_tests tests/test_model.c)
   target_link_libraries(oa_model_tests PRIVATE openarm_model)

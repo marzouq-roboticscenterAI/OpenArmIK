@@ -40,12 +40,13 @@ openarm_configure_rviz_environment() {
 
   local renderer=${OPENARM_RVIZ_RENDERER:-auto}
   if [[ "$renderer" == "auto" ]]; then
-    # Hardware GLX presentation flickers during live resize through XWayland on
-    # this HiDPI hybrid-GPU laptop.  The small OpenArm scene runs smoothly in
-    # llvmpipe and remains stable while resizing.  Keep GPU acceleration for a
-    # native X11 session or when explicitly requested.
+    # Software GLX avoids resize flicker through XWayland, but the detailed
+    # OpenArm meshes saturated roughly nine CPU cores while live joint states
+    # were changing and froze the desktop. Integrated GLX rendered the same
+    # live scene at about one third of one core. Prefer the responsive hardware
+    # path; software remains available as an explicit troubleshooting choice.
     if [[ ${XDG_SESSION_TYPE:-} == "wayland" ]]; then
-      renderer=software
+      renderer=integrated
     elif [[ -e /dev/nvidia0 ]] && command -v nvidia-smi >/dev/null 2>&1 && \
         nvidia-smi >/dev/null 2>&1; then
       renderer=nvidia
@@ -57,6 +58,7 @@ openarm_configure_rviz_environment() {
   case "$renderer" in
     nvidia)
       unset LIBGL_ALWAYS_SOFTWARE || true
+      unset DRI_PRIME || true
       export __NV_PRIME_RENDER_OFFLOAD=1
       export __GLX_VENDOR_LIBRARY_NAME=nvidia
       export __VK_LAYER_NV_optimus=NVIDIA_only
@@ -67,12 +69,14 @@ openarm_configure_rviz_environment() {
       ;;
     integrated)
       unset LIBGL_ALWAYS_SOFTWARE || true
+      unset DRI_PRIME || true
       unset __NV_PRIME_RENDER_OFFLOAD __GLX_VENDOR_LIBRARY_NAME \
         __VK_LAYER_NV_optimus __GL_SYNC_TO_VBLANK __GL_GSYNC_ALLOWED \
         __GL_VRR_ALLOWED || true
       printf 'OpenArm RViz renderer: integrated GPU (XWayland/GLX)\n'
       ;;
     software)
+      unset DRI_PRIME || true
       unset __NV_PRIME_RENDER_OFFLOAD __GLX_VENDOR_LIBRARY_NAME \
         __VK_LAYER_NV_optimus __GL_SYNC_TO_VBLANK __GL_GSYNC_ALLOWED \
         __GL_VRR_ALLOWED || true

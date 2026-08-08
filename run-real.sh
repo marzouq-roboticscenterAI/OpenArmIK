@@ -2,10 +2,11 @@
 # Launch the OpenArm portal against the physically connected arms.
 #
 # The counterpart to run.sh, which drives the simulated controller. This one
-# attaches to real hardware, and the difference that matters is what it can do
-# to it: nothing. The node behind this script is read-only. It polls DaMiao
-# motor status, decodes the feedback, and publishes /joint_states so RViz
-# mirrors the arms. It has no path to enable, zero, or move a motor.
+# attaches to real hardware. Startup is passive: it mirrors encoder feedback
+# without enabling motion until the operator presses Connect and enable motors.
+# Once armed, portal targets and demos command the physical J1..J7 axes. J8 is
+# the calibrated gripper axis and can be opened, closed, or torque-limited with
+# the MoveGripper action/C CLI while its encoder remains under the watchdog.
 #
 # It is also passive on startup. No CAN socket is opened and no frame is sent
 # until you press Connect in the portal.
@@ -56,19 +57,10 @@ if ((${#missing[@]})); then
   exit 1
 fi
 if ((${#down[@]})); then
-  # Bring them up rather than refusing. The helper re-execs itself under sudo,
-  # so the password prompt appears here and the rest of this script, and
-  # everything that talks to the arms, still runs unprivileged.
-  printf 'CAN interfaces are down: %s\n' "${down[*]}"
-  printf 'Bringing them up (this needs sudo)...\n\n'
-  "$root_dir/scripts/setup_can_interfaces.sh"
-  printf '\n'
-  for interface in "${interfaces[@]}"; do
-    if [[ "$(ip -br link show "$interface" | awk '{print $2}')" != UP ]]; then
-      printf 'Interface %s is still down; cannot continue.\n' "$interface" >&2
-      exit 1
-    fi
-  done
+  printf 'CAN interfaces are down: %s\n' "${down[*]}" >&2
+  printf 'Bring them up in a separate terminal, then rerun this command:\n' >&2
+  printf '  bash %s/scripts/setup_can_interfaces.sh\n' "$root_dir" >&2
+  exit 1
 fi
 
 output_root="$root_dir/ros2_ws"
@@ -103,10 +95,6 @@ for ((index = 0; index < ${#arguments[@]}; index++)); do
 done
 
 "$root_dir/scripts/install_all_dependencies.sh" --verify >/dev/null
-command -v firefox >/dev/null 2>&1 || {
-  printf '%s\n' 'Firefox is not installed or is not on PATH.' >&2
-  exit 1
-}
 
 build_arguments=(--incremental --output-root "$output_root")
 [[ -z "$jobs" ]] || build_arguments+=(--jobs "$jobs")
@@ -115,10 +103,11 @@ if [[ "$build_mode" != never ]]; then
 fi
 
 printf '\n'
-printf 'Real-arm mode: READ ONLY. It polls motor status and mirrors the pose;\n'
-printf 'it cannot enable, zero, or move a motor.\n'
+printf 'Real-arm mode: startup is PASSIVE; every motor remains disabled until\n'
+printf 'you explicitly press "Connect and enable motors" in the portal.\n'
 printf 'Interfaces up: %s\n' "${interfaces[*]}"
-printf 'Connecting to the motors automatically and taking the current pose as\n'
-printf 'neutral. If the arms are not at rest, press Clear zero then Connect.\n\n'
+printf 'Saved per-joint calibration is preserved; connecting does not redefine\n'
+printf 'neutral. Disconnect, E-stop, Ctrl+C, faults, and feedback timeout all\n'
+printf 'disable every motor. Keep the hardware stop within reach.\n\n'
 
 exec "$root_dir/scripts/launch_web_portal.sh" --real --firefox "$@" --no-build

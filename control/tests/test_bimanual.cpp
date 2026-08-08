@@ -24,8 +24,15 @@
 #include <cstring>
 #include <limits>
 #include <thread>
+#include <type_traits>
 
 namespace {
+
+static_assert(std::is_same_v<decltype(oa_centroid_tcp_move_with_units{}.target_centroid.x),
+                             double>);
+static_assert(std::is_same_v<decltype(oa_mirrored_tcp_move_with_units{}.lead_tcp.y),
+                             double>);
+static_assert(std::is_same_v<decltype(oa_converge_tcp_move_with_units{}.target.z), double>);
 
 [[noreturn]] void fail(const char *expression, const char *file, int line) {
     std::fprintf(stderr, "%s:%d: check failed: %s\n", file, line, expression);
@@ -225,7 +232,7 @@ void move_to_separated_pose(Fixture &fixture) {
           OA_CONTROL_OK);
     /* This move must complete normally: no monitor may intervene. */
     const auto report = run_until_stopped(fixture, 3000);
-    CHECK(report.cause == OA_STOP_CAUSE_NONE);
+    CHECK(report.cause == OA_STOP_CAUSE_PLAN_COMPLETE);
     oa_motion_plan_destroy(plan);
     fixture.refresh();
     const auto left = fixture.tcp(OA_LEFT);
@@ -766,7 +773,7 @@ void test_keepout_monitor_allows_retreat_but_still_stops_approach() {
     CHECK(oa_controller_execute(fixture.controller, escape, &escape_request, &escape_id) ==
           OA_CONTROL_OK);
     const auto escaped = run_until_stopped(fixture, 6000);
-    CHECK(escaped.cause == OA_STOP_CAUSE_NONE);
+    CHECK(escaped.cause == OA_STOP_CAUSE_PLAN_COMPLETE);
     /* And it genuinely opened up. */
     fixture.refresh();
     const auto opened_left = fixture.tcp(OA_LEFT);
@@ -778,6 +785,73 @@ void test_keepout_monitor_allows_retreat_but_still_stops_approach() {
     }
     CHECK(std::sqrt(separation) > 0.40);
     oa_motion_plan_destroy(escape);
+}
+
+void test_keepout_monitor_resets_after_recovery() {
+    Fixture fixture;
+    move_to_separated_pose(fixture);
+
+    const auto drive_into_keepout = [&fixture]() {
+        const auto left = fixture.tcp(OA_LEFT);
+        const auto right = fixture.tcp(OA_RIGHT);
+        auto approach = converge_template(fixture);
+        approach.velocity_scale = 1.0;
+        approach.acceleration_scale = 1.0;
+        approach.jerk_scale = 1.0;
+        for (std::size_t axis = 0; axis < 3U; ++axis) {
+            approach.target_m[axis] = 0.5 * (left[axis] + right[axis]);
+        }
+        approach.stop_distance_m = 0.0;
+        approach.minimum_progress_m = 0.001;
+        oa_motion_plan *plan = nullptr;
+        const oa_control_status planned =
+            oa_controller_plan_converge_tcp(fixture.controller, &approach, &plan);
+        if (planned != OA_CONTROL_OK) {
+            return oa_contact_report{};
+        }
+        auto request = execute_template();
+        std::uint64_t command_id = 0U;
+        CHECK(oa_controller_execute(fixture.controller, plan, &request, &command_id) ==
+              OA_CONTROL_OK);
+        const auto report = run_until_stopped(fixture, 6000);
+        oa_motion_plan_destroy(plan);
+        return report;
+    };
+
+    auto first = drive_into_keepout();
+    if (first.cause == OA_STOP_CAUSE_NONE) {
+        return;
+    }
+    CHECK(first.cause == OA_STOP_CAUSE_KEEPOUT);
+
+    fixture.refresh();
+    auto retreat = paired_template(fixture);
+    retreat.velocity_scale = 1.0;
+    retreat.acceleration_scale = 1.0;
+    retreat.jerk_scale = 1.0;
+    retreat.left_tcp_m[0] = 0.30;
+    retreat.left_tcp_m[1] = 0.26;
+    retreat.left_tcp_m[2] = 0.40;
+    retreat.right_tcp_m[0] = 0.30;
+    retreat.right_tcp_m[1] = -0.26;
+    retreat.right_tcp_m[2] = 0.40;
+    oa_motion_plan *escape = nullptr;
+    CHECK(oa_controller_plan_paired_tcp(fixture.controller, &retreat, &escape) ==
+          OA_CONTROL_OK);
+    auto escape_request = execute_template();
+    std::uint64_t escape_id = 0U;
+    CHECK(oa_controller_execute(fixture.controller, escape, &escape_request, &escape_id) ==
+          OA_CONTROL_OK);
+    const auto escaped = run_until_stopped(fixture, 6000);
+    CHECK(escaped.cause == OA_STOP_CAUSE_PLAN_COMPLETE);
+    oa_motion_plan_destroy(escape);
+
+    fixture.refresh();
+    const auto second = drive_into_keepout();
+    if (second.cause == OA_STOP_CAUSE_NONE) {
+        return;
+    }
+    CHECK(second.cause == OA_STOP_CAUSE_KEEPOUT);
 }
 
 void test_estop_is_always_listening() {
@@ -890,6 +964,153 @@ void test_contact_report_abi_is_validated() {
     CHECK(clean.contact_detected == 0U);
 }
 
+double units_per_metre(const oa_length_unit unit) {
+    if (unit == OA_LENGTH_UNIT_CENTIMETRES) return 100.0;
+    if (unit == OA_LENGTH_UNIT_INCHES) return 1.0 / 0.0254;
+    return 1.0;
+}
+
+void test_all_bimanual_unit_ingress_is_binary64_equivalent() {
+    Fixture fixture;
+    const oa_length_unit units[] = {OA_LENGTH_UNIT_METRES,
+                                    OA_LENGTH_UNIT_CENTIMETRES,
+                                    OA_LENGTH_UNIT_INCHES};
+
+    auto centroid = centroid_template(fixture);
+    const auto left = fixture.tcp(OA_LEFT);
+    const auto right = fixture.tcp(OA_RIGHT);
+    centroid.target_centroid_m[0] = 0.5 * (left[0] + right[0]);
+    centroid.target_centroid_m[1] = 0.5 * (left[1] + right[1]);
+    centroid.target_centroid_m[2] = 0.5 * (left[2] + right[2]);
+    oa_motion_plan *canonical_centroid = nullptr;
+    CHECK(oa_controller_plan_centroid_tcp(
+              fixture.controller, &centroid, &canonical_centroid) == OA_CONTROL_OK);
+    const auto centroid_report = report_of(canonical_centroid);
+    for (const auto unit : units) {
+        oa_centroid_tcp_move_with_units request{};
+        init(request);
+        request.coordinate_unit = unit;
+        request.expiry_ns = centroid.expiry_ns;
+        std::copy_n(centroid.required_feedback_seq, 2U, request.required_feedback_seq);
+        const double factor = units_per_metre(unit);
+        request.target_centroid = {centroid.target_centroid_m[0] * factor,
+                                   centroid.target_centroid_m[1] * factor,
+                                   centroid.target_centroid_m[2] * factor};
+        request.velocity_scale = centroid.velocity_scale;
+        request.acceleration_scale = centroid.acceleration_scale;
+        request.jerk_scale = centroid.jerk_scale;
+        request.tcp_tol_m = centroid.tcp_tol_m;
+        request.collision_scene_revision = centroid.collision_scene_revision;
+        request.max_branch_step_rad = centroid.max_branch_step_rad;
+        request.min_singular_value = centroid.min_singular_value;
+        oa_motion_plan *plan = nullptr;
+        CHECK(oa_controller_plan_centroid_tcp_with_units(
+                  fixture.controller, &request, &plan) == OA_CONTROL_OK);
+        const auto report = report_of(plan);
+        for (std::size_t side = 0; side < 2U; ++side) {
+            for (std::size_t axis = 0; axis < 3U; ++axis) {
+                CHECK(std::abs(report.achieved_tcp_m[side][axis] -
+                               centroid_report.achieved_tcp_m[side][axis]) < 1.0e-12);
+            }
+        }
+        oa_motion_plan_destroy(plan);
+    }
+    oa_motion_plan_destroy(canonical_centroid);
+
+    auto mirrored = mirrored_template(fixture);
+    mirrored.lead_side = OA_LEFT;
+    mirrored.lead_tcp_m[0] = 0.30;
+    mirrored.lead_tcp_m[1] = 0.22;
+    mirrored.lead_tcp_m[2] = 0.30;
+    oa_motion_plan *canonical_mirror = nullptr;
+    CHECK(oa_controller_plan_mirrored_tcp(
+              fixture.controller, &mirrored, &canonical_mirror) == OA_CONTROL_OK);
+    const auto mirror_report = report_of(canonical_mirror);
+    for (const auto unit : units) {
+        oa_mirrored_tcp_move_with_units request{};
+        init(request);
+        request.coordinate_unit = unit;
+        request.expiry_ns = mirrored.expiry_ns;
+        std::copy_n(mirrored.required_feedback_seq, 2U, request.required_feedback_seq);
+        request.lead_side = mirrored.lead_side;
+        const double factor = units_per_metre(unit);
+        request.lead_tcp = {mirrored.lead_tcp_m[0] * factor,
+                            mirrored.lead_tcp_m[1] * factor,
+                            mirrored.lead_tcp_m[2] * factor};
+        request.velocity_scale = mirrored.velocity_scale;
+        request.acceleration_scale = mirrored.acceleration_scale;
+        request.jerk_scale = mirrored.jerk_scale;
+        request.tcp_tol_m = mirrored.tcp_tol_m;
+        request.collision_scene_revision = mirrored.collision_scene_revision;
+        request.max_branch_step_rad = mirrored.max_branch_step_rad;
+        request.min_singular_value = mirrored.min_singular_value;
+        oa_motion_plan *plan = nullptr;
+        CHECK(oa_controller_plan_mirrored_tcp_with_units(
+                  fixture.controller, &request, &plan) == OA_CONTROL_OK);
+        const auto report = report_of(plan);
+        for (std::size_t side = 0; side < 2U; ++side) {
+            for (std::size_t axis = 0; axis < 3U; ++axis) {
+                CHECK(std::abs(report.achieved_tcp_m[side][axis] -
+                               mirror_report.achieved_tcp_m[side][axis]) < 1.0e-12);
+            }
+        }
+        oa_motion_plan_destroy(plan);
+    }
+    oa_motion_plan_destroy(canonical_mirror);
+
+    auto converge = converge_template(fixture);
+    converge.target_m[0] = 0.40;
+    converge.target_m[1] = 0.0;
+    converge.target_m[2] = 0.50;
+    oa_motion_plan *canonical_converge = nullptr;
+    CHECK(oa_controller_plan_converge_tcp(
+              fixture.controller, &converge, &canonical_converge) == OA_CONTROL_OK);
+    const auto converge_report = report_of(canonical_converge);
+    for (const auto unit : units) {
+        oa_converge_tcp_move_with_units request{};
+        init(request);
+        request.coordinate_unit = unit;
+        request.expiry_ns = converge.expiry_ns;
+        std::copy_n(converge.required_feedback_seq, 2U, request.required_feedback_seq);
+        const double factor = units_per_metre(unit);
+        request.target = {converge.target_m[0] * factor,
+                          converge.target_m[1] * factor,
+                          converge.target_m[2] * factor};
+        std::copy_n(converge.contact_torque_nm, 7U, request.contact_torque_nm);
+        request.contact_torque_fraction = converge.contact_torque_fraction;
+        request.contact_persistence_cycles = converge.contact_persistence_cycles;
+        request.stop_distance_m = converge.stop_distance_m;
+        request.minimum_progress_m = converge.minimum_progress_m;
+        request.velocity_scale = converge.velocity_scale;
+        request.acceleration_scale = converge.acceleration_scale;
+        request.jerk_scale = converge.jerk_scale;
+        request.tcp_tol_m = converge.tcp_tol_m;
+        request.collision_scene_revision = converge.collision_scene_revision;
+        request.max_branch_step_rad = converge.max_branch_step_rad;
+        request.min_singular_value = converge.min_singular_value;
+        oa_motion_plan *plan = nullptr;
+        CHECK(oa_controller_plan_converge_tcp_with_units(
+                  fixture.controller, &request, &plan) == OA_CONTROL_OK);
+        const auto report = report_of(plan);
+        for (std::size_t side = 0; side < 2U; ++side) {
+            for (std::size_t axis = 0; axis < 3U; ++axis) {
+                CHECK(std::abs(report.achieved_tcp_m[side][axis] -
+                               converge_report.achieved_tcp_m[side][axis]) < 1.0e-12);
+            }
+        }
+        oa_motion_plan_destroy(plan);
+    }
+    oa_motion_plan_destroy(canonical_converge);
+
+    oa_centroid_tcp_move_with_units invalid{};
+    init(invalid);
+    invalid.coordinate_unit = 99U;
+    oa_motion_plan *plan = nullptr;
+    CHECK(oa_controller_plan_centroid_tcp_with_units(
+              fixture.controller, &invalid, &plan) == OA_CONTROL_EINVAL);
+    CHECK(plan == nullptr);
+}
+
 void test_planners_reject_null_and_bad_abi() {
     Fixture fixture;
     oa_motion_plan *plan = nullptr;
@@ -943,9 +1164,11 @@ int main() {
     test_explicit_contact_threshold_is_honoured();
     test_realtime_keepout_uses_shared_geometry();
     test_keepout_monitor_allows_retreat_but_still_stops_approach();
+    test_keepout_monitor_resets_after_recovery();
     test_estop_is_always_listening();
     test_estop_from_another_thread_during_execution();
     test_contact_report_abi_is_validated();
+    test_all_bimanual_unit_ingress_is_binary64_equivalent();
     test_planners_reject_null_and_bad_abi();
     std::printf("bimanual tests passed\n");
     return 0;

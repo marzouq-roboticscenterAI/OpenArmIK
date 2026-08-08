@@ -196,6 +196,216 @@ TEST(VirtualControlSession, PairedNamedTargetsReachMeasuredCompletion)
   EXPECT_GT(recorder.result->terminal_feedback_seq[1], recorder.result->seed_feedback_seq[1]);
 }
 
+TEST(VirtualControlSession, GripperCommandsUpdateBothSidesAndPreserveUnselectedSide)
+{
+  Recorder recorder;
+  VirtualControlSession session(
+    [&recorder](const MeasuredState & value) {return recorder.state(value);}, []() {});
+  std::string reason;
+
+  ASSERT_TRUE(session.reserve("open-both-grippers", reason)) << reason;
+  SessionCommand open;
+  open.kind = SessionCommand::Kind::gripper;
+  open.owner = "open-both-grippers";
+  open.gripper_side_mask = 0x3U;
+  open.gripper_opening_m = 0.044;
+  open.gripper_speed_m_s = 0.0044;
+  open.gripper_torque_limit_nm = 0.5;
+  open.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(open), reason)) << reason;
+  ASSERT_TRUE(recorder.wait_result(2s));
+  ASSERT_EQ(recorder.result->outcome, CommandResult::Outcome::completed);
+  auto state = recorder.latest_state_and_clear_result();
+  EXPECT_TRUE(state.gripper[0].calibrated);
+  EXPECT_TRUE(state.gripper[1].calibrated);
+  EXPECT_DOUBLE_EQ(state.gripper[0].opening_m, 0.044);
+  EXPECT_DOUBLE_EQ(state.gripper[1].opening_m, 0.044);
+
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+    return health.adapter_state == openarm_ik_ros::AdapterState::idle;
+  }));
+  ASSERT_TRUE(session.reserve("close-left-gripper", reason)) << reason;
+  SessionCommand close_left;
+  close_left.kind = SessionCommand::Kind::gripper;
+  close_left.owner = "close-left-gripper";
+  close_left.gripper_side_mask = 0x1U;
+  close_left.gripper_opening_m = 0.0;
+  close_left.gripper_speed_m_s = 0.0022;
+  close_left.gripper_torque_limit_nm = 0.25;
+  close_left.gripper_stop_on_contact = true;
+  close_left.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(close_left), reason)) << reason;
+  ASSERT_TRUE(recorder.wait_result(2s));
+  ASSERT_EQ(recorder.result->outcome, CommandResult::Outcome::completed);
+  state = recorder.latest_state_and_clear_result();
+  EXPECT_DOUBLE_EQ(state.gripper[0].opening_m, 0.0);
+  EXPECT_DOUBLE_EQ(state.gripper[1].opening_m, 0.044);
+}
+
+TEST(VirtualControlSession, ConvergeSucceedsOnlyWithProvedTerminalContact)
+{
+  Recorder recorder;
+  VirtualControlSession session(
+    [&recorder](const MeasuredState & value) {return recorder.state(value);}, []() {});
+  std::string reason;
+  ASSERT_TRUE(session.reserve("converge-open", reason)) << reason;
+  SessionCommand open;
+  open.kind = SessionCommand::Kind::paired_tcp;
+  open.owner = "converge-open";
+  open.left_tcp_m = {0.34, 0.22, 0.86};
+  open.right_tcp_m = {0.34, -0.22, 0.86};
+  open.motion_limit_scale = 1.0;
+  open.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(open), reason)) << reason;
+  ASSERT_TRUE(recorder.wait_result(40s));
+  ASSERT_EQ(recorder.result->outcome, CommandResult::Outcome::completed) <<
+    recorder.result->reason << " status=" << recorder.result->control_status;
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+    return health.adapter_state == openarm_ik_ros::AdapterState::idle;
+  }));
+  (void)recorder.latest_state_and_clear_result();
+
+  ASSERT_TRUE(session.reserve("converge-contact", reason)) << reason;
+  SessionCommand command;
+  command.kind = SessionCommand::Kind::converge_tcp;
+  command.owner = "converge-contact";
+  command.target_m = {0.34, 0.0, 0.86};
+  command.stop_distance_m = 0.045;
+  command.motion_limit_scale = 1.0;
+  command.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(command), reason)) << reason;
+  ASSERT_TRUE(recorder.wait_result(40s));
+  ASSERT_TRUE(recorder.result.has_value());
+  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::completed) <<
+    recorder.result->reason << " status=" << recorder.result->control_status;
+  EXPECT_EQ(recorder.result->event, OA_RUNTIME_EVENT_STOPPED);
+  EXPECT_EQ(recorder.result->cause, OA_RUNTIME_STOP_CAUSE_CONTACT);
+  EXPECT_EQ(recorder.result->reason, "converge_halted_on_proved_contact");
+  EXPECT_GT(recorder.result->terminal_feedback_seq[0], recorder.result->seed_feedback_seq[0]);
+  EXPECT_GT(recorder.result->terminal_feedback_seq[1], recorder.result->seed_feedback_seq[1]);
+
+  // An intentional stop must remain escapable. The strict real-time monitor
+  // still runs on every feedback cycle, but permits this monotonically opening
+  // path out of the narrowly scoped hand-mesh contact corridor.
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+    return health.adapter_state == openarm_ik_ros::AdapterState::idle;
+  }));
+  (void)recorder.latest_state_and_clear_result();
+  ASSERT_TRUE(session.reserve("converge-retreat", reason)) << reason;
+  SessionCommand retreat;
+  retreat.kind = SessionCommand::Kind::paired_tcp;
+  retreat.owner = "converge-retreat";
+  retreat.left_tcp_m = {0.34, 0.22, 0.86};
+  retreat.right_tcp_m = {0.34, -0.22, 0.86};
+  retreat.motion_limit_scale = 1.0;
+  retreat.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(retreat), reason)) << reason;
+  ASSERT_TRUE(recorder.wait_result(40s));
+  ASSERT_TRUE(recorder.result.has_value());
+  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::completed) <<
+    recorder.result->reason << " status=" << recorder.result->control_status;
+  EXPECT_EQ(recorder.result->event, OA_RUNTIME_EVENT_COMPLETED);
+  EXPECT_EQ(recorder.result->reason, "completed_measured_feedback");
+}
+
+TEST(VirtualControlSession, HeartBottomCorridorAlsoStopsOnProvedTerminalContact)
+{
+  Recorder recorder;
+  VirtualControlSession session(
+    [&recorder](const MeasuredState & value) {return recorder.state(value);}, []() {});
+  std::string reason;
+  ASSERT_TRUE(session.reserve("heart-bottom-open", reason)) << reason;
+  SessionCommand open;
+  open.kind = SessionCommand::Kind::paired_tcp;
+  open.owner = "heart-bottom-open";
+  open.left_tcp_m = {0.30, 0.22, 0.74};
+  open.right_tcp_m = {0.30, -0.22, 0.74};
+  open.motion_limit_scale = 1.0;
+  open.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(open), reason)) << reason;
+  ASSERT_TRUE(recorder.wait_result(40s));
+  ASSERT_EQ(recorder.result->outcome, CommandResult::Outcome::completed) <<
+    recorder.result->reason << " status=" << recorder.result->control_status;
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+    return health.adapter_state == openarm_ik_ros::AdapterState::idle;
+  }));
+  (void)recorder.latest_state_and_clear_result();
+
+  ASSERT_TRUE(session.reserve("heart-bottom-contact", reason)) << reason;
+  SessionCommand contact;
+  contact.kind = SessionCommand::Kind::converge_tcp;
+  contact.owner = "heart-bottom-contact";
+  contact.target_m = {0.30, 0.0, 0.74};
+  contact.stop_distance_m = 0.045;
+  contact.motion_limit_scale = 1.0;
+  contact.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(contact), reason)) << reason;
+  ASSERT_TRUE(recorder.wait_result(40s));
+  ASSERT_TRUE(recorder.result.has_value());
+  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::completed) <<
+    recorder.result->reason << " status=" << recorder.result->control_status;
+  EXPECT_EQ(recorder.result->event, OA_RUNTIME_EVENT_STOPPED);
+  EXPECT_EQ(recorder.result->cause, OA_RUNTIME_STOP_CAUSE_CONTACT);
+  EXPECT_EQ(recorder.result->reason, "converge_halted_on_proved_contact");
+}
+
+TEST(VirtualControlSession, ConvergePlanCompletionIsNotReportedAsContact)
+{
+  Recorder recorder;
+  VirtualControlSession session(
+    [&recorder](const MeasuredState & value) {return recorder.state(value);}, []() {});
+  std::string reason;
+  ASSERT_TRUE(session.reserve("no-contact-open", reason)) << reason;
+  SessionCommand open;
+  open.kind = SessionCommand::Kind::paired_tcp;
+  open.owner = "no-contact-open";
+  open.left_tcp_m = {0.34, 0.22, 0.86};
+  open.right_tcp_m = {0.34, -0.22, 0.86};
+  open.motion_limit_scale = 1.0;
+  open.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(open), reason)) << reason;
+  ASSERT_TRUE(recorder.wait_result(40s));
+  ASSERT_EQ(recorder.result->outcome, CommandResult::Outcome::completed) <<
+    recorder.result->reason << " status=" << recorder.result->control_status;
+  ASSERT_TRUE(wait_health(session, [](const auto & health) {
+    return health.adapter_state == openarm_ik_ros::AdapterState::idle;
+  }));
+  (void)recorder.latest_state_and_clear_result();
+
+  ASSERT_TRUE(session.reserve("converge-no-contact", reason)) << reason;
+  SessionCommand command;
+  command.kind = SessionCommand::Kind::converge_tcp;
+  command.owner = "converge-no-contact";
+  command.target_m = {0.34, 0.0, 0.86};
+  command.stop_distance_m = 0.20;
+  command.motion_limit_scale = 1.0;
+  command.terminal = [&recorder](const CommandResult & value) {
+      return recorder.terminal(value);
+    };
+  ASSERT_TRUE(session.submit(std::move(command), reason)) << reason;
+  ASSERT_TRUE(recorder.wait_result(40s));
+  ASSERT_TRUE(recorder.result.has_value());
+  EXPECT_EQ(recorder.result->outcome, CommandResult::Outcome::aborted);
+  EXPECT_NE(recorder.result->cause, OA_RUNTIME_STOP_CAUSE_CONTACT);
+  EXPECT_EQ(recorder.result->reason, "converge_ended_without_contact");
+}
+
 TEST(VirtualControlSession, ValidatesAndAppliesPairedMotionLimitScale)
 {
   {
@@ -286,6 +496,7 @@ TEST(VirtualControlSession, BestEffortReachAndPoleMitigationCommandsCompleteFrom
     command.owner = example.owner;
     command.left_tcp_m = guard.commanded_tcp[0];
     command.right_tcp_m = guard.commanded_tcp[1];
+    command.motion_limit_scale = 1.0;
     command.terminal = [&recorder](const CommandResult & value) {
         return recorder.terminal(value);
       };
@@ -340,6 +551,7 @@ TEST(VirtualControlSession, AllPortalTargetsCompleteFromFreshMeasuredFeedback)
       command.owner = owner;
       command.left_tcp_m = guard.commanded_tcp[0];
       command.right_tcp_m = guard.commanded_tcp[1];
+      command.motion_limit_scale = 1.0;
       command.terminal = [&recorder](const CommandResult & value) {
           return recorder.terminal(value);
         };

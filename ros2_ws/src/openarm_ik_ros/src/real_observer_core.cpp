@@ -134,6 +134,54 @@ double joint_limit_misfit(const std::array<double, kJointsPerArm> & q, const std
   return misfit;
 }
 
+bool map_motor_records_by_id(
+  const std::vector<MotorRecord> & records, BusReading & reading)
+{
+  reading = BusReading{};
+  bool complete = true;
+  for (std::size_t joint = 0; joint < kJointsPerArm; ++joint) {
+    const std::uint16_t expected_id = static_cast<std::uint16_t>(joint + 1U);
+    const auto found = std::find_if(
+      records.begin(), records.end(),
+      [expected_id](const MotorRecord & record) {return record.send_id == expected_id;});
+    if (found == records.end()) {
+      complete = false;
+      continue;
+    }
+    reading.joint_valid[joint] = true;
+    reading.position_rad[joint] = found->position_rad;
+    reading.velocity_rad_s[joint] = found->velocity_rad_s;
+    reading.torque_nm[joint] = found->torque_nm;
+  }
+  const auto gripper = std::find_if(
+    records.begin(), records.end(),
+    [](const MotorRecord & record) {return record.send_id == 8U;});
+  if (gripper != records.end()) {
+    reading.has_gripper = true;
+    reading.gripper_rad = gripper->position_rad;
+  }
+  reading.complete = complete;
+  return complete;
+}
+
+bool reply_matches_expected(
+  const std::uint16_t receive_id, const std::uint8_t payload_motor_id,
+  const std::vector<std::uint16_t> & expected_send_ids,
+  const std::uint16_t receive_id_offset)
+{
+  for (const std::uint16_t send_id : expected_send_ids) {
+    const std::uint32_t expected_receive_id =
+      static_cast<std::uint32_t>(send_id) + receive_id_offset;
+    if (expected_receive_id <= CAN_SFF_MASK &&
+      receive_id == static_cast<std::uint16_t>(expected_receive_id) &&
+      payload_motor_id == static_cast<std::uint8_t>(send_id & 0x0FU))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 RealObserver::RealObserver(ObserverConfig config)
 : config_(std::move(config))
 {
@@ -188,16 +236,20 @@ bool RealObserver::connect(std::string & out_detail)
   }
   identify_arms();
 
-  const std::size_t populated = (discovered_[0].size() >= kJointsPerArm ? 1U : 0U) +
-    (discovered_[1].size() >= kJointsPerArm ? 1U : 0U);
+  std::array<bool, kBusCount> complete{};
+  for (std::size_t bus = 0; bus < kBusCount; ++bus) {
+    BusReading ignored;
+    complete[bus] = map_motor_records_by_id(discovered_[bus], ignored);
+  }
+  const std::size_t populated = (complete[0] ? 1U : 0U) + (complete[1] ? 1U : 0U);
 
   std::ostringstream summary;
   summary << "found " << discovered_[0].size() << " motors on " << config_.interfaces[0]
           << " and " << discovered_[1].size() << " on " << config_.interfaces[1];
   if (populated == 1U) {
-    const std::size_t empty = discovered_[0].size() >= kJointsPerArm ? 1U : 0U;
-    summary << " (one arm only: " << config_.interfaces[empty]
-            << " is silent, so that arm is unpowered or unplugged)";
+    const std::size_t empty = complete[0] ? 1U : 0U;
+    summary << " (one complete arm only: " << config_.interfaces[empty]
+            << " is missing one or more required IDs 1..7)";
   }
   summary << "; " << assignment_.reason;
   detail_ = summary.str();
@@ -275,11 +327,20 @@ std::vector<MotorRecord> RealObserver::collect_replies(
     frame.dlc = 8U;
     std::memcpy(frame.data, incoming.data, sizeof(frame.data));
 
-    // The decoder demands the identity up front, so take it from the frame we
-    // are holding: the reply's own CAN ID and the motor ID in its low nibble.
-    // The decoder still rejects the frame if those are internally inconsistent
-    // or the status nibble is not a known one.
+    // A CAN RAW socket sees frames transmitted by every *other* local socket.
+    // Therefore a concurrently running read-only recorder's 0x7ff refresh can
+    // arrive here through loopback. Its J2 request payload begins 02 00 cc and
+    // superficially decodes as position near -12.42 rad with minimum velocity
+    // and torque. Reject everything except the exact reply ID and payload motor
+    // identity before invoking the feedback decoder.
     const auto motor_id = static_cast<std::uint8_t>(frame.data[0] & 0x0FU);
+    if (!reply_matches_expected(
+        static_cast<std::uint16_t>(frame.can_id), motor_id, expected,
+        config_.receive_id_offset))
+    {
+      continue;
+    }
+
     oa_can_feedback feedback{};
     feedback.struct_size = static_cast<std::uint32_t>(sizeof(feedback));
     feedback.abi_version = OA_CAN_ABI_VERSION;
@@ -303,12 +364,9 @@ std::vector<MotorRecord> RealObserver::collect_replies(
 
     MotorRecord record;
     record.receive_id = static_cast<std::uint16_t>(frame.can_id);
-    // Recover the send ID by inverting the configured offset when that lands
-    // on an ID we actually asked about; otherwise report the motor's own ID.
-    const auto inverted = static_cast<std::uint16_t>(frame.can_id - config_.receive_id_offset);
-    record.send_id =
-      std::find(expected.begin(), expected.end(), inverted) != expected.end() ?
-      inverted : static_cast<std::uint16_t>(motor_id);
+    // The strict guard above proves this subtraction corresponds to one of the
+    // requested send IDs; no payload-derived fallback is permitted.
+    record.send_id = static_cast<std::uint16_t>(frame.can_id - config_.receive_id_offset);
     record.motor_id = feedback.motor_id;
     record.status_nibble = feedback.status_nibble;
     record.position_rad = feedback.position_rad;
@@ -366,8 +424,11 @@ void RealObserver::identify_arms()
     }
   }
 
-  const std::array<bool, kBusCount> populated{
-    discovered_[0].size() >= kJointsPerArm, discovered_[1].size() >= kJointsPerArm};
+  std::array<bool, kBusCount> populated{};
+  for (std::size_t bus = 0; bus < kBusCount; ++bus) {
+    BusReading ignored;
+    populated[bus] = map_motor_records_by_id(discovered_[bus], ignored);
+  }
   if (!populated[0] && !populated[1]) {
     assignment_.reason =
       "cannot identify arms: no motors answered on either bus. Check that the arms "
@@ -389,11 +450,9 @@ void RealObserver::identify_arms()
   // survives below purely as a tie-break for the unusual case of a pair that has
   // been renumbered into disjoint blocks, and even then it is a convention.
   const auto joints_of = [this](const std::size_t bus) {
-      std::array<double, kJointsPerArm> q{};
-      for (std::size_t joint = 0; joint < kJointsPerArm; ++joint) {
-        q[joint] = discovered_[bus][joint].position_rad;
-      }
-      return q;
+      BusReading reading;
+      (void)map_motor_records_by_id(discovered_[bus], reading);
+      return reading.position_rad;
     };
 
   double a_as_left = 0.0;
@@ -457,8 +516,7 @@ void RealObserver::identify_arms()
     adopt(limit_vote, "joint-limit-signature",
       "PROVISIONAL GUESS from the mirrored joint-1/joint-2 limits. " + evidence.str() +
       ". Treat this as unverified: it depends on the motor zeros agreeing with the "
-      "URDF zeros, and on this hardware they do not, so the guess has been observed "
-      "to come out backwards. Confirm it by moving an arm and watching which side "
+      "URDF zeros, and on this hardware they do not. Confirm it by moving an arm and watching which side "
       "moves on screen, then use Swap arms or set interface_a_side.");
   } else if (id_vote != 0) {
     adopt(id_vote, "motor-id-partition",
@@ -480,50 +538,75 @@ bool RealObserver::read_once(std::array<BusReading, kBusCount> & out_readings)
     return false;
   }
   const JointMetadata & meta = metadata();
-  bool all_complete = true;
-  bool any_complete = false;
+  bool any_joint = false;
+  bool all_expected_present = true;
+  std::vector<std::string> telemetry_problems;
 
   for (std::size_t bus = 0; bus < kBusCount; ++bus) {
     BusReading & reading = out_readings[bus];
     reading = BusReading{};
-    if (discovered_[bus].size() < kJointsPerArm) {
-      // An unpopulated bus is not a failure of the populated one. Leave this
-      // side at rest and keep publishing the arm that is actually there.
-      continue;
-    }
-
-    // Poll everything found, gripper included, so its state is reported even
-    // though no URDF joint corresponds to it.
+    // Poll the exact OpenArm v1.0 set every cycle, including IDs that were
+    // absent during the initial sweep. A repaired/re-powered joint therefore
+    // appears without reconnecting, and partial buses still receive read-only
+    // refreshes even though they cannot be mapped into a truthful arm pose.
     std::vector<std::uint16_t> expected;
-    expected.reserve(discovered_[bus].size());
-    for (const MotorRecord & record : discovered_[bus]) {
-      expected.push_back(record.send_id);
+    expected.reserve(kJointsPerArm + 1U);
+    for (std::uint16_t id = 1U; id <= kJointsPerArm + 1U; ++id) {
+      expected.push_back(id);
     }
-    // Ask all seven first, then drain. Requesting one at a time would cost a
+    // Ask all eight first, then drain. Requesting one at a time would cost a
     // full round trip per joint and skew the arm's joints in time relative to
     // each other, which shows up as a rubbery pose in RViz.
+    bool all_requests_sent = true;
     for (const std::uint16_t send_id : expected) {
       if (!request_status(bus, send_id)) {
-        all_complete = false;
+        all_requests_sent = false;
       }
     }
-    const std::vector<MotorRecord> replies =
+    std::vector<MotorRecord> replies =
       collect_replies(bus, expected, config_.reply_timeout_ms);
-    if (replies.size() < kJointsPerArm) {
-      all_complete = false;
-      detail_ = "bus " + config_.interfaces[bus] + " answered with " +
-        std::to_string(replies.size()) + " of " + std::to_string(expected.size()) + " motors";
-      continue;
+    discovered_[bus] = replies;
+    (void)map_motor_records_by_id(replies, reading);
+
+    std::vector<std::uint16_t> missing;
+    for (const std::uint16_t expected_id : expected) {
+      const bool present = std::any_of(
+        replies.begin(), replies.end(),
+        [expected_id](const MotorRecord & record) {return record.send_id == expected_id;});
+      if (!present) {
+        missing.push_back(expected_id);
+      }
     }
-    if (replies.size() > kJointsPerArm) {
-      reading.has_gripper = true;
-      reading.gripper_rad = replies[kJointsPerArm].position_rad;
+    if (!all_requests_sent || !missing.empty()) {
+      all_expected_present = false;
+      std::ostringstream problem;
+      problem << config_.interfaces[bus] << ' ';
+      if (!all_requests_sent) {
+        problem << "could not transmit every refresh";
+        if (!missing.empty()) {
+          problem << "; ";
+        }
+      }
+      if (!missing.empty()) {
+        problem << "missing ID" << (missing.size() == 1U ? " " : "s ");
+        for (std::size_t index = 0; index < missing.size(); ++index) {
+          if (index != 0U) {
+            problem << ',';
+          }
+          problem << static_cast<unsigned>(missing[index]);
+        }
+        problem << " (received " << replies.size() << "/8)";
+      }
+      telemetry_problems.push_back(problem.str());
     }
 
     const std::size_t side = assignment_.resolved ?
       assignment_.side_of_interface[bus] : bus;
     for (std::size_t joint = 0; joint < kJointsPerArm; ++joint) {
-      reading.position_rad[joint] = replies[joint].position_rad;
+      if (!reading.joint_valid[joint]) {
+        continue;
+      }
+      any_joint = true;
       // Velocity and torque scale with the motor type, which the sweep could
       // not know. Re-decode is not possible from the record, so rescale from
       // the DM8009 ranges the sweep assumed to this joint's actual type.
@@ -533,20 +616,36 @@ bool RealObserver::read_once(std::array<BusReading, kBusCount> & out_readings)
       if (oa_can_motor_limits(OA_CAN_MOTOR_DM8009, &assumed) == OA_CAN_OK &&
         oa_can_motor_limits(meta.motor_type[index], &actual) == OA_CAN_OK)
       {
-        reading.velocity_rad_s[joint] = replies[joint].velocity_rad_s *
+        reading.velocity_rad_s[joint] = reading.velocity_rad_s[joint] *
           (actual.velocity_max_rad_s / assumed.velocity_max_rad_s);
         reading.torque_nm[joint] =
-          replies[joint].torque_nm * (actual.torque_max_nm / assumed.torque_max_nm);
+          reading.torque_nm[joint] * (actual.torque_max_nm / assumed.torque_max_nm);
       }
     }
-    reading.complete = true;
-    any_complete = true;
   }
 
-  // A sample is useful when every bus that has motors answered in full. With
-  // one arm connected that is one bus; with none it is a failure, not a
-  // vacuous success.
-  return all_complete && any_complete;
+  // detail_ is operator-facing live health, not a latched fault register. A
+  // transient missed frame must clear as soon as the next complete sample
+  // arrives; otherwise the portal can keep claiming that J2 is absent while
+  // its encoder is once again streaming normally.
+  if (all_expected_present) {
+    detail_ = "live: " + config_.interfaces[0] + " and " + config_.interfaces[1] +
+      " each answered with all expected motor IDs 1..8";
+  } else {
+    std::ostringstream health;
+    health << "live telemetry incomplete: ";
+    for (std::size_t index = 0; index < telemetry_problems.size(); ++index) {
+      if (index != 0U) {
+        health << "; ";
+      }
+      health << telemetry_problems[index];
+    }
+    detail_ = health.str();
+  }
+
+  // Every populated slot came from its exact ID. A partial arm is therefore
+  // useful: the node can update those joints and hold only missing IDs stale.
+  return any_joint;
 }
 
 void RealObserver::swap_sides()

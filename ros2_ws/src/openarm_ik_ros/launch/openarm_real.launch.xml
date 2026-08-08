@@ -2,30 +2,23 @@
 <!--
   Real-hardware counterpart to openarm_ik_rviz.launch.xml.
 
-  Two deliberate differences from the virtual launch:
-
-  - openarm_ik_ros_node is absent. That node runs the simulated controller and
-    publishes its own /joint_states; running it here would fight the observer
-    for the same topic and RViz would show a blend of a real arm and a
-    simulated one.
-  - openarm_real_observer takes its place. It is read-only and starts passive,
-    so bringing this launch up touches nothing on the CAN bus until the portal's
-    Connect button is pressed.
+  The same action-server executable is selected with physical_hardware=true.
+  Its real session starts passive, publishes no simulated state, and cannot
+  energise a motor until the portal's Connect service is explicitly called.
 
   robot_state_publisher is shared with the virtual launch and is still the sole
   TF authority.
 -->
 <launch>
   <arg name="rviz" default="true"/>
-  <!-- Empty leaves the left/right assignment to the observer's automatic
-       identification. Set to "left" or "right" to pin which arm sits on
-       interface_a when the measured pose cannot separate them. -->
-  <arg name="interface_a_side" default=""/>
+  <!-- This installed pair was confirmed by physical motion under the passive
+       observer: can0 is robot-right and can1 is robot-left. -->
   <arg name="interface_a" default="can0"/>
   <arg name="interface_b" default="can1"/>
-  <!-- Connect and zero automatically so a single run-real.sh gives a working
-       view. The Connect button remains for reconnecting after a disconnect. -->
-  <arg name="connect_on_start" default="false"/>
+  <!-- Bit 0 selects robot-left and bit 1 robot-right. -->
+  <arg name="active_side_mask" default="3"/>
+  <!-- Construction is passive. Only the portal's Connect button enables the
+       motors, after fresh encoder feedback seeds every hold target. -->
 
   <node pkg="robot_state_publisher" exec="robot_state_publisher"
         name="robot_state_publisher" output="screen">
@@ -38,12 +31,12 @@
            value="$(command 'cat $(find-pkg-share openarm_ik_ros)/urdf/openarm_v10_bimanual.urdf')"/>
   </node>
 
-  <node pkg="openarm_ik_ros" exec="openarm_real_observer"
-        name="openarm_real_observer" output="screen">
-    <param name="interface_a" value="$(var interface_a)"/>
-    <param name="interface_b" value="$(var interface_b)"/>
-    <param name="interface_a_side" value="$(var interface_a_side)"/>
-    <param name="connect_on_start" value="$(var connect_on_start)"/>
+  <node pkg="openarm_ik_ros" exec="openarm_ik_ros_node"
+        name="openarm_real_controller" output="screen">
+    <param name="physical_hardware" value="true"/>
+    <param name="right_can_interface" value="$(var interface_a)"/>
+    <param name="left_can_interface" value="$(var interface_b)"/>
+    <param name="active_side_mask" value="$(var active_side_mask)"/>
   </node>
 
   <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen"

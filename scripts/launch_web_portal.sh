@@ -31,21 +31,19 @@ Options:
   --no-browser       Print the URL without opening the browser
   --firefox          Open the portal specifically with Firefox
   --no-rviz          Do not open the RViz 3D window
-  --real             Attach to the physical arms through the read-only
-                     observer instead of the simulated controller. Requires
-                     can0/can1 to be up; see scripts/setup_can_interfaces.sh.
+  --real             Use the passive-at-start physical controller instead of
+                     simulation. Pressing Connect can enable and move all 16
+                     motors. Requires can0/can1 to be up.
   -h, --help         Show this help
 
 The 3D view is a real RViz window loaded with a panel-free layout, so it shows
 the render view only. Use scripts/launch_rviz.sh for the full RViz engineering
 layout with the Displays and Views panels.
 
-This launcher is virtual-only. It does not open SocketCAN or control physical
-motors. Portal motion uses a limited sampled nominal virtual prefilter and
-central keepout, and the controller additionally re-proves that keepout from
-measured feedback on every control cycle. Certified collision checking remains
-unavailable (collision_checked=false); this is not physical collision
-certification or a verified scene.
+Without --real this launcher does not open SocketCAN or control physical
+motors. With --real, startup remains disabled until an explicit Connect; the
+controller then uses encoder feedback, sampled path guards, and a live keepout
+monitor. This is not certified collision avoidance or a safety-rated E-stop.
 EOF
 }
 
@@ -83,6 +81,7 @@ while (($#)); do
       ;;
     --no-rviz)
       show_rviz=0
+      shift
       ;;
     --real)
       real_mode=1
@@ -205,9 +204,11 @@ if ((show_rviz)); then
   }
   # The resize flicker that made software rendering the default applies to a
   # window being dragged by hand. This one is captured and streamed, never
-  # resized, and llvmpipe only manages a few frames a second at this size, so
-  # prefer the GPU here. Override with OPENARM_RVIZ_RENDERER as usual.
-  export OPENARM_RVIZ_RENDERER="${OPENARM_RVIZ_RENDERER:-nvidia}"
+  # resized, and llvmpipe only manages a few frames a second at this size. Use
+  # the accelerated integrated GPU by default. Do not force NVIDIA PRIME here:
+  # an unloaded NVIDIA driver makes GLX context creation abort RViz before the
+  # portal can capture a frame. OPENARM_RVIZ_RENDERER still overrides this.
+  export OPENARM_RVIZ_RENDERER="${OPENARM_RVIZ_RENDERER:-integrated}"
   openarm_configure_rviz_environment || exit $?
 fi
 
@@ -282,12 +283,11 @@ trap 'shutdown 129' HUP
 trap 'shutdown 143' TERM
 trap 'shutdown $?' EXIT
 
-# Real mode swaps the simulated controller for the read-only observer. The two
-# must never run together: both publish /joint_states, and RViz would render a
-# blend of a real arm and a simulated one.
+# Real mode swaps the simulated controller for the physical controller. The two
+# must never run together because both publish /joint_states.
 if ((real_mode)); then
   launch_file=openarm_real.launch.xml
-  launch_arguments=(connect_on_start:=true)
+  launch_arguments=()
   portal_arguments=(--port "$port" --real)
 else
   launch_file=openarm_ik_rviz.launch.xml
@@ -334,7 +334,11 @@ done
   exit 1
 }
 
-printf '\nOpenArm virtual portal: %s\n' "$url"
+if ((real_mode)); then
+  printf '\nOpenArm physical portal (motors initially disabled): %s\n' "$url"
+else
+  printf '\nOpenArm virtual portal: %s\n' "$url"
+fi
 printf '%s\n' 'Press Ctrl+C here to stop the portal and ROS.'
 if ((open_browser)); then
   command -v "$browser_command" >/dev/null 2>&1 || {

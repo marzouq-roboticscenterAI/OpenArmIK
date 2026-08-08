@@ -15,8 +15,8 @@ namespace openarm_ik_ros::real
 
 /// URDF revolute joints per arm. The physical arm carries one more motor than
 /// this: a v1.0 bus answers on IDs 0x01..0x08, where 0x01..0x07 drive the
-/// joints and 0x08 drives the gripper. The gripper has no joint in this model's
-/// URDF, so it is read and reported but not published as a joint state.
+/// joints and 0x08 drives the gripper. The arm runtime manifest contains only
+/// the seven revolute joints; the observer appends the URDF finger joints.
 inline constexpr std::size_t kJointsPerArm = 7U;
 inline constexpr std::size_t kBusCount = 2U;
 inline constexpr std::size_t kLeftSide = 0U;
@@ -65,11 +65,30 @@ struct BusReading
   std::array<double, kJointsPerArm> position_rad{};
   std::array<double, kJointsPerArm> velocity_rad_s{};
   std::array<double, kJointsPerArm> torque_nm{};
+  /// True only when that exact joint ID answered this sample. This permits a
+  /// partial arm to update its responding joints without shifting IDs or
+  /// pretending the missing joint was measured.
+  std::array<bool, kJointsPerArm> joint_valid{};
   /// Gripper motor, when the bus carries one. No URDF joint corresponds to it.
   bool has_gripper{false};
   double gripper_rad{0.0};
   bool complete{false};
 };
+
+/// Map records by their actual send IDs. Present joints are populated and
+/// marked in joint_valid; the return value and complete flag are true only when
+/// J1..J7 (IDs 1..7) are all present. ID 8 is the optional gripper. This keeps
+/// a missing joint from shifting a later joint or the gripper into its slot.
+bool map_motor_records_by_id(const std::vector<MotorRecord> & records, BusReading & reading);
+
+/// True only when a received frame is the reply for one of the exact send IDs
+/// requested in the current read cycle. This rejects local-loopback command
+/// frames (notably arbitration ID 0x7ff) before their payload can be decoded as
+/// encoder feedback.
+bool reply_matches_expected(
+  std::uint16_t receive_id, std::uint8_t payload_motor_id,
+  const std::vector<std::uint16_t> & expected_send_ids,
+  std::uint16_t receive_id_offset);
 
 struct ArmAssignment
 {
@@ -80,9 +99,9 @@ struct ArmAssignment
   /// "operator-confirmed", or empty when unresolved.
   std::string method;
   /// "high" only when a human or an explicit parameter settled it. The angle
-  /// heuristic is "low" and must be presented as provisional: it was measured
-  /// getting a real arm backwards, because the motor zeros are uncommissioned
-  /// and absolute angles therefore carry no dependable side information.
+  /// heuristic is "low" and must be presented as provisional because the motor
+  /// zeros are uncommissioned and absolute angles carry no dependable side
+  /// identity.
   std::string confidence{"none"};
   std::string reason;
 };
@@ -110,8 +129,9 @@ public:
   void disconnect();
   bool connected() const {return connected_;}
 
-  /// One synchronous sample of both buses. False if either bus did not answer
-  /// with all seven joints inside the timeout.
+  /// One synchronous sample of both buses. Every call refreshes IDs 1..8 on
+  /// both buses. True when at least one exact J1..J7 record was received.
+  /// Missing joints remain explicitly invalid rather than being mis-mapped.
   bool read_once(std::array<BusReading, kBusCount> & out_readings);
 
   ArmAssignment assignment() const {return assignment_;}

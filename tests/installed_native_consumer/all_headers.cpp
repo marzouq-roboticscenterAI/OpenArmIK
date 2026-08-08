@@ -4,11 +4,17 @@
 #include "openarm_transport.h"
 #include "openarm_commission.h"
 #include "openarm_model.h"
+#include "openarm_route.h"
 #include "openarm_can.h"
 #include "openarm_runtime.h"
 #include "openarm_runtime_units.h"
 
 #include <cstdint>
+#include <type_traits>
+#include <utility>
+
+static_assert(std::is_same_v<std::remove_reference_t<decltype(
+  std::declval<oa_route_request &>().target_tcp_m[0][0])>, double>);
 
 int main() {
     oa_can_frame frame{};

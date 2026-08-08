@@ -4,8 +4,10 @@
  *
  * You move each joint by hand through its full travel while this records what
  * the encoder reports. Select an arm and a motor, press Start, move the joint
- * from one hard stop to the other, press Stop. Repeat for all sixteen motors,
- * then Save.
+ * from one operator-chosen safe limit to the other without forcing a mechanical
+ * stop, return to the relaxed pose, and press Stop. Repeat for all sixteen
+ * motors. Every completed pass is saved automatically; Save creates an
+ * additional explicit checkpoint.
  *
  * READ ONLY, by construction. The motors are never enabled, so the arms stay
  * limp and you are moving dead weight rather than fighting a servo. The only
@@ -48,6 +50,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -80,6 +83,7 @@ typedef struct {
 
 typedef struct {
     char interface[2][IFNAMSIZ];
+    char side[2][16];
     int socket_fd[2];
     oa_track track[OA_ARMS][OA_MOTORS_PER_ARM];
 
@@ -433,7 +437,8 @@ static void on_start(GtkButton *button, gpointer data) {
     gtk_widget_set_sensitive(app->arm_combo, FALSE);
     gtk_widget_set_sensitive(app->motor_combo, FALSE);
     gtk_label_set_text(GTK_LABEL(app->status_label),
-                       "Move this joint slowly from one hard stop to the other, then Stop.");
+                       "Move slowly from relaxed to one safe limit, through relaxed to the "
+                       "other safe limit, return relaxed, then Stop. Never force a stop.");
 }
 
 /* Print a copy-pasteable summary of the sweep just finished.
@@ -445,16 +450,16 @@ static void on_start(GtkButton *button, gpointer data) {
  * never ran.
  */
 static void report_diagnostic(oa_app *app, const oa_track *track) {
-    const char *home = getenv("HOME");
     char path[512];
     FILE *log;
     char line[512];
 
     snprintf(line, sizeof(line),
-             "CALIB %s motor 0x%02x  extent %.2f deg  path %.2f deg  "
+             "CALIB %s %s motor 0x%02x  extent %.2f deg  path %.2f deg  "
              "samples %zu  rate %.1f Hz  reads_ok %lu  dropped %lu  "
              "min %.4f rad  max %.4f rad  first %.4f rad",
-             app->interface[app->active_arm], app->active_motor + 1u,
+             app->side[app->active_arm], app->interface[app->active_arm],
+             app->active_motor + 1u,
              (track->maximum - track->minimum) * 180.0 / OA_PI,
              track->path_length * 180.0 / OA_PI,
              track->count, app->achieved_hz, app->reads_ok, app->reads_failed,
@@ -463,14 +468,20 @@ static void report_diagnostic(oa_app *app, const oa_track *track) {
     printf("%s\n", line);
     fflush(stdout);
 
-    snprintf(path, sizeof(path), "%s/.openarm_calib_diag.log",
-             home != NULL ? home : "/tmp");
+    (void)mkdir("calibration", 0755);
+    snprintf(path, sizeof(path), "calibration/openarm_range_diagnostics.log");
     log = fopen(path, "a");
     if (log != NULL) {
         fprintf(log, "%s\n", line);
         fclose(log);
     }
 }
+
+/* Each completed joint is persisted immediately so a GUI, renderer, or host
+ * failure cannot discard all prior hand-guided work. The visible Save button
+ * remains useful for an explicit checkpoint, but it is no longer the sole
+ * durability boundary. */
+static void save_json(oa_app *app);
 
 static void on_stop(GtkButton *button, gpointer data) {
     oa_app *app = data;
@@ -505,32 +516,36 @@ static void on_stop(GtkButton *button, gpointer data) {
     gtk_label_set_text(GTK_LABEL(app->status_label), text);
     refresh_grid(app);
     report_diagnostic(app, track);
+    save_json(app);
 }
 
-static void on_save(GtkButton *button, gpointer data) {
-    oa_app *app = data;
-    const char *home = getenv("HOME");
+static void save_json(oa_app *app) {
     char path[512];
+    char temporary_path[544];
     struct json_object *root = json_object_new_object();
     struct json_object *arms = json_object_new_array();
     /* Roomy enough for the message plus a full-length path, which is what
      * the truncation warning is about. */
     char text[768];
     unsigned recorded_total = 0;
-    (void)button;
+    (void)mkdir("calibration", 0755);
+    snprintf(path, sizeof(path), "calibration/openarm_hand_range_calibration.json");
+    snprintf(temporary_path, sizeof(temporary_path), "%s.tmp", path);
 
-    snprintf(path, sizeof(path), "%s/.openarm_calibration.json",
-             home != NULL ? home : "/tmp");
-
-    json_object_object_add(root, "schema", json_object_new_string("openarm-hand-calibration-1"));
+    json_object_object_add(root, "schema", json_object_new_string("openarm-hand-calibration-2"));
     json_object_object_add(root, "read_only",
                            json_object_new_string("recorded with motors unpowered; no motor "
                                                   "was enabled, zeroed or commanded"));
+    json_object_object_add(root, "procedure",
+                           json_object_new_string("relaxed -> safe limit A -> safe limit B -> "
+                                                  "relaxed; mechanical stops were not forced"));
     for (unsigned arm = 0; arm < OA_ARMS; ++arm) {
         struct json_object *arm_object = json_object_new_object();
         struct json_object *motors = json_object_new_array();
         json_object_object_add(arm_object, "interface",
                                json_object_new_string(app->interface[arm]));
+        json_object_object_add(arm_object, "side",
+                               json_object_new_string(app->side[arm]));
         for (unsigned motor = 0; motor < OA_MOTORS_PER_ARM; ++motor) {
             const oa_track *track = &app->track[arm][motor];
             struct json_object *motor_object = json_object_new_object();
@@ -575,13 +590,20 @@ static void on_save(GtkButton *button, gpointer data) {
     }
     json_object_object_add(root, "buses", arms);
 
-    if (json_object_to_file_ext(path, root, JSON_C_TO_STRING_PRETTY) == 0) {
+    if (json_object_to_file_ext(temporary_path, root, JSON_C_TO_STRING_PRETTY) == 0 &&
+        rename(temporary_path, path) == 0) {
         snprintf(text, sizeof(text), "Saved %u recorded motor(s) to %s", recorded_total, path);
     } else {
+        (void)unlink(temporary_path);
         snprintf(text, sizeof(text), "Could not write %s", path);
     }
     gtk_label_set_text(GTK_LABEL(app->status_label), text);
     json_object_put(root);
+}
+
+static void on_save(GtkButton *button, gpointer data) {
+    (void)button;
+    save_json(data);
 }
 
 /* ---- GUI --------------------------------------------------------------- */
@@ -603,9 +625,11 @@ static void build_gui(oa_app *app) {
     frame = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(frame),
         "<b>The motors are not powered.</b> Select an arm and motor, press Start, move that "
-        "joint by hand from one hard stop to the other, then press Stop. Repeat for every "
-        "motor, then Save.\n\nEach Stop prints a copy-pasteable summary line to the "
-        "terminal and appends it to ~/.openarm_calib_diag.log");
+        "joint slowly from relaxed to one safe limit, through relaxed to the other safe "
+        "limit, then return relaxed and press Stop. Never force a mechanical stop. Repeat "
+        "for every motor; each Stop saves automatically.\n\nEach Stop prints a copy-pasteable "
+        "summary line to "
+        "the terminal and appends it to calibration/openarm_range_diagnostics.log");
     gtk_label_set_line_wrap(GTK_LABEL(frame), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(frame), 88);
     gtk_label_set_xalign(GTK_LABEL(frame), 0.0f);
@@ -619,7 +643,7 @@ static void build_gui(oa_app *app) {
 
     app->arm_combo = gtk_combo_box_text_new();
     for (unsigned arm = 0; arm < OA_ARMS; ++arm) {
-        snprintf(label, sizeof(label), "%s", app->interface[arm]);
+        snprintf(label, sizeof(label), "%s (%s)", app->side[arm], app->interface[arm]);
         gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(app->arm_combo), label);
     }
     gtk_combo_box_set_active(GTK_COMBO_BOX(app->arm_combo), 0);
@@ -692,6 +716,7 @@ int main(int argc, char **argv) {
     static oa_app app;
     char error[256];
     const char *names[2] = {"can0", "can1"};
+    const char *sides[2] = {"robot-right", "robot-left"};
 
     if (argc >= 3) {
         names[0] = argv[1];
@@ -701,6 +726,7 @@ int main(int argc, char **argv) {
 
     for (unsigned arm = 0; arm < OA_ARMS; ++arm) {
         snprintf(app.interface[arm], IFNAMSIZ, "%s", names[arm]);
+        snprintf(app.side[arm], sizeof(app.side[arm]), "%s", sides[arm]);
         app.socket_fd[arm] = open_can(names[arm], error, sizeof(error));
         if (app.socket_fd[arm] < 0) {
             fprintf(stderr, "openarm_calibrate_gui: %s\n", error);

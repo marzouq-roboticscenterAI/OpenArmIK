@@ -366,6 +366,8 @@ std::vector<std::string> expected_joint_names()
       names.push_back(std::string("openarm_") + side + "_joint" + std::to_string(index));
     }
   }
+  names.push_back("openarm_left_finger_joint1");
+  names.push_back("openarm_right_finger_joint1");
   return names;
 }
 
@@ -475,12 +477,9 @@ int main(int argc, char ** argv)
 
     const JointState state = contract.last_state();
     require(state.name == expected_joint_names(), "unexpected joint name set");
-    for (const std::string & name : state.name) {
-      require(name.find("finger") == std::string::npos, "finger joint leaked into state");
-    }
-    require(state.position.size() == 14u, "expected 14 positions");
-    require(state.velocity.size() == 14u, "expected 14 velocities");
-    require(state.effort.size() == 14u, "expected 14 efforts");
+    require(state.position.size() == 16u, "expected 16 positions including J8 finger state");
+    require(state.velocity.size() == 16u, "expected 16 velocities including J8 finger state");
+    require(state.effort.size() == 16u, "expected 16 efforts including J8 finger state");
     require(state.header.stamp.sec > 0, "joint state has no stamp");
     require(
       contract.node->get_publishers_info_by_topic("/joint_states").size() == 1u,

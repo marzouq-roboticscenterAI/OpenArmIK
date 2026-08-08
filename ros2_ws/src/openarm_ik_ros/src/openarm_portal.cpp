@@ -10,6 +10,7 @@
 #include <boost/beast/http.hpp>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <openarm_control_msgs/action/move_paired_tcp_scaled.hpp>
+#include <openarm_control_msgs/action/move_bimanual.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -55,12 +56,17 @@ namespace http = beast::http;
 using tcp = asio::ip::tcp;
 using Action = openarm_control_msgs::action::MovePairedTcpScaled;
 using GoalHandle = rclcpp_action::ClientGoalHandle<Action>;
+using ContactAction = openarm_control_msgs::action::MoveBimanual;
+using ContactGoalHandle = rclcpp_action::ClientGoalHandle<ContactAction>;
 static_assert(std::is_same_v<Point::value_type, double>);
 static_assert(std::is_same_v<decltype(Action::Goal{}.left_tcp_m.x), double>);
 static_assert(std::is_same_v<decltype(Action::Goal{}.right_tcp_m.z), double>);
 static_assert(std::is_same_v<decltype(Action::Goal{}.motion_limit_scale), double>);
 constexpr auto kStateFreshness = std::chrono::milliseconds(500);
 constexpr auto kDiagnosticFreshness = std::chrono::milliseconds(1500);
+constexpr auto kRouteResumePoll = std::chrono::milliseconds(20);
+constexpr auto kRouteResumeTimeout = std::chrono::seconds(2);
+constexpr std::size_t kMaximumDynamicRouteLegs = 64U;
 volatile std::sig_atomic_t stop_requested = 0;
 
 void signal_handler(int)
@@ -184,7 +190,27 @@ std::filesystem::path installed_share_directory()
   }
   const std::filesystem::path path(std::string(executable.data(), static_cast<std::size_t>(length)));
   const std::filesystem::path prefix = path.parent_path().parent_path().parent_path();
-  return prefix / "share" / "openarm_ik_ros";
+  const std::filesystem::path adjacent = prefix / "share" / "openarm_ik_ros";
+  if (std::filesystem::is_directory(adjacent)) {return adjacent;}
+
+  // With `colcon build --symlink-install`, /proc/self/exe resolves through the
+  // installed symlink to the binary in build/openarm_ik_ros. The three-parent
+  // layout above is correct for a copied install but deliberately cannot find
+  // that package share from the build tree. Resolve the package through the
+  // standard ament prefix search in that case. Assets are still accepted only
+  // after the exact size and pinned SHA-256 checks in ViewerAssets::validate().
+  const char * ament_prefix_path = std::getenv("AMENT_PREFIX_PATH");
+  if (ament_prefix_path != nullptr) {
+    std::istringstream prefixes(ament_prefix_path);
+    std::string candidate_prefix;
+    while (std::getline(prefixes, candidate_prefix, ':')) {
+      if (candidate_prefix.empty()) {continue;}
+      const std::filesystem::path candidate =
+        std::filesystem::path(candidate_prefix) / "share" / "openarm_ik_ros";
+      if (std::filesystem::is_directory(candidate)) {return candidate;}
+    }
+  }
+  return adjacent;
 }
 
 struct StaticAsset
@@ -357,17 +383,23 @@ public:
   : Node("openarm_portal"), real_mode_(real_mode)
   {
     action_ = rclcpp_action::create_client<Action>(this, "/openarm_ik/move_paired_tcp_scaled");
+    contact_action_ = rclcpp_action::create_client<ContactAction>(
+      this, "/openarm_ik/move_bimanual");
     // Latched: the node may start after the portal, and it must still learn
     // whether the box prop belongs in the scene.
     scene_box_publisher_ = create_publisher<std_msgs::msg::Bool>(
       "/openarm_ik/scene_box_enabled",
       rclcpp::QoS(1).reliable().transient_local());
     if (real_mode_) {
-      // Real mode drives a physical arm, so the portal owns no motion path of
-      // its own here: it only relays connect/disconnect to the read-only
-      // observer and mirrors what the observer reports.
+      // The physical ROS node owns motor authority. The portal relays explicit
+      // lifecycle commands and sends motion through the same ROS actions used
+      // by virtual mode.
       real_connect_ = create_client<std_srvs::srv::Trigger>("/openarm_real/connect");
       real_disconnect_ = create_client<std_srvs::srv::Trigger>("/openarm_real/disconnect");
+      real_stop_ = create_client<std_srvs::srv::Trigger>("/openarm_real/stop");
+      real_estop_ = create_client<std_srvs::srv::Trigger>("/openarm_real/estop");
+      real_estop_clear_ = create_client<std_srvs::srv::Trigger>("/openarm_real/estop_clear");
+      real_neutral_ = create_client<std_srvs::srv::Trigger>("/openarm_real/neutral");
       real_swap_ = create_client<std_srvs::srv::Trigger>("/openarm_real/swap_sides");
       real_capture_zero_ = create_client<std_srvs::srv::Trigger>("/openarm_real/capture_zero");
       real_clear_zero_ = create_client<std_srvs::srv::Trigger>("/openarm_real/clear_zero");
@@ -400,37 +432,43 @@ public:
     scene_box_publisher_->publish(message);
   }
 
-  /// Latest observer status, or a placeholder before the first publication.
+  /// Latest physical-controller status, or a placeholder before publication.
   std::string real_status() const
   {
     std::lock_guard<std::mutex> lock(real_mutex_);
     return real_status_.empty() ?
-           std::string("{\"connected\":false,\"detail\":\"observer has not reported yet\"}") :
+           std::string("{\"connected\":false,\"detail\":\"controller has not reported yet\"}") :
            real_status_;
   }
 
-  /// Relay to the observer's connect or disconnect service. Blocking, because
-  /// a sweep of both buses takes hundreds of milliseconds and the operator is
-  /// waiting on the answer; this runs on an HTTP worker, not the ROS thread.
+  /// Relay a physical-controller lifecycle service. This runs on an HTTP
+  /// worker so the ROS executor remains available while Connect inventories
+  /// and seeds all motors.
   bool real_command(const std::string & which, std::string & out_message)
   {
-    const auto client = which == "connect" ? real_connect_ :
-      (which == "disconnect" ? real_disconnect_ :
-      (which == "swap" ? real_swap_ :
-      (which == "capture-zero" ? real_capture_zero_ :
-      (which == "clear-zero" ? real_clear_zero_ :
-      (which == "flip-left" ? real_flip_left_ : real_flip_right_)))));
+    rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr client;
+    if (which == "connect") {client = real_connect_;}
+    else if (which == "disconnect") {client = real_disconnect_;}
+    else if (which == "stop") {client = real_stop_;}
+    else if (which == "estop") {client = real_estop_;}
+    else if (which == "estop-clear") {client = real_estop_clear_;}
+    else if (which == "neutral") {client = real_neutral_;}
+    else if (which == "swap") {client = real_swap_;}
+    else if (which == "capture-zero") {client = real_capture_zero_;}
+    else if (which == "clear-zero") {client = real_clear_zero_;}
+    else if (which == "flip-left") {client = real_flip_left_;}
+    else if (which == "flip-right") {client = real_flip_right_;}
     if (!client) {
       out_message = "portal is not in real mode";
       return false;
     }
     if (!client->wait_for_service(std::chrono::seconds(2))) {
-      out_message = "the real-arm observer is not running";
+      out_message = "the real-arm controller is not running";
       return false;
     }
     auto future = client->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>());
     if (future.wait_for(std::chrono::seconds(20)) != std::future_status::ready) {
-      out_message = "the observer did not answer within 20 s";
+      out_message = "the physical controller did not answer within 20 s";
       return false;
     }
     const auto response = future.get();
@@ -443,15 +481,17 @@ public:
     std::lock_guard<std::mutex> lock(mutex_);
     const std::int64_t time_now = now().nanoseconds();
     const std::int64_t steady_now = steady_now_ns();
-    if (!have_state_ || !fresh_at_use(
-        state_freshness_, time_now, steady_now,
-        std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count()) ||
-      !diagnostic_valid_ || !fresh_at_use(
-        diagnostic_freshness_, time_now, steady_now,
-        std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count()))
+    const bool state_fresh = have_state_ && fresh_at_use(
+      state_freshness_, time_now, steady_now,
+      std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count());
+    const bool diagnostic_fresh = diagnostic_valid_ && fresh_at_use(
+      diagnostic_freshness_, time_now, steady_now,
+      std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count());
+    if (!state_fresh || (!real_mode_ && !diagnostic_fresh))
     {
-      reason = diagnostic_reason_.empty() ?
-        "encoder-derived joint state or controller diagnostics are missing or stale" : diagnostic_reason_;
+      reason = real_mode_ ? "encoder-derived physical joint state is missing or stale" :
+        (diagnostic_reason_.empty() ?
+        "encoder-derived joint state or controller diagnostics are missing or stale" : diagnostic_reason_);
       return false;
     }
     input.measured_q = measured_q_;
@@ -481,7 +521,9 @@ public:
     std::lock_guard<std::mutex> lock(mutex_);
     return portal_state_json(
       fresh, goal_active_ || command_gate_.active(), tcp,
-      fresh ? "Fresh encoder-derived virtual state; controller collision_checked=false" : reason,
+      fresh ? (real_mode_ ?
+      "Fresh encoder-derived physical state; motion remains gated by Connect and E-stop" :
+      "Fresh encoder-derived virtual state; controller collision_checked=false") : reason,
       command_);
   }
 
@@ -534,16 +576,27 @@ public:
 
   bool move(
     const MoveRequest & request, const GuardInput & input,
-    const GuardResult & guard, std::uint64_t guard_token, std::string & reason)
+    const GuardResult & guard, const std::vector<std::array<Point, 2>> & route_waypoints,
+    std::uint64_t guard_token, std::string & reason)
   {
-    if (!action_->wait_for_action_server(std::chrono::milliseconds(0))) {
-      reason = "MovePairedTcpScaled action server is unavailable";
+    const bool intentional_contact = input.require_terminal_contact;
+    if (!intentional_contact && route_waypoints.empty()) {
+      reason = "guarded route contains no executable endpoint";
+      return false;
+    }
+    if (intentional_contact ?
+      !contact_action_->wait_for_action_server(std::chrono::milliseconds(0)) :
+      !action_->wait_for_action_server(std::chrono::milliseconds(0)))
+    {
+      reason = intentional_contact ? "MoveBimanual action server is unavailable" :
+        "MovePairedTcpScaled action server is unavailable";
       return false;
     }
     std::unique_lock<std::mutex> state_lock(mutex_);
     {
       const std::int64_t time_now = now().nanoseconds();
       const std::int64_t steady_now = steady_now_ns();
+      std::string handoff_reason;
       if (!command_gate_.valid(guard_token)) {
         reason = "guard evaluation was canceled before action submission";
         return false;
@@ -551,9 +604,12 @@ public:
       if (stopping_ || stop_requested != 0 || !guard_handoff_valid(
           input, handoff_evidence_locked(), time_now, steady_now,
           std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count(),
-          std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count()))
+          std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count(),
+          &handoff_reason))
       {
-        reason = "measured state changed or became untrusted during guard evaluation; retry";
+        reason = "measured state changed or became untrusted during guard evaluation: " +
+          (handoff_reason.empty() ? std::string("shutdown requested") : handoff_reason) +
+          "; retry";
         return false;
       }
       if (goal_active_) {
@@ -566,103 +622,144 @@ public:
       }
       goal_active_ = true;
       cancel_pending_ = false;
+      if (!intentional_contact) {
+        route_waypoints_ = route_waypoints;
+        route_index_ = 0U;
+        route_motion_limit_scale_ = request.motion_limit_scale;
+        route_terminal_retreat_ = input.terminal_retreat;
+        route_preserved_side_ = request.dual ? -1 :
+          static_cast<int>(request.side == MoveRequest::Side::left ? 1U : 0U);
+        route_replan_count_ = 0U;
+      }
       command_ = guard.target_projected ?
         "Best-effort guard projected the request to " +
         number(guard.achieved_fraction * 100.0) +
         "% of its straight-line ray; waiting for controller goal acceptance. Nominal minimum "
         "clearance " + number(guard.minimum_nominal_clearance_m) +
-        " m. Controller collision_checked remains false." :
-        "Guard accepted the exact request; waiting for controller goal acceptance. Nominal "
+        (real_mode_ ?
+        " m. Physical controller will independently check measured geometry live." :
+        " m. Virtual controller collision_checked remains false.") :
+        "Guard accepted the exact request through " +
+        std::to_string(intentional_contact ? 1U : route_waypoints.size()) +
+        " leg(s); waiting for controller goal acceptance. Nominal "
         "minimum clearance " + number(guard.minimum_nominal_clearance_m) +
-        " m. Controller collision_checked remains false.";
+        (real_mode_ ?
+        " m. Physical controller will independently check measured geometry live." :
+        " m. Virtual controller collision_checked remains false.");
     }
-    Action::Goal goal;
-    goal.header.stamp = now();
-    goal.header.frame_id = "openarm_body_link0";
-    goal.left_tcp_m.x = guard.commanded_tcp[0][0];
-    goal.left_tcp_m.y = guard.commanded_tcp[0][1];
-    goal.left_tcp_m.z = guard.commanded_tcp[0][2];
-    goal.right_tcp_m.x = guard.commanded_tcp[1][0];
-    goal.right_tcp_m.y = guard.commanded_tcp[1][1];
-    goal.right_tcp_m.z = guard.commanded_tcp[1][2];
-    goal.motion_limit_scale = request.motion_limit_scale;
-    rclcpp_action::Client<Action>::SendGoalOptions options;
-    options.goal_response_callback = [this](GoalHandle::SharedPtr handle) {
-        bool cancel = false;
+    if (intentional_contact) {
+      ContactAction::Goal goal;
+      goal.header.stamp = now();
+      goal.header.frame_id = "openarm_body_link0";
+      goal.mode = ContactAction::Goal::MODE_CONVERGE;
+      goal.target_m.x = request.target[0];
+      goal.target_m.y = request.target[1];
+      goal.target_m.z = request.target[2];
+      goal.stop_distance_m = guard.contact_stop_distance_m;
+      goal.contact_torque_fraction = 0.0;
+      goal.motion_limit_scale = request.motion_limit_scale;
+      rclcpp_action::Client<ContactAction>::SendGoalOptions options;
+      options.goal_response_callback = [this](ContactGoalHandle::SharedPtr handle) {
+          bool cancel = false;
+          {
+            std::lock_guard<std::mutex> lock(mutex_);
+            active_contact_goal_ = handle;
+            if (!handle) {
+              goal_active_ = false;
+              cancel_pending_ = false;
+              command_ = "Controller rejected the guarded contact goal.";
+            } else if (cancel_pending_) {
+              cancel = true;
+              command_ = "Software cancellation sent after contact-goal acceptance.";
+            } else {
+              command_ = "Controller accepted scoped terminal-contact goal.";
+            }
+          }
+          if (cancel && handle) {
+            try {contact_action_->async_cancel_goal(handle);} catch (...) {}
+          }
+        };
+      options.feedback_callback = [this](
+        ContactGoalHandle::SharedPtr,
+        const std::shared_ptr<const ContactAction::Feedback> feedback)
         {
           std::lock_guard<std::mutex> lock(mutex_);
-          active_goal_ = handle;
-          if (!handle) {
-            goal_active_ = false;
-            cancel_pending_ = false;
-            command_ = "Controller rejected the guarded goal.";
-          } else if (cancel_pending_) {
-            cancel = true;
-            command_ = "Software cancellation sent after controller acceptance; not a hardwired E-stop.";
-          } else {
-            command_ = "Controller accepted goal; waiting for measured progress.";
+          command_ = "Measured contact approach " +
+            number(feedback->measured_progress * 100.0) + "% (command " +
+            std::to_string(feedback->command_id) + ").";
+        };
+      options.result_callback = [this](const ContactGoalHandle::WrappedResult & wrapped) {
+          std::lock_guard<std::mutex> lock(mutex_);
+          active_contact_goal_.reset();
+          goal_active_ = false;
+          cancel_pending_ = false;
+          if (!wrapped.result) {
+            command_ = "Controller returned no contact result payload.";
+            return;
           }
-        }
-        if (cancel && handle) {
-          try {
-            action_->async_cancel_goal(handle);
-          } catch (const std::exception & error) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            command_ = "Software cancellation request failed: " + std::string(error.what());
-          }
-        }
-      };
-    options.feedback_callback = [this](
-      GoalHandle::SharedPtr, const std::shared_ptr<const Action::Feedback> feedback)
+          command_ = "Scoped contact result: " + wrapped.result->reason +
+            "; cause=" + std::to_string(wrapped.result->cause) +
+            "; outcome=" + std::to_string(wrapped.result->outcome) + ".";
+        };
+      const std::int64_t send_time_now = now().nanoseconds();
+      const std::int64_t send_steady_now = steady_now_ns();
+      std::string handoff_reason;
+      if (stopping_ || stop_requested != 0 || !guard_handoff_valid(
+          input, handoff_evidence_locked(), send_time_now, send_steady_now,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count(),
+          std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count(),
+          &handoff_reason))
       {
-        std::lock_guard<std::mutex> lock(mutex_);
-        command_ = "Measured progress " + number(feedback->measured_progress * 100.0) +
-          "% (command " + std::to_string(feedback->command_id) + ").";
-      };
-    options.result_callback = [this](const GoalHandle::WrappedResult & wrapped) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        active_goal_.reset();
+        goal_active_ = false;
+        reason = "producer state or diagnostics became untrusted before contact action send: " +
+          (handoff_reason.empty() ? std::string("shutdown requested") : handoff_reason) +
+          "; retry";
+        command_ = reason;
+        return false;
+      }
+      try {
+        contact_action_->async_send_goal(goal, options);
+      } catch (const std::exception & error) {
         goal_active_ = false;
         cancel_pending_ = false;
-        if (!wrapped.result) {
-          command_ = "Controller returned no result payload.";
-          return;
-        }
-        command_ = "Measured result: " + wrapped.result->reason +
-          "; controller collision_checked=" +
-          std::string(wrapped.result->collision_checked ? "true" : "false") +
-          "; outcome=" + std::to_string(wrapped.result->outcome) + ".";
-      };
+        active_contact_goal_.reset();
+        reason = error.what();
+        command_ = "Contact goal submission failed: " + reason;
+        return false;
+      }
+      state_lock.unlock();
+      reason = "Both claws are approaching the guarded shared target; the real-time monitor "
+        "stops at the 25 mm expanded rail envelope while every physical STL remains "
+        "separated and every other claw pair, arm pair, and the pole remain enforced";
+      return true;
+    }
     const std::int64_t send_time_now = now().nanoseconds();
     const std::int64_t send_steady_now = steady_now_ns();
+    std::string handoff_reason;
     if (stopping_ || stop_requested != 0 || !guard_handoff_valid(
         input, handoff_evidence_locked(), send_time_now, send_steady_now,
         std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count(),
-        std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count()))
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count(),
+        &handoff_reason))
     {
       goal_active_ = false;
-      reason = "producer state or diagnostics aged out before action send; retry";
+      reason = "producer state or diagnostics became untrusted before action send: " +
+        (handoff_reason.empty() ? std::string("shutdown requested") : handoff_reason) +
+        "; retry";
       command_ = reason;
-      return false;
-    }
-    try {
-      action_->async_send_goal(goal, options);
-    } catch (const std::exception & error) {
-      goal_active_ = false;
-      cancel_pending_ = false;
-      active_goal_.reset();
-      reason = error.what();
-      command_ = "Goal submission failed: " + reason;
+      route_waypoints_.clear();
       return false;
     }
     state_lock.unlock();
+    if (!submit_route_leg(0U, &reason)) {return false;}
     if (request.dual) {
       reason = "Both arms commanded together to Left [" +
         number(guard.commanded_tcp[0][0]) + ", " + number(guard.commanded_tcp[0][1]) +
         ", " + number(guard.commanded_tcp[0][2]) + "] m and Right [" +
         number(guard.commanded_tcp[1][0]) + ", " + number(guard.commanded_tcp[1][1]) +
         ", " + number(guard.commanded_tcp[1][2]) +
-        "] m as one atomic paired command; neither target was projected";
+        "] m through " + std::to_string(route_waypoints.size()) +
+        " guarded paired leg(s); neither target was projected";
       return true;
     }
     const std::size_t selected = request.side == MoveRequest::Side::left ? 0U : 1U;
@@ -676,20 +773,26 @@ public:
       guard.limiting_reason :
       " exact target submitted") +
       (selected == 0U ? "; Right target is the guarded measured TCP" :
-      "; Left target is the guarded measured TCP");
+      "; Left target is the guarded measured TCP") +
+      "; every joint of the unselected arm is preserved through all route legs";
     return true;
   }
 
   std::string cancel()
   {
     GoalHandle::SharedPtr goal;
+    ContactGoalHandle::SharedPtr contact_goal;
     bool guard_canceled = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       goal = active_goal_;
+      contact_goal = active_contact_goal_;
       guard_canceled = command_gate_.cancel();
       cancel_pending_ = goal_active_;
-      command_ = goal ? "Urgent software cancellation requested; not a hardwired E-stop." :
+      if (route_resume_timer_) {route_resume_timer_->cancel();}
+      route_waypoints_.clear();
+      command_ = (goal || contact_goal) ?
+        "Urgent software cancellation requested; not a hardwired E-stop." :
         (goal_active_ ? "Software cancellation queued until the pending goal response; not a hardwired E-stop." :
         (guard_canceled ?
         "In-flight guard evaluation canceled before motion; not a hardwired E-stop." :
@@ -703,6 +806,24 @@ public:
         command_ = "Software cancellation request failed: " + std::string(error.what());
       }
     }
+    if (contact_goal) {
+      try {
+        contact_action_->async_cancel_goal(contact_goal);
+      } catch (const std::exception & error) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        command_ = "Software contact cancellation failed: " + std::string(error.what());
+      }
+    }
+    if (real_mode_) {
+      std::string physical;
+      if (!real_command("stop", physical)) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        command_ += " Physical stop relay failed: " + physical;
+      } else {
+        std::lock_guard<std::mutex> lock(mutex_);
+        command_ += " Physical controller: " + physical + ".";
+      }
+    }
     return command();
   }
 
@@ -711,16 +832,25 @@ public:
   std::string engage_estop()
   {
     oa_runtime_estop_assert();
+    std::string physical;
+    const bool physical_ok = !real_mode_ || real_command("estop", physical);
+    // Physical disable must precede ordinary action cancellation, which can
+    // wait on action/service bookkeeping. The local latch was asserted first,
+    // so no new portal command can enter during this transition.
     (void)cancel();
     return std::string("{\"estop\":\"engaged\",\"asserted\":") +
       (oa_runtime_estop_asserted() != 0U ? "true" : "false") +
       ",\"assertions\":" + std::to_string(oa_runtime_estop_assert_count()) +
-      ",\"note\":\"software interlock; not a hardwired safety-rated E-stop\"}";
+      ",\"physical_disabled\":" + (physical_ok ? "true" : "false") +
+      ",\"note\":\"" + json_escape(physical.empty() ?
+      "software interlock; not a hardwired safety-rated E-stop" : physical) + "\"}";
   }
 
   std::string release_estop()
   {
-    const bool cleared = oa_runtime_estop_clear() == OA_RUNTIME_OK;
+    std::string physical;
+    const bool physical_cleared = !real_mode_ || real_command("estop-clear", physical);
+    const bool cleared = physical_cleared && oa_runtime_estop_clear() == OA_RUNTIME_OK;
     return std::string("{\"estop\":\"") + (cleared ? "released" : "release_failed") +
       "\",\"asserted\":" + (oa_runtime_estop_asserted() != 0U ? "true" : "false") + "}";
   }
@@ -733,7 +863,9 @@ public:
     if (!state(input, tcp, reason)) {
       return "Simulation verification failed without motion: " + reason;
     }
-    return "Simulation verified; no physical calibration was performed. Controller collision_checked=false.";
+    return real_mode_ ?
+      "Physical encoder state and model FK verified without moving; this does not recalibrate motors." :
+      "Simulation verified; no physical calibration was performed. Controller collision_checked=false.";
   }
 
   std::string command() const
@@ -758,6 +890,334 @@ public:
   }
 
 private:
+  void schedule_route_leg(const std::size_t index)
+  {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!goal_active_ || cancel_pending_ || stopping_ || stop_requested != 0 ||
+        index >= route_waypoints_.size())
+      {
+        goal_active_ = false;
+        route_waypoints_.clear();
+        command_ = "guarded route state changed before its next measured-feedback leg";
+        return;
+      }
+      if (route_resume_timer_) {route_resume_timer_->cancel();}
+      route_resume_deadline_steady_ns_ = steady_now_ns() +
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kRouteResumeTimeout).count();
+      command_ = "Guarded route is waiting for fresh idle controller diagnostics before leg " +
+        std::to_string(index + 1U) + ".";
+    }
+    auto resume_timer = create_wall_timer(kRouteResumePoll, [this, index]() {
+        bool ready = false;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (!goal_active_ || cancel_pending_ || stopping_ || stop_requested != 0 ||
+            index >= route_waypoints_.size() || index != route_index_)
+          {
+            if (route_resume_timer_) {route_resume_timer_->cancel();}
+            return;
+          }
+          const std::int64_t time_now = now().nanoseconds();
+          const std::int64_t steady_now = steady_now_ns();
+          ready = have_state_ && diagnostic_valid_ && fresh_at_use(
+            state_freshness_, time_now, steady_now,
+            std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count()) &&
+            fresh_at_use(
+            diagnostic_freshness_, time_now, steady_now,
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+              kDiagnosticFreshness).count());
+          if (ready) {
+            route_resume_timer_->cancel();
+          } else if (steady_now >= route_resume_deadline_steady_ns_) {
+            route_resume_timer_->cancel();
+            goal_active_ = false;
+            active_goal_.reset();
+            route_waypoints_.clear();
+            command_ =
+              "guarded route stopped because fresh idle diagnostics did not arrive before "
+              "the next dynamic leg";
+            return;
+          }
+        }
+        if (ready) {(void)submit_route_leg(index, nullptr);}
+      });
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!goal_active_ || cancel_pending_ || stopping_ || stop_requested != 0 ||
+        index >= route_waypoints_.size() || index != route_index_)
+      {
+        resume_timer->cancel();
+      } else {
+        route_resume_timer_ = std::move(resume_timer);
+      }
+    }
+  }
+
+  bool submit_route_leg(const std::size_t index, std::string * immediate_error)
+  {
+    std::array<Point, 2> endpoint{};
+    std::array<Point, 2> final_target{};
+    std::array<JointVector, 2> measured_q{};
+    GuardInput leg_guarded_input;
+    FreshnessEvidence measured_freshness{};
+    double motion_limit_scale = 0.0;
+    std::size_t route_size = 0U;
+    bool terminal_retreat = false;
+    int preserved_side = -1;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!goal_active_ || cancel_pending_ || stopping_ || stop_requested != 0 ||
+        index >= route_waypoints_.size() || index >= kMaximumDynamicRouteLegs)
+      {
+        const std::string failure = cancel_pending_ ?
+          "guarded route was canceled before its next leg" :
+          "guarded route state changed before its next leg";
+        goal_active_ = false;
+        active_goal_.reset();
+        route_waypoints_.clear();
+        command_ = failure;
+        if (immediate_error != nullptr) {*immediate_error = failure;}
+        return false;
+      }
+      route_index_ = index;
+      endpoint = route_waypoints_[index];
+      final_target = route_waypoints_.back();
+      measured_q = measured_q_;
+      leg_guarded_input.measured_q = measured_q_;
+      leg_guarded_input.state_sequence = state_sequence_;
+      leg_guarded_input.diagnostic_sequence = diagnostic_sequence_;
+      leg_guarded_input.state_freshness = state_freshness_;
+      leg_guarded_input.diagnostic_freshness = diagnostic_freshness_;
+      measured_freshness = state_freshness_;
+      route_size = route_waypoints_.size();
+      motion_limit_scale = route_motion_limit_scale_;
+      terminal_retreat = route_terminal_retreat_;
+      preserved_side = route_preserved_side_;
+      command_ = "Submitting guarded route leg " + std::to_string(index + 1U) +
+        " of " + std::to_string(route_size) + ".";
+    }
+
+    // The route was solved from the previous leg's predicted terminal q.
+    // Re-prove this exact edge from the newest measured q immediately before
+    // submission, so tracking error cannot silently turn it into an unchecked
+    // shortcut. A contact retreat deliberately begins inside the ordinary claw
+    // keepout, so it must retain its separate exact, monotonic escape proof.
+    const std::int64_t route_now_steady = steady_now_ns();
+    if (!fresh_at_use(
+        measured_freshness, now().nanoseconds(), route_now_steady,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count()))
+    {
+      const std::string failure =
+        "guarded route stopped because measured joint state was stale before a leg";
+      std::lock_guard<std::mutex> lock(mutex_);
+      goal_active_ = false;
+      active_goal_.reset();
+      route_waypoints_.clear();
+      command_ = failure;
+      if (immediate_error != nullptr) {*immediate_error = failure;}
+      return false;
+    }
+
+    if (!terminal_retreat) {
+      GuardInput dynamic_input;
+      dynamic_input.measured_q = measured_q;
+      dynamic_input.request.dual = true;
+      dynamic_input.request.dual_target = final_target;
+      dynamic_input.preserved_side = preserved_side;
+      const GuardedRoute replanned = NominalPathGuard().route_or_project(dynamic_input);
+      if (!replanned.accepted || replanned.waypoint_tcp.empty()) {
+        const std::string failure =
+          "dynamic route planner found no safe remaining path from measured feedback: " +
+          replanned.reason;
+        std::lock_guard<std::mutex> lock(mutex_);
+        goal_active_ = false;
+        active_goal_.reset();
+        route_waypoints_.clear();
+        command_ = failure;
+        if (immediate_error != nullptr) {*immediate_error = failure;}
+        return false;
+      }
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!goal_active_ || cancel_pending_ || stopping_ || stop_requested != 0 ||
+          index != route_index_ || index >= route_waypoints_.size() ||
+          route_terminal_retreat_)
+        {
+          const std::string failure =
+            "dynamic route state changed while replanning from measured feedback";
+          goal_active_ = false;
+          active_goal_.reset();
+          route_waypoints_.clear();
+          command_ = failure;
+          if (immediate_error != nullptr) {*immediate_error = failure;}
+          return false;
+        }
+        route_waypoints_.resize(index);
+        route_waypoints_.insert(
+          route_waypoints_.end(), replanned.waypoint_tcp.begin(), replanned.waypoint_tcp.end());
+        endpoint = route_waypoints_[index];
+        route_size = route_waypoints_.size();
+        ++route_replan_count_;
+        command_ = "Dynamically replanned guarded route from measured feedback; submitting leg " +
+          std::to_string(index + 1U) + " with " +
+          std::to_string(replanned.waypoint_tcp.size()) + " remaining leg(s).";
+      }
+    }
+
+    const GuardResult edge_proof = NominalPathGuard().revalidate_direct_leg(
+      measured_q, endpoint, terminal_retreat, preserved_side);
+    if (!edge_proof.accepted) {
+      const std::string failure =
+        std::string(terminal_retreat ?
+        "terminal retreat stopped because its monotonic contact-exit path was no longer "
+        "proven from measured feedback: " :
+        "guarded route stopped because its next direct edge was no longer proven from "
+        "measured feedback: ") + edge_proof.reason;
+      std::lock_guard<std::mutex> lock(mutex_);
+      goal_active_ = false;
+      active_goal_.reset();
+      route_waypoints_.clear();
+      command_ = failure;
+      if (immediate_error != nullptr) {*immediate_error = failure;}
+      return false;
+    }
+
+    // Revalidate the exact encoder/diagnostic generation at action handoff,
+    // after the potentially expensive route and edge proofs. New publications
+    // with equivalent joint codes are accepted; a real measured displacement
+    // cannot be submitted against a path solved from an older pose.
+    {
+      std::string handoff_reason;
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!goal_active_ || cancel_pending_ || stopping_ || stop_requested != 0 ||
+        index != route_index_ || !guard_handoff_valid(
+          leg_guarded_input, handoff_evidence_locked(), now().nanoseconds(), steady_now_ns(),
+          std::chrono::duration_cast<std::chrono::nanoseconds>(kStateFreshness).count(),
+          std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count(),
+          &handoff_reason))
+      {
+        const std::string failure =
+          "dynamic route state changed before action handoff" +
+          (handoff_reason.empty() ? std::string{} : ": " + handoff_reason);
+        goal_active_ = false;
+        active_goal_.reset();
+        route_waypoints_.clear();
+        command_ = failure;
+        if (immediate_error != nullptr) {*immediate_error = failure;}
+        return false;
+      }
+    }
+
+    Action::Goal goal;
+    goal.header.stamp = now();
+    goal.header.frame_id = "openarm_body_link0";
+    goal.left_tcp_m.x = endpoint[0][0];
+    goal.left_tcp_m.y = endpoint[0][1];
+    goal.left_tcp_m.z = endpoint[0][2];
+    goal.right_tcp_m.x = endpoint[1][0];
+    goal.right_tcp_m.y = endpoint[1][1];
+    goal.right_tcp_m.z = endpoint[1][2];
+    goal.motion_limit_scale = motion_limit_scale;
+    goal.preserve_side = preserved_side < 0 ? Action::Goal::PRESERVE_NONE :
+      static_cast<std::uint8_t>(preserved_side + 1);
+    rclcpp_action::Client<Action>::SendGoalOptions options;
+    options.goal_response_callback = [this, index](GoalHandle::SharedPtr handle) {
+        bool cancel = false;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          active_goal_ = handle;
+          if (!handle) {
+            goal_active_ = false;
+            cancel_pending_ = false;
+            route_waypoints_.clear();
+            command_ = "Controller rejected guarded route leg " +
+              std::to_string(index + 1U) + ".";
+          } else if (cancel_pending_ || route_waypoints_.empty()) {
+            cancel = true;
+            command_ = "Software cancellation sent after route-leg acceptance; "
+              "not a hardwired E-stop.";
+          } else {
+            command_ = "Controller accepted guarded route leg " +
+              std::to_string(index + 1U) + " of " +
+              std::to_string(route_waypoints_.size()) +
+              "; waiting for measured progress.";
+          }
+        }
+        if (cancel && handle) {
+          try {
+            action_->async_cancel_goal(handle);
+          } catch (const std::exception & error) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            command_ = "Software cancellation request failed: " + std::string(error.what());
+          }
+        }
+      };
+    options.feedback_callback = [this, index](
+      GoalHandle::SharedPtr, const std::shared_ptr<const Action::Feedback> feedback)
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        command_ = "Guarded route leg " + std::to_string(index + 1U) + " measured progress " +
+          number(feedback->measured_progress * 100.0) + "% (command " +
+          std::to_string(feedback->command_id) + ").";
+      };
+    options.result_callback = [this, index](const GoalHandle::WrappedResult & wrapped) {
+        bool continue_route = false;
+        std::size_t next_index = 0U;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          active_goal_.reset();
+          const bool completed = wrapped.result &&
+            wrapped.result->outcome == Action::Result::OUTCOME_COMPLETED;
+          if (!completed || cancel_pending_ || stopping_ || route_waypoints_.empty() ||
+            index != route_index_)
+          {
+            goal_active_ = false;
+            cancel_pending_ = false;
+            route_waypoints_.clear();
+            command_ = wrapped.result ?
+              "Guarded route stopped at leg " + std::to_string(index + 1U) + ": " +
+              wrapped.result->reason + "; outcome=" +
+              std::to_string(wrapped.result->outcome) + "." :
+              "Controller returned no result payload for guarded route leg " +
+              std::to_string(index + 1U) + ".";
+          } else if (index + 1U < route_waypoints_.size()) {
+            next_index = index + 1U;
+            route_index_ = next_index;
+            command_ = "Guarded route leg " + std::to_string(index + 1U) +
+              " completed; continuing to leg " + std::to_string(next_index + 1U) + ".";
+            continue_route = true;
+          } else {
+            const std::size_t completed_legs = route_waypoints_.size();
+            const std::size_t replans = route_replan_count_;
+            goal_active_ = false;
+            cancel_pending_ = false;
+            route_waypoints_.clear();
+            command_ = "Guarded route completed all " + std::to_string(completed_legs) +
+              " leg(s) with " + std::to_string(replans) +
+              " measured-feedback replan(s): " + wrapped.result->reason +
+              "; controller collision_checked=" +
+              std::string(wrapped.result->collision_checked ? "true" : "false") + ".";
+          }
+        }
+        if (continue_route) {schedule_route_leg(next_index);}
+      };
+    try {
+      action_->async_send_goal(goal, options);
+    } catch (const std::exception & error) {
+      const std::string failure = "Route-leg submission failed: " + std::string(error.what());
+      std::lock_guard<std::mutex> lock(mutex_);
+      goal_active_ = false;
+      cancel_pending_ = false;
+      active_goal_.reset();
+      route_waypoints_.clear();
+      command_ = failure;
+      if (immediate_error != nullptr) {*immediate_error = failure;}
+      return false;
+    }
+    return true;
+  }
+
   GuardHandoffEvidence handoff_evidence_locked() const
   {
     return {
@@ -792,7 +1252,9 @@ private:
       freshness, now().nanoseconds(), freshness.receipt_steady_ns,
       std::chrono::duration_cast<std::chrono::nanoseconds>(kDiagnosticFreshness).count());
     for (const auto & status : message.status) {
-      if (status.name != "openarm_ik_ros/virtual_control") {continue;}
+      const std::string expected_name = real_mode_ ?
+        "openarm_ik_ros/physical_control" : "openarm_ik_ros/virtual_control";
+      if (status.name != expected_name) {continue;}
       auto value = [&status](const std::string & key) {
           for (const auto & item : status.values) {
             if (item.key == key) {return item.value;}
@@ -804,10 +1266,16 @@ private:
       const bool masks = left_expected == "127" && right_expected == "127" &&
         left_expected == value("left_fresh_mask") && right_expected == value("right_fresh_mask") &&
         value("left_fault_mask") == "0" && value("right_fault_mask") == "0";
-      const bool valid = producer_fresh &&
+      const bool authority_valid = real_mode_ ?
+        value("backend") == "physical" &&
+        value("physical_motion_authorized") == "true" &&
+        value("collision_checked") == "true" :
+        value("backend") == "virtual" &&
+        value("physical_motion_authorized") == "false" &&
+        value("collision_checked") == "false";
+      const bool valid = producer_fresh && authority_valid &&
         status.level == diagnostic_msgs::msg::DiagnosticStatus::WARN &&
-        value("backend") == "virtual" && value("physical_motion_authorized") == "false" &&
-        value("collision_checked") == "false" && value("adapter_state") == "idle" &&
+        value("adapter_state") == "idle" &&
         value("lifecycle") == "4" && value("executing") == "false" && masks;
       std::lock_guard<std::mutex> lock(mutex_);
       diagnostic_valid_ = valid;
@@ -834,7 +1302,17 @@ private:
   CommandReservationGate command_gate_;
   std::string command_{"No portal command."};
   GoalHandle::SharedPtr active_goal_;
+  std::vector<std::array<Point, 2>> route_waypoints_;
+  std::size_t route_index_{0U};
+  double route_motion_limit_scale_{kLegacyMotionLimitScale};
+  bool route_terminal_retreat_{false};
+  int route_preserved_side_{-1};
+  std::size_t route_replan_count_{0U};
+  rclcpp::TimerBase::SharedPtr route_resume_timer_;
+  std::int64_t route_resume_deadline_steady_ns_{0};
   rclcpp_action::Client<Action>::SharedPtr action_;
+  ContactGoalHandle::SharedPtr active_contact_goal_;
+  rclcpp_action::Client<ContactAction>::SharedPtr contact_action_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr state_subscription_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr scene_box_publisher_;
   const bool real_mode_{false};
@@ -842,6 +1320,10 @@ private:
   std::string real_status_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_connect_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_disconnect_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_stop_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_estop_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_estop_clear_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_neutral_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_swap_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_capture_zero_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr real_clear_zero_;
@@ -1379,7 +1861,10 @@ private:
       (target != "/api/move" && target != "/api/v2/move" && target != "/api/v3/move" &&
       target != "/api/stop" && target != "/api/verify" && target != "/api/estop" &&
       target != "/api/estop/release" && target != "/api/v3/move-both" &&
+      target != "/api/v3/converge" &&
+      target != "/api/v3/retreat" &&
       target != "/api/real/connect" && target != "/api/real/disconnect" &&
+      target != "/api/real/neutral" &&
       target != "/api/real/swap" && target != "/api/rviz/input" &&
       target != "/api/real/capture-zero" && target != "/api/real/clear-zero" &&
       target != "/api/real/flip-left" && target != "/api/real/flip-right" &&
@@ -1446,6 +1931,7 @@ private:
       return;
     }
     if (target == "/api/real/connect" || target == "/api/real/disconnect" ||
+      target == "/api/real/neutral" ||
       target == "/api/real/swap" || target == "/api/real/capture-zero" ||
       target == "/api/real/clear-zero" || target == "/api/real/flip-left" ||
       target == "/api/real/flip-right")
@@ -1458,10 +1944,11 @@ private:
       std::string message;
       const std::string which = target == "/api/real/connect" ? "connect" :
         (target == "/api/real/disconnect" ? "disconnect" :
+        (target == "/api/real/neutral" ? "neutral" :
         (target == "/api/real/swap" ? "swap" :
         (target == "/api/real/capture-zero" ? "capture-zero" :
         (target == "/api/real/clear-zero" ? "clear-zero" :
-        (target == "/api/real/flip-left" ? "flip-left" : "flip-right")))));
+        (target == "/api/real/flip-left" ? "flip-left" : "flip-right"))))));
       const bool ok = node_->real_command(which, message);
       // On failure the page's shared post() helper reads "error", so emit both
       // rather than leaving it to report a generic "request rejected".
@@ -1500,7 +1987,22 @@ private:
       return;
     }
     MoveRequest move;
-    if (target == "/api/v3/move-both") {
+    bool intentional_contact = false;
+    bool terminal_retreat = false;
+    if (target == "/api/v3/converge") {
+      UnitMoveRequest unit_move;
+      if (!StrictJson::parse_move_v3(request.body(), unit_move, reason) ||
+        !normalise_move_to_metres(unit_move, move, reason))
+      {
+        write_json(stream, http::status::bad_request,
+          "{\"error\":\"" + json_escape(reason) + "\"}");
+        return;
+      }
+      move.dual = true;
+      move.dual_target[0] = move.target;
+      move.dual_target[1] = move.target;
+      intentional_contact = true;
+    } else if (target == "/api/v3/move-both" || target == "/api/v3/retreat") {
       // Both arms to their own targets, in one atomic paired command.
       UnitMoveRequest unit_move;
       Point right_target{};
@@ -1526,6 +2028,7 @@ private:
       move.dual = true;
       move.dual_target[0] = move.target;
       move.dual_target[1] = right_move.target;
+      terminal_retreat = target == "/api/v3/retreat";
     } else if (target == "/api/v2/move" || target == "/api/v3/move") {
       UnitMoveRequest unit_move;
       const bool parsed = target == "/api/v3/move" ?
@@ -1560,23 +2063,60 @@ private:
       return;
     }
     input.request = move;
-    const GuardResult guarded = guard_.validate_or_project(input);
+    input.contact_policy = (intentional_contact || terminal_retreat) ?
+      OA_COLLISION_CONTACT_TERMINAL_CAPS : OA_COLLISION_CONTACT_NONE;
+    input.require_terminal_contact = intentional_contact;
+    input.terminal_retreat = terminal_retreat;
+    GuardedRoute routed;
+    GuardResult guarded;
+    if (intentional_contact) {
+      guarded = guard_.validate_convergence_contact(
+        input, tcp, nominal_contact_stop_distance_m(), 0.001);
+      routed.accepted = guarded.accepted;
+      routed.final = guarded;
+    } else if (terminal_retreat) {
+      guarded = guard_.validate_or_project(input);
+      routed.accepted = guarded.accepted;
+      routed.final = guarded;
+      if (guarded.accepted) {routed.waypoint_tcp.push_back(guarded.commanded_tcp);}
+    } else {
+      routed = guard_.route_or_project(input);
+      guarded = routed.final;
+    }
+    if (intentional_contact && guarded.accepted) {
+      move = input.request;
+    }
     if (!guarded.accepted) {
       write_json(stream, http::status::unprocessable_entity,
-        "{\"error\":\"virtual nominal guard rejected: " + json_escape(guarded.reason) + "\"}");
+        "{\"error\":\"nominal path guard rejected: " + json_escape(guarded.reason) + "\"}");
       return;
     }
-    if (!node_->move(move, input, guarded, guard_token, reason)) {
+    if (!node_->move(move, input, guarded, routed.waypoint_tcp, guard_token, reason)) {
       write_json(stream, http::status::conflict,
         "{\"error\":\"" + json_escape(reason) + "\"}");
       return;
     }
-    if (move.dual) {
+    if (intentional_contact) {
       write_json(stream, http::status::accepted,
-        "{\"message\":\"" + json_escape(reason +
-        "; sampled nominal virtual protection only; controller collision_checked=false") +
+        "{\"message\":\"" + json_escape(reason) +
+        "\",\"contact_policy\":\"expanded_claw_rail_envelope\",\"projected\":false" +
+        ",\"stop_distance_m\":" + json_number(guarded.contact_stop_distance_m) +
+        ",\"planned_hand_gap_m\":" + json_number(guarded.claw_hand_gap_m) + "}");
+    } else if (terminal_retreat) {
+      write_json(stream, http::status::accepted,
+        "{\"message\":\"" + json_escape(reason) +
+        "\",\"contact_policy\":\"terminal_retreat_only\",\"projected\":false}");
+    } else if (move.dual) {
+      const std::string protection = node_->real_mode() ?
+        "; physical controller uses independent live measured collision mitigation" :
+        "; sampled nominal virtual protection only; controller collision_checked=false";
+      write_json(stream, http::status::accepted,
+        "{\"message\":\"" + json_escape(reason + protection) +
         "\",\"projected\":false,\"achieved_fraction\":1" +
         ",\"motion_limit_scale\":" + json_number(move.motion_limit_scale) +
+        ",\"route_legs\":" + std::to_string(routed.waypoint_tcp.size()) +
+        ",\"clearance_recovery\":" +
+        (routed.used_clearance_recovery ? "true" : "false") +
         ",\"left_commanded_m\":[" + json_number(guarded.commanded_tcp[0][0]) + "," +
         json_number(guarded.commanded_tcp[0][1]) + "," +
         json_number(guarded.commanded_tcp[0][2]) +
@@ -1586,12 +2126,17 @@ private:
       return;
     }
     const std::size_t selected = move.side == MoveRequest::Side::left ? 0U : 1U;
+    const std::string protection = node_->real_mode() ?
+      "; physical controller uses independent live measured collision mitigation" :
+      "; sampled nominal virtual protection only; controller collision_checked=false";
     write_json(stream, http::status::accepted,
-      "{\"message\":\"" + json_escape(reason +
-      "; sampled nominal virtual protection only; controller collision_checked=false") +
+      "{\"message\":\"" + json_escape(reason + protection) +
       "\",\"projected\":" + (guarded.target_projected ? "true" : "false") +
       ",\"achieved_fraction\":" + json_number(guarded.achieved_fraction) +
       ",\"motion_limit_scale\":" + json_number(move.motion_limit_scale) +
+      ",\"route_legs\":" + std::to_string(routed.waypoint_tcp.size()) +
+      ",\"clearance_recovery\":" +
+      (routed.used_clearance_recovery ? "true" : "false") +
       ",\"requested_m\":[" + json_number(guarded.requested_tcp[0]) + "," +
       json_number(guarded.requested_tcp[1]) + "," + json_number(guarded.requested_tcp[2]) +
       "],\"commanded_m\":[" + json_number(guarded.commanded_tcp[selected][0]) + "," +

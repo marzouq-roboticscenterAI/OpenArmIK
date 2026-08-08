@@ -652,6 +652,161 @@ oa_can_status oa_can_encode_pos_force(const oa_can_pos_force_command *command,
     return OA_CAN_OK;
 }
 
+static int oa_valid_gripper_calibration(
+    const oa_can_gripper_calibration *calibration) {
+    return calibration != NULL &&
+           oa_valid_version(calibration->struct_size, sizeof(*calibration),
+                            calibration->abi_version) &&
+           isfinite(calibration->closed_motor_position_rad) &&
+           isfinite(calibration->open_motor_position_rad) &&
+           isfinite(calibration->maximum_opening_m) &&
+           calibration->maximum_opening_m > 0.0 &&
+           calibration->open_motor_position_rad !=
+               calibration->closed_motor_position_rad;
+}
+
+oa_can_status oa_can_gripper_motor_position(
+    const oa_can_gripper_calibration *calibration, double opening_m,
+    double *out_motor_position_rad) {
+    double fraction;
+    double motor_position;
+    if (!oa_valid_gripper_calibration(calibration) ||
+        out_motor_position_rad == NULL || !isfinite(opening_m)) {
+        return OA_CAN_EINVAL;
+    }
+    if (opening_m < 0.0 || opening_m > calibration->maximum_opening_m) {
+        return OA_CAN_ERANGE;
+    }
+    if (opening_m == 0.0) {
+        motor_position = calibration->closed_motor_position_rad;
+    } else if (opening_m == calibration->maximum_opening_m) {
+        motor_position = calibration->open_motor_position_rad;
+    } else {
+        fraction = opening_m / calibration->maximum_opening_m;
+        motor_position = calibration->closed_motor_position_rad +
+            fraction * (calibration->open_motor_position_rad -
+                        calibration->closed_motor_position_rad);
+    }
+    if (!isfinite(motor_position)) {
+        return OA_CAN_ERANGE;
+    }
+    *out_motor_position_rad = motor_position;
+    return OA_CAN_OK;
+}
+
+oa_can_status oa_can_gripper_opening(
+    const oa_can_gripper_calibration *calibration, double motor_position_rad,
+    double *out_opening_m) {
+    double opening;
+    if (!oa_valid_gripper_calibration(calibration) || out_opening_m == NULL ||
+        !isfinite(motor_position_rad)) {
+        return OA_CAN_EINVAL;
+    }
+    opening = calibration->maximum_opening_m *
+        (motor_position_rad - calibration->closed_motor_position_rad) /
+        (calibration->open_motor_position_rad -
+         calibration->closed_motor_position_rad);
+    if (!isfinite(opening)) {
+        return OA_CAN_ERANGE;
+    }
+    *out_opening_m = opening;
+    return OA_CAN_OK;
+}
+
+oa_can_status oa_can_encode_gripper_move(
+    const oa_can_gripper_command *command,
+    const oa_can_gripper_calibration *calibration,
+    const oa_can_mit_profile *profile, oa_can_frame *out_frame) {
+    oa_can_pos_force_command wire;
+    double motor_position;
+    double motor_speed;
+    double motor_span;
+    oa_can_status status;
+    if (command == NULL ||
+        !oa_valid_version(command->struct_size, sizeof(*command),
+                          command->abi_version) ||
+        command->reserved != 0u || !oa_valid_gripper_calibration(calibration) ||
+        !oa_valid_profile(profile) || command->send_id != profile->target_send_id ||
+        !isfinite(command->target_opening_m) ||
+        !isfinite(command->maximum_opening_speed_m_s) ||
+        !isfinite(command->maximum_motor_torque_nm)) {
+        return OA_CAN_EINVAL;
+    }
+    if (command->maximum_opening_speed_m_s < 0.0 ||
+        command->maximum_motor_torque_nm <= 0.0 ||
+        command->maximum_motor_torque_nm > profile->tmax_nm) {
+        return OA_CAN_ERANGE;
+    }
+    status = oa_can_gripper_motor_position(
+        calibration, command->target_opening_m, &motor_position);
+    if (status != OA_CAN_OK) {
+        return status;
+    }
+    motor_span = fabs(calibration->open_motor_position_rad -
+                      calibration->closed_motor_position_rad);
+    motor_speed = command->maximum_opening_speed_m_s * motor_span /
+                  calibration->maximum_opening_m;
+    if (!isfinite(motor_speed) || motor_speed > profile->vmax_rad_s ||
+        motor_speed > 100.0) {
+        return OA_CAN_ERANGE;
+    }
+    (void)memset(&wire, 0, sizeof(wire));
+    oa_seed_output(&wire, sizeof(wire));
+    wire.send_id = command->send_id;
+    wire.position_rad = motor_position;
+    wire.max_velocity_rad_s = motor_speed;
+    wire.current_limit_per_unit = command->maximum_motor_torque_nm /
+                                  profile->tmax_nm;
+    return oa_can_encode_pos_force(&wire, profile, out_frame);
+}
+
+static oa_can_status oa_can_encode_gripper_endpoint(
+    uint16_t send_id, double maximum_opening_speed_m_s,
+    double maximum_motor_torque_nm, double target_opening_m,
+    const oa_can_gripper_calibration *calibration,
+    const oa_can_mit_profile *profile, oa_can_frame *out_frame) {
+    oa_can_gripper_command command;
+    (void)memset(&command, 0, sizeof(command));
+    oa_seed_output(&command, sizeof(command));
+    command.send_id = send_id;
+    command.target_opening_m = target_opening_m;
+    command.maximum_opening_speed_m_s = maximum_opening_speed_m_s;
+    command.maximum_motor_torque_nm = maximum_motor_torque_nm;
+    return oa_can_encode_gripper_move(&command, calibration, profile, out_frame);
+}
+
+oa_can_status oa_can_encode_gripper_open(
+    uint16_t send_id, double maximum_opening_speed_m_s,
+    double maximum_motor_torque_nm,
+    const oa_can_gripper_calibration *calibration,
+    const oa_can_mit_profile *profile, oa_can_frame *out_frame) {
+    const double target = calibration == NULL ? 0.0 :
+        calibration->maximum_opening_m;
+    return oa_can_encode_gripper_endpoint(
+        send_id, maximum_opening_speed_m_s, maximum_motor_torque_nm, target,
+        calibration, profile, out_frame);
+}
+
+oa_can_status oa_can_encode_gripper_close(
+    uint16_t send_id, double maximum_opening_speed_m_s,
+    double maximum_motor_torque_nm,
+    const oa_can_gripper_calibration *calibration,
+    const oa_can_mit_profile *profile, oa_can_frame *out_frame) {
+    return oa_can_encode_gripper_endpoint(
+        send_id, maximum_opening_speed_m_s, maximum_motor_torque_nm, 0.0,
+        calibration, profile, out_frame);
+}
+
+oa_can_status oa_can_encode_gripper_grasp(
+    uint16_t send_id, double maximum_opening_speed_m_s,
+    double maximum_motor_torque_nm,
+    const oa_can_gripper_calibration *calibration,
+    const oa_can_mit_profile *profile, oa_can_frame *out_frame) {
+    return oa_can_encode_gripper_close(
+        send_id, maximum_opening_speed_m_s, maximum_motor_torque_nm,
+        calibration, profile, out_frame);
+}
+
 oa_can_status oa_can_validate_manifest(const oa_can_arm_manifest *manifest) {
     uint32_t i;
     uint32_t j;

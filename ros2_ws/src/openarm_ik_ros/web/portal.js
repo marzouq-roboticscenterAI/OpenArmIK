@@ -20,6 +20,8 @@
   let unit = 'cm';
   let seeded = false;
   let measuredM = null;
+  let readOnlyRealMode = false;
+  let realMotionBlocked = false;
   const fieldId = (side, index) => (side === 'left' ? 'l' : 'r') + axes[index];
   for (const side of sides) for (let index = 0; index < 3; ++index) {
     fieldState[fieldId(side, index)] = {valid: false, touched: false};
@@ -108,10 +110,14 @@
   // Posts one dual move and resolves once the portal reports itself idle again.
   // Sending the next waypoint before then is refused with 409, because the
   // session holds its reservation until the goal is terminal.
-  async function runWaypoint(entry) {
+  async function runWaypoint(entry, terminalRetreat = false) {
     const scale = motionLimitScale();
     if (scale === null) throw new Error('Movement limits must remain between 50% and 100%.');
-    const body = {
+    const body = entry.contact_target ? {
+      side: 'left', unit: 'm', x: entry.contact_target[0],
+      y: entry.contact_target[1], z: entry.contact_target[2],
+      motion_limit_scale: scale,
+    } : {
       unit: 'm',
       left_x: entry.left[0], left_y: entry.left[1], left_z: entry.left[2],
       right_x: entry.right[0], right_y: entry.right[1], right_z: entry.right[2],
@@ -124,7 +130,8 @@
     const backoffMs = [300, 600, 1000, 1500, 2000, 3000];
     for (let attempt = 0; attempt <= backoffMs.length; ++attempt) {
       try {
-        await post('/api/v3/move-both', body);
+        await post(entry.contact_target ? '/api/v3/converge' :
+          (terminalRetreat ? '/api/v3/retreat' : '/api/v3/move-both'), body);
         lastError = null;
         break;
       } catch (error) {
@@ -142,7 +149,15 @@
       const response = await fetch('/api/state', {cache: 'no-store', credentials: 'same-origin'});
       const value = await response.json();
       settled = (value.state_fresh && !value.command_active) ? settled + 1 : 0;
-      if (settled >= 3) return;
+      if (settled >= 3) {
+        const completed = entry.contact_target ?
+          /^Scoped contact result: converge_halted_on_proved_contact/.test(value.command) :
+          /^Guarded route completed all \d+ leg\(s\) with \d+ measured-feedback replan\(s\): completed_measured_feedback/.test(value.command);
+        if (!completed) {
+          throw new Error('Waypoint stopped before completion: ' + value.command);
+        }
+        return;
+      }
     }
     throw new Error('Waypoint did not finish within 60 s.');
   }
@@ -161,19 +176,44 @@
     setSequenceButtons(true);
     clearError();
     try {
-      for (let index = 0; index < sequence.steps.length; ++index) {
-        const entry = demoById[sequence.steps[index]];
+      let steps = sequence.steps.slice();
+      if (sequence.entry_steps) {
+        const response = await fetch('/api/state', {cache: 'no-store', credentials: 'same-origin'});
+        const latest = await response.json();
+        if (!response.ok || !latest.state_fresh) {
+          throw new Error('Fresh measured state is required before starting a contact demo.');
+        }
+        const open = demoById.clap_open;
+        const squaredDistance = side => open[side].reduce((sum, value, axis) => {
+          const delta = latest[side][axis] - value;
+          return sum + delta * delta;
+        }, 0);
+        // A completed Heart/Clap leaves both claws at clap_open, so a repeat
+        // starts immediately. Fresh startup and low/mid poses take the exact
+        // branch-continuous entry that is covered by the native guard tests.
+        if (squaredDistance('left') > 0.0025 || squaredDistance('right') > 0.0025) {
+          steps = sequence.entry_steps.concat(steps);
+        }
+      }
+      let previousWasContact = false;
+      for (let index = 0; index < steps.length; ++index) {
+        const entry = demoById[steps[index]];
         $('demo-progress').textContent =
-          sequence.label + ': step ' + (index + 1) + ' of ' + sequence.steps.length +
+          sequence.label + ': step ' + (index + 1) + ' of ' + steps.length +
           ' (' + entry.label + ')';
         applyDemo(entry);
-        await runWaypoint(entry);
+        await runWaypoint(entry, previousWasContact && !entry.contact_target);
+        previousWasContact = Boolean(entry.contact_target);
       }
       $('demo-progress').textContent = sequence.label + ': finished.';
     } catch (error) {
       $('demo-progress').textContent = sequence.label + ': stopped.';
       setError(error.message);
     } finally {
+      // Marker topics are transient-local: an ADD remains in RViz until an
+      // explicit DELETE arrives. Always remove the pick/place prop, including
+      // after a stopped or failed sequence.
+      if (sequence.id === 'pick_place') await setSceneBox(false);
       sequenceRunning = false;
       setSequenceButtons(false);
     }
@@ -181,7 +221,7 @@
   function setSequenceButtons(disabled) {
     for (const sequence of sequences) {
       const button = $('demo-seq-' + sequence.id);
-      if (button) button.disabled = disabled;
+      if (button) button.disabled = disabled || realMotionBlocked;
     }
   }
   function renderDemoSequences() {
@@ -227,7 +267,7 @@
       const value = await response.json();
       if (!response.ok || value.coordinate_unit !== 'm') throw new Error('unexpected state response');
       $('status').textContent = value.command;
-      const ok = value.state_fresh && !value.command_active;
+      const ok = value.state_fresh && !value.command_active && !readOnlyRealMode;
       $('left').disabled = !ok; $('right').disabled = !ok; $('both').disabled = !ok; $('age').textContent = value.summary;
       if (value.state_fresh) {
         measuredM = {left: value.left, right: value.right};
@@ -306,47 +346,31 @@
     panel.className = 'controls';
     panel.innerHTML =
       '<h2>Physical arm</h2>' +
-      '<p id="real-detail">Passive. Nothing has been sent to the CAN bus.</p>' +
-      '<p><button id="real-connect" type="button">Connect</button> ' +
-      '<button id="real-disconnect" type="button" disabled>Disconnect</button> ' +
-      '<button id="real-swap" type="button" disabled>Swap arms</button> ' +
-      '<button id="real-zero" type="button" disabled>Capture zero here</button> ' +
-      '<button id="real-unzero" type="button" disabled>Clear zero</button></p>' +
-      '<p><button id="real-estop" type="button" class="stop">EMERGENCY STOP</button></p>' +
-      '<p id="real-estop-note" class="caption">Asserts the process-wide E-stop and drops the '
-      + 'CAN connection, so nothing in this stack can transmit. Be clear on what it is not: '
-      + 'this build is read-only and cannot move a motor, so today the E-stop has nothing to '
-      + 'interrupt. It is a latch that will gate powered calibration. It cannot stop a motor '
-      + 'that already holds a target, and it is not a substitute for the hardware stop.</p>' +
-      '<p><button id="real-calibrate" type="button" disabled>Auto-calibrate (not built yet)'
-      + '</button></p>' +
-      '<p class="caption">Powered calibration is designed but not implemented, so this is '
-      + 'deliberately inert rather than a button that appears to work. The design is in '
-      + 'codex.md: motor timeout watchdog first, then a slow single-joint sweep that detects '
-      + 'limits by following error rather than torque, then direction and left/right derived '
-      + 'from the measured ranges.</p>' +
-      '<p><button id="real-flip-left" type="button" disabled>Flip LEFT arm direction</button> ' +
-      '<button id="real-flip-right" type="button" disabled>Flip RIGHT arm direction</button></p>' +
-      '<p class="caption">If moving an arm outward makes it swing inward on screen, flip '
-      + 'that arm. The motor mounting orientation is not reported anywhere on the bus and '
-      + 'the model manifest does not match this hardware, so this is set by looking at the '
-      + 'robot. It is saved and reloaded next launch.</p>' +
-      '<p class="caption">The motors measure from their own encoder zero, which is not '
-      + 'the URDF zero, so a resting arm renders lifted. To fix it: note the pose shown '
-      + 'before connecting (that IS the URDF zero pose), put the real arms into it, then '
-      + 'press Capture zero here. The offset is saved and reloaded next launch.</p>' +
+      '<p id="real-detail">Passive. Motors are disabled.</p>' +
+      '<p><button id="real-connect" type="button">Connect and enable motors</button></p>' +
+      '<p><button id="real-neutral" type="button" disabled>Return both arms to Neutral</button></p>' +
+      '<p><button id="real-estop" type="button" class="stop">EMERGENCY STOP</button> ' +
+      '<button id="real-estop-release" type="button" disabled>Release E-stop (motors stay disabled)</button></p>' +
+      '<p id="real-estop-note" class="caption">The software E-stop has supremacy over motion: '
+      + 'it cancels the active command, sends repeated disable frames to all 16 motors, and '
+      + 'closes both CAN sockets. It is not a substitute for the hardwired stop.</p>' +
+      '<p class="caption">Connect requires fresh encoder feedback from motor IDs 1..8 on both '
+      + 'arms. Every target is seeded from the measured pose, gains ramp in gradually, and '
+      + 'Disconnect disables every motor. Neutral uses live collision-aware route recovery.</p>' +
       '<p id="real-confidence"></p>' +
       '<p id="real-inventory"></p>' +
-      '<p class="notice">This build is read-only: it polls motor status and mirrors the ' +
-      'measured pose in the 3D view. It cannot enable, zero, or move a motor.</p>';
+      '<p class="notice">The box in Pick/place is an RViz-only prop. The physical arms mimic ' +
+      'the trajectory in empty space; the grippers hold their measured opening.</p>';
     document.querySelector('main').prepend(panel);
     return panel;
   }
   function describeBus(bus) {
-    if (!bus.motor_count) return bus.interface + ': silent (no motors answered)';
-    const ids = bus.motors.map(m => '0x' + m.send_id.toString(16).padStart(2, '0')).join(' ');
-    return bus.interface + ': ' + bus.motor_count + ' motors as the ' + bus.side +
-      ' arm [' + ids + ']';
+    const name = bus.interface || bus.name || 'CAN';
+    const count = bus.motor_count || (Array.isArray(bus.motors) ? bus.motors.length : bus.motors) || 0;
+    if (!count) return name + ': silent (no motors answered)';
+    const ids = Array.isArray(bus.motors) ?
+      ' [' + bus.motors.map(m => '0x' + m.send_id.toString(16).padStart(2, '0')).join(' ') + ']' : '';
+    return name + ': ' + count + ' motors as the ' + bus.side + ' arm' + ids;
   }
   function setRealOverlay(text) {
     const frame = document.querySelector('.viewer .frame');
@@ -368,17 +392,18 @@
     if (!observer) return;
     // A motionless robot looks identical whether the stack is passive or the
     // arms are simply still, so say which it is on the view itself.
-    setRealOverlay(!observer.connected ?
-      'PASSIVE \u2014 press Connect to read the arms' :
-      (!observer.resolved ? 'CONNECTED, but the arms are not identified' : ''));
+    setRealOverlay(observer.estop ? 'E-STOP LATCHED \u2014 motors disabled' : (!observer.connected ?
+      'PASSIVE \u2014 press Connect to enable the arms' :
+      (!observer.resolved ? 'CONNECTED, but the arms are not identified' : '')));
     $('real-detail').textContent = observer.detail || '';
-    $('real-connect').disabled = observer.connected;
-    $('real-disconnect').disabled = !observer.connected;
-    $('real-swap').disabled = !observer.resolved;
-    $('real-zero').disabled = !observer.resolved;
-    $('real-unzero').disabled = !observer.connected;
-    $('real-flip-left').disabled = !observer.connected;
-    $('real-flip-right').disabled = !observer.connected;
+    readOnlyRealMode = !observer.armed || Boolean(observer.busy);
+    realMotionBlocked = readOnlyRealMode;
+    setSequenceButtons(sequenceRunning);
+    $('real-connect').disabled = Boolean(observer.estop);
+    $('real-connect').textContent = observer.connected ?
+      'Disconnect and disable motors' : 'Connect and enable motors';
+    $('real-neutral').disabled = !observer.armed || Boolean(observer.busy);
+    $('real-estop-release').disabled = !observer.estop;
     // The angle heuristic has been measured getting a real arm backwards, so
     // say so rather than presenting a guess as a determination.
     $('real-confidence').textContent = !observer.resolved ? '' :
@@ -400,46 +425,35 @@
       status = await (await fetch('/api/real/status', {credentials: 'same-origin'})).json();
     } catch (_) {return;}
     if (!status.enabled) return;
+    readOnlyRealMode = true;
+    // Real-arm commissioning is intentionally pinned to the slowest exposed
+    // trajectory scale.  The physical backend independently enforces the
+    // same cap, so this UI setting is truthful rather than the safety gate.
+    $('motion-limit-scale').value = '50';
+    $('motion-limit-scale').max = '50';
+    updateMotionLimit();
     renderRealPanel();
-    // No planner or simulated controller is running behind a real arm, so the
-    // motion controls would post into a void. Disable them rather than let
-    // them fail obscurely.
-    for (const id of ['left', 'right', 'both', 'verify', 'stop']) {
-      const control = $(id);
-      if (control) {control.disabled = true; control.title = 'Read-only observation mode';}
-    }
     $('real-connect').addEventListener('click', async () => {
       $('real-connect').disabled = true;
-      $('real-detail').textContent = 'Sweeping both buses for motors...';
+      const disconnecting = status.observer && status.observer.connected;
+      $('real-detail').textContent = disconnecting ?
+        'Disabling all motors...' : 'Reading all 16 encoders before enable...';
       try {
-        const result = await post('/api/real/connect');
+        const latest = await (await fetch('/api/real/status', {credentials: 'same-origin'})).json();
+        const path = latest.observer && latest.observer.connected ?
+          '/api/real/disconnect' : '/api/real/connect';
+        const result = await post(path);
         $('real-detail').textContent = result.message;
       } catch (error) {
         $('real-detail').textContent = error.message;
       }
       pollRealStatus();
     });
-    for (const [id, path] of [['real-zero', '/api/real/capture-zero'],
-                              ['real-unzero', '/api/real/clear-zero'],
-                              ['real-flip-left', '/api/real/flip-left'],
-                              ['real-flip-right', '/api/real/flip-right']]) {
-      $(id).addEventListener('click', async () => {
-        try {
-          const result = await post(path);
-          $('real-detail').textContent = result.message;
-        } catch (error) {$('real-detail').textContent = error.message;}
-        pollRealStatus();
-      });
-    }
-    $('real-swap').addEventListener('click', async () => {
+    $('real-neutral').addEventListener('click', async () => {
       try {
-        const result = await post('/api/real/swap');
+        const result = await post('/api/real/neutral');
         $('real-detail').textContent = result.message;
       } catch (error) {$('real-detail').textContent = error.message;}
-      pollRealStatus();
-    });
-    $('real-disconnect').addEventListener('click', async () => {
-      try {await post('/api/real/disconnect');} catch (error) {$('real-detail').textContent = error.message;}
       pollRealStatus();
     });
     applyRealStatus(status.observer);
@@ -447,19 +461,21 @@
     // outside the status-driven enable/disable logic and never disabled.
     $('real-estop').addEventListener('click', async () => {
       $('real-estop-note').textContent = 'Stopping...';
-      const outcome = [];
-      // Assert first, then drop the bus. Order matters: asserting latches the
-      // stop even if the disconnect then fails.
-      for (const path of ['/api/estop', '/api/real/disconnect']) {
-        try {
-          await post(path);
-          outcome.push(path + ' ok');
-        } catch (error) {
-          outcome.push(path + ' FAILED: ' + error.message);
-        }
-      }
-      $('real-estop-note').textContent = 'E-STOP asserted. ' + outcome.join('; ') +
+      let outcome = 'controller confirmed disable';
+      try {
+        const result = await post('/api/estop');
+        if (!result.physical_disabled) outcome = 'FAILED: ' + result.note;
+      } catch (error) {outcome = 'FAILED: ' + error.message;}
+      $('real-estop-note').textContent = 'E-STOP asserted; ' + outcome +
         '. Press the hardware stop if anything is still moving.';
+      pollRealStatus();
+    });
+    $('real-estop-release').addEventListener('click', async () => {
+      try {
+        await post('/api/estop/release');
+        $('real-estop-note').textContent =
+          'E-stop released. Motors remain disabled; press Connect when the workspace is clear.';
+      } catch (error) {$('real-estop-note').textContent = error.message;}
       pollRealStatus();
     });
     $('real-connect').focus();

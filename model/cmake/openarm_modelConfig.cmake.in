@@ -1,5 +1,8 @@
 @PACKAGE_INIT@
 
+include(CMakeFindDependencyMacro)
+find_dependency(fcl)
+
 include("${CMAKE_CURRENT_LIST_DIR}/openarm_modelTargets.cmake")
 if(NOT TARGET OpenArm::Model)
   add_library(OpenArm::Model INTERFACE IMPORTED)

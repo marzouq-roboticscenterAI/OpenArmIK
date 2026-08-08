@@ -537,6 +537,37 @@ extern "C" oa_control_status oa_controller_plan_centroid_tcp(
     });
 }
 
+extern "C" oa_control_status oa_controller_plan_centroid_tcp_with_units(
+    oa_controller *controller, const oa_centroid_tcp_move_with_units *request,
+    oa_motion_plan **out) {
+    if (!valid_record(request) || request->reserved0 != 0U || out == nullptr) {
+        return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1
+                   ? OA_CONTROL_EABI
+                   : OA_CONTROL_EINVAL;
+    }
+    oa_vec3d target_m{};
+    if (oa_vec3d_convert(&request->target_centroid, request->coordinate_unit,
+                         OA_LENGTH_UNIT_METRES, &target_m) != OA_UNITS_OK) {
+        return OA_CONTROL_EINVAL;
+    }
+    oa_centroid_tcp_move converted{};
+    converted.struct_size = sizeof(converted);
+    converted.abi_version = OA_CONTROL_ABI_V1;
+    converted.expiry_ns = request->expiry_ns;
+    std::copy_n(request->required_feedback_seq, 2U, converted.required_feedback_seq);
+    converted.target_centroid_m[0] = target_m.x;
+    converted.target_centroid_m[1] = target_m.y;
+    converted.target_centroid_m[2] = target_m.z;
+    converted.velocity_scale = request->velocity_scale;
+    converted.acceleration_scale = request->acceleration_scale;
+    converted.jerk_scale = request->jerk_scale;
+    converted.tcp_tol_m = request->tcp_tol_m;
+    converted.collision_scene_revision = request->collision_scene_revision;
+    converted.max_branch_step_rad = request->max_branch_step_rad;
+    converted.min_singular_value = request->min_singular_value;
+    return oa_controller_plan_centroid_tcp(controller, &converted, out);
+}
+
 extern "C" oa_control_status oa_controller_plan_mirrored_tcp(
     oa_controller *controller, const oa_mirrored_tcp_move *request,
     oa_motion_plan **out) {
@@ -560,6 +591,39 @@ extern "C" oa_control_status oa_controller_plan_mirrored_tcp(
     });
 }
 
+extern "C" oa_control_status oa_controller_plan_mirrored_tcp_with_units(
+    oa_controller *controller, const oa_mirrored_tcp_move_with_units *request,
+    oa_motion_plan **out) {
+    if (!valid_record(request) || request->reserved0 != 0U ||
+        request->reserved1 != 0U || out == nullptr) {
+        return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1
+                   ? OA_CONTROL_EABI
+                   : OA_CONTROL_EINVAL;
+    }
+    oa_vec3d target_m{};
+    if (oa_vec3d_convert(&request->lead_tcp, request->coordinate_unit,
+                         OA_LENGTH_UNIT_METRES, &target_m) != OA_UNITS_OK) {
+        return OA_CONTROL_EINVAL;
+    }
+    oa_mirrored_tcp_move converted{};
+    converted.struct_size = sizeof(converted);
+    converted.abi_version = OA_CONTROL_ABI_V1;
+    converted.expiry_ns = request->expiry_ns;
+    std::copy_n(request->required_feedback_seq, 2U, converted.required_feedback_seq);
+    converted.lead_side = request->lead_side;
+    converted.lead_tcp_m[0] = target_m.x;
+    converted.lead_tcp_m[1] = target_m.y;
+    converted.lead_tcp_m[2] = target_m.z;
+    converted.velocity_scale = request->velocity_scale;
+    converted.acceleration_scale = request->acceleration_scale;
+    converted.jerk_scale = request->jerk_scale;
+    converted.tcp_tol_m = request->tcp_tol_m;
+    converted.collision_scene_revision = request->collision_scene_revision;
+    converted.max_branch_step_rad = request->max_branch_step_rad;
+    converted.min_singular_value = request->min_singular_value;
+    return oa_controller_plan_mirrored_tcp(controller, &converted, out);
+}
+
 extern "C" oa_control_status oa_controller_plan_converge_tcp(
     oa_controller *controller, const oa_converge_tcp_move *request,
     oa_motion_plan **out) {
@@ -581,6 +645,43 @@ extern "C" oa_control_status oa_controller_plan_converge_tcp(
         *out = publish_immutable(plan_registry(), handle, std::move(slot));
         return OA_CONTROL_OK;
     });
+}
+
+extern "C" oa_control_status oa_controller_plan_converge_tcp_with_units(
+    oa_controller *controller, const oa_converge_tcp_move_with_units *request,
+    oa_motion_plan **out) {
+    if (!valid_record(request) || request->reserved0 != 0U ||
+        request->reserved1 != 0U || out == nullptr) {
+        return request != nullptr && request->abi_version != OA_CONTROL_ABI_V1
+                   ? OA_CONTROL_EABI
+                   : OA_CONTROL_EINVAL;
+    }
+    oa_vec3d target_m{};
+    if (oa_vec3d_convert(&request->target, request->coordinate_unit,
+                         OA_LENGTH_UNIT_METRES, &target_m) != OA_UNITS_OK) {
+        return OA_CONTROL_EINVAL;
+    }
+    oa_converge_tcp_move converted{};
+    converted.struct_size = sizeof(converted);
+    converted.abi_version = OA_CONTROL_ABI_V1;
+    converted.expiry_ns = request->expiry_ns;
+    std::copy_n(request->required_feedback_seq, 2U, converted.required_feedback_seq);
+    converted.target_m[0] = target_m.x;
+    converted.target_m[1] = target_m.y;
+    converted.target_m[2] = target_m.z;
+    std::copy_n(request->contact_torque_nm, 7U, converted.contact_torque_nm);
+    converted.contact_torque_fraction = request->contact_torque_fraction;
+    converted.contact_persistence_cycles = request->contact_persistence_cycles;
+    converted.stop_distance_m = request->stop_distance_m;
+    converted.minimum_progress_m = request->minimum_progress_m;
+    converted.velocity_scale = request->velocity_scale;
+    converted.acceleration_scale = request->acceleration_scale;
+    converted.jerk_scale = request->jerk_scale;
+    converted.tcp_tol_m = request->tcp_tol_m;
+    converted.collision_scene_revision = request->collision_scene_revision;
+    converted.max_branch_step_rad = request->max_branch_step_rad;
+    converted.min_singular_value = request->min_singular_value;
+    return oa_controller_plan_converge_tcp(controller, &converted, out);
 }
 
 extern "C" oa_control_status oa_controller_get_contact_report(

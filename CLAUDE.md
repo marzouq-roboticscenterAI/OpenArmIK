@@ -14,7 +14,8 @@ behind opaque handles, layered `model` → `can` → `transport` → `commission
 Two entry points:
 
 - `./run.sh` — virtual stack. Simulated controller, no CAN. Safe.
-- `./run-real.sh` — physical arms. Read-only observer; cannot move a motor.
+- `./run-real.sh` — physical arms. Passive at startup; explicit Connect can
+  validate, enable, and move all 16 motors.
 - `./calib.sh` — hand-guided calibration GUI (GTK, C). **Superseded, see below.**
 - `./dread.sh` — third-party calibration wizard. **Use this one.**
 
@@ -24,9 +25,17 @@ Two entry points:
 bash scripts/build.sh --tests
 ```
 
-That is the only command that verifies everything: native CTest for `can`,
-`model`, `commission`, `transport`, plus the ROS suites, plus a gate asserting an
-exact registered test count.
+That command builds and runs every native CTest and proves that exactly 18 ROS
+tests are registered. It does not execute the ROS tests. Run those from the
+freshly sourced install:
+
+```bash
+set +u
+source /opt/ros/lyrical/setup.bash
+source ros2_ws/install/setup.bash
+set -u
+ctest --test-dir ros2_ws/build/openarm_ik_ros --output-on-failure -j1
+```
 
 A bare `colcon test` after a non-testing build prints
 `0 tests, 0 errors, 0 failures`. That is a **vacuous pass** — the test targets
@@ -97,6 +106,24 @@ strictly improving: the first cycles of a retreat often measure equal clearance,
 and demanding improvement stalls the escape on cycle one. This was a real bug —
 arms were trapped after converge until the rule was changed.
 
+Intentional terminal contact has an additional controller-side retreat proof.
+If a paired command starts with only the mutually facing terminal 6/6 caps
+inside the 10 mm floor, every planned waypoint must keep all protected pairs
+clear, terminal clearance must be monotonic while active, and the path must end
+outside the corridor. Only then does the plan carry the scoped tip policy. The
+virtual tangent stop applies only to contact-monitored converge, never to this
+retreat.
+
+The exception is now additionally gated by exact pinned claw geometry. A narrow
+C++ FCL backend evaluates `hand.stl` and both fixed-opening `finger.stl` meshes
+behind the public C collision API, using binary64 throughout. No STL contact is
+allowed: the facing hand housings target a 24 mm gap and the guard rejects any
+endpoint below 23 mm. All eight other cross-claw mesh combinations retain
+25 mm. The portal searches a branch-specific 15--70 mm stop radius, while the
+feedback monitor stops virtual and physical backends on entry into the expanded
+25 mm rail envelope. Never restore a fixed 73/45 mm assumption: position-only
+IK can reach the same XYZ with a different hand orientation.
+
 **Do not map every `STOPPED` event to `COMPLETED`.** That was tried and masked
 real failures: pick-place reported all seven steps complete while the arms sat
 8 cm off target. `complete_on_contact()` is narrow on purpose.
@@ -117,13 +144,12 @@ real failures: pick-place reported all seven steps complete while the arms sat
 
 1. **Motor IDs** — identical on both buses.
 2. **Registers** — `DIRECTION` reads +1.0 on all 16 motors; serial bytes match.
-3. **Absolute joint angles vs mirrored limits** — got a real arm backwards.
-   Motor zeros are not commissioned to URDF zeros, so absolute angles carry no
-   side information. Applying the manifest's `q_scale`/`q_offset` does not
-   rescue it.
+3. **Absolute joint angles vs mirrored limits** — happened to match this pair,
+   but motor zeros are not commissioned to URDF zeros, so it is not a general
+   side identity mechanism.
 4. **Upstream convention** — `openarm.bimanual.launch.py` declares
    `right_can_interface:=can0`, `left:=can1`. That is a default, not a
-   measurement, and it is the reverse of how this rig is wired.
+   measurement. It does match the operator-confirmed mapping on this rig.
 
 The observer therefore reports a **guess** with `confidence: "low"` and offers
 **Swap arms**. The only sound automatic method left is a motion-delta test,
@@ -150,18 +176,28 @@ nothing, so the arm stays limp and back-drivable. Use `./dread.sh`.
   the box to its shelf pose so re-enabling starts clean.
 
 - Real mode is `launch_web_portal.sh --real`, a flag rather than a fork. It
-  swaps in `openarm_real.launch.xml`, which **omits** `openarm_ik_ros_node`:
-  that and the observer both publish `/joint_states`, and running both renders a
-  blend of a real arm and a simulated one.
+  swaps in `openarm_real.launch.xml`, which runs `openarm_ik_ros_node` with
+  `physical_hardware=true`. Do not also run the legacy observer or virtual
+  node: each is a `/joint_states` authority.
 - Real mode loads the **full** URDF, not the Stage-A visualization one. Stage-A
   rewrites the prismatic finger joints to `fixed`, and a fixed joint cannot move
   whatever is published, so the claws render dead.
-- The observer publishes `/joint_states` **even while passive**. Going silent
-  makes the robot vanish from RViz, and an idle stack then looks broken.
+- The physical controller publishes encoder-derived `/joint_states` after
+  Connect. Before Connect the portal overlays PASSIVE and the URDF remains at
+  its initial pose.
 - The RViz view in the browser is real RViz pixels over MJPEG, and it is
   interactive: pointer events are replayed with `XSendEvent` addressed to the
   render widget. XTEST was tried and is wrong — it drives the shared cursor, so
   it needs RViz topmost, and in normal use the browser is on top.
+- The portal always shows the raw, unfiltered RViz render. Do not add palette
+  controls or expose RViz menus, toolbars, or option panels in the portal.
+- Clap and heart contact use `/api/v3/converge`; the immediately following
+  waypoint uses `/api/v3/retreat`. Never route a contact waypoint through
+  ordinary `/api/v3/move-both`, and never globally lower the 25/10 mm gates.
+  Their shared midpoints are `[0.34, 0, 0.86] m` at the top and
+  `[0.30, 0, 0.74] m` at the Heart bottom. Fresh virtual startup uses the
+  low/mid/lobe lead-in because a direct jump to the open pose fails the portal's
+  branch-continuity proof.
 
 ## Traps that wasted time here
 

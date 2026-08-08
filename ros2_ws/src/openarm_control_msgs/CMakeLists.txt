@@ -10,9 +10,11 @@ find_package(unique_identifier_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/MoveJoint.action"
+  "action/MoveGripper.action"
   "action/MovePairedTcp.action"
   "action/MovePairedTcpScaled.action"
   "action/MoveBimanual.action"
+  "srv/AdjustDisplayJoint.srv"
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs unique_identifier_msgs)
 
 ament_export_dependencies(rosidl_default_runtime)
